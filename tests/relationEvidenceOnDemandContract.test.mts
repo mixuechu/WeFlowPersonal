@@ -17,8 +17,12 @@ test('graph and review evidence presentation hydrates only the visible scope on 
   assert.match(focus, /getRelationEvidenceHotset\([\s\S]*visibleRelations\.map/)
   assert.match(path, /getRelationEvidenceHotset\([\s\S]*path\.steps\.map/)
   assert.match(common, /getRelationEvidenceHotset\([\s\S]*relationIds/)
-  assert.match(common, /findCommonRelationNeighbors\(fromId, toId\)/)
+  assert.match(common, /findCommonRelationNeighbors\(fromId, toId, pagination\)/)
+  assert.match(common, /offset: authority\.offset/)
+  assert.match(common, /hasMore: authority\.hasMore/)
   assert.doesNotMatch(common, /findCommonGraphNeighbors|this\.state\.graph\.relations\.filter/)
+  assert.ok((common.match(/getGraphReviewRevision\(\)/g) || []).length >= 2)
+  assert.match(common, /expectedGraphRevision[\s\S]*?共同实体结果在浏览期间已经变化/)
   const snapshot = store.slice(store.indexOf('loadGraphSnapshot(): MemoryGraph'),
     store.indexOf('getRelationEvidenceCounts():', store.indexOf('loadGraphSnapshot(): MemoryGraph')))
   assert.match(snapshot, /GROUP BY root_id,source_id,session_id,message_id/)

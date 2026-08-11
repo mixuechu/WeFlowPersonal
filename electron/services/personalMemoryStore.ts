@@ -588,6 +588,7 @@ export type SearchDocumentScopeHandle = Readonly<{
 type SearchDocumentScope = SearchDocumentScopeHandle
 const SCOPED_GRAPH_PATH_EXPANSION_LIMIT = 50_000
 const COMMON_GRAPH_NEIGHBOR_LIMIT = 100
+const COMMON_GRAPH_NEIGHBOR_DEFAULT_PAGE = 40
 const COMMON_GRAPH_EDGE_LIMIT_PER_SIDE = 4
 
 export class PersonalMemoryStore {
@@ -7851,7 +7852,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 7,
+        version: 8,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7871,7 +7872,10 @@ export class PersonalMemoryStore {
         commonNeighborStrategy: 'sqlcipher_ranked_aggregate',
         commonNeighborLimit: COMMON_GRAPH_NEIGHBOR_LIMIT,
         commonNeighborEdgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE,
-        commonNeighborTotalVisible: true
+        commonNeighborTotalVisible: true,
+        commonNeighborPagination: true,
+        commonNeighborRevisionBound: true,
+        commonNeighborContinuationRecoverable: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20854,17 +20858,30 @@ export class PersonalMemoryStore {
     return { found: true, entityIds, steps, ...budget }
   }
 
-  findCommonRelationNeighbors(fromId: string, toId: string): {
+  findCommonRelationNeighbors(
+    fromId: string,
+    toId: string,
+    options: { offset?: number; limit?: number } = {}
+  ): {
     items: any[]
     total: number
+    offset: number
     limit: number
+    hasMore: boolean
     truncated: boolean
     edgeLimitPerSide: number
   } {
+    const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+    const limit = Math.max(1, Math.min(
+      COMMON_GRAPH_NEIGHBOR_LIMIT,
+      Math.floor(Number(options.limit) || COMMON_GRAPH_NEIGHBOR_DEFAULT_PAGE)
+    ))
     const empty = {
       items: [],
       total: 0,
-      limit: COMMON_GRAPH_NEIGHBOR_LIMIT,
+      offset,
+      limit,
+      hasMore: false,
       truncated: false,
       edgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE
     }
@@ -20917,12 +20934,17 @@ export class PersonalMemoryStore {
     const ranked = this.db.prepare(`
       WITH ${edgeCtes}
       SELECT common.neighbor_id,common.score
-      FROM common ORDER BY common.score DESC,common.neighbor_id ASC LIMIT ?
-    `).all(...parameters, COMMON_GRAPH_NEIGHBOR_LIMIT) as Array<{
+      FROM common ORDER BY common.score DESC,common.neighbor_id ASC LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as Array<{
       neighbor_id: string
       score: number
     }>
     const neighborIds = ranked.map(row => row.neighbor_id)
+    if (!neighborIds.length) return {
+      ...empty,
+      total,
+      truncated: offset < total
+    }
     const placeholders = neighborIds.map(() => '?').join(',')
     const edgeRows = this.db.prepare(`
       WITH ${edgeCtes}, selected_edges AS (
@@ -20977,8 +20999,10 @@ export class PersonalMemoryStore {
         })
       })),
       total,
-      limit: COMMON_GRAPH_NEIGHBOR_LIMIT,
-      truncated: total > ranked.length,
+      offset,
+      limit,
+      hasMore: offset + ranked.length < total,
+      truncated: offset + ranked.length < total,
       edgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE
     }
   }

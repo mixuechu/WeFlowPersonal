@@ -1507,6 +1507,9 @@ function AiAssistantPage() {
   const [pathToSelection, setPathToSelection] = useState<any>(null)
   const [graphPath, setGraphPath] = useState<any>(null)
   const [graphCommonNeighbors, setGraphCommonNeighbors] = useState<any>(null)
+  const [graphCommonNeighborsLoadingMore, setGraphCommonNeighborsLoadingMore] = useState(false)
+  const [graphCommonNeighborsError, setGraphCommonNeighborsError] = useState('')
+  const graphPairQueryGate = useRef(new LatestRequestGate())
   const [mergeTargets, setMergeTargets] = useState<Record<string, string>>({})
   const [entityNameEdits, setEntityNameEdits] = useState<Record<string, string>>({})
   const [relationEdits, setRelationEdits] = useState<Record<string, {
@@ -7064,14 +7067,24 @@ function AiAssistantPage() {
       setPathToSelection(null)
       return
     }
+    const request = graphPairQueryGate.current.begin()
+    setGraphCommonNeighborsError('')
+    setGraphCommonNeighborsLoadingMore(false)
     try {
       const [path, common] = await Promise.all([
         window.electronAPI.aiAssistant.findGraphPath(pathFromId, pathToId, 6, fromRevision),
-        window.electronAPI.aiAssistant.findCommonNeighbors(pathFromId, pathToId, fromRevision)
+        window.electronAPI.aiAssistant.findCommonNeighbors(
+          pathFromId,
+          pathToId,
+          fromRevision,
+          { offset: 0, limit: 40 }
+        )
       ])
+      if (!graphPairQueryGate.current.isCurrent(request)) return
       setGraphPath(path)
       setGraphCommonNeighbors(common)
     } catch (error: any) {
+      if (!graphPairQueryGate.current.isCurrent(request)) return
       setMessage(error?.message || String(error))
       setPathFromId('')
       setPathToId('')
@@ -7079,6 +7092,38 @@ function AiAssistantPage() {
       setPathToSelection(null)
       setGraphPath(null)
       setGraphCommonNeighbors(null)
+    }
+  }
+
+  const loadMoreGraphCommonNeighbors = async () => {
+    if (!graphCommonNeighbors?.hasMore || graphCommonNeighborsLoadingMore) return
+    const fromRevision = String(pathFromSelection?.directoryRevision || '')
+    if (!fromRevision || fromRevision !== String(pathToSelection?.directoryRevision || '')) return
+    const request = graphPairQueryGate.current.begin()
+    setGraphCommonNeighborsLoadingMore(true)
+    setGraphCommonNeighborsError('')
+    try {
+      const next = await window.electronAPI.aiAssistant.findCommonNeighbors(
+        pathFromId,
+        pathToId,
+        fromRevision,
+        {
+          offset: graphCommonNeighbors.common.length,
+          limit: 40,
+          expectedGraphRevision: graphCommonNeighbors.graphRevision
+        }
+      )
+      if (!graphPairQueryGate.current.isCurrent(request)) return
+      setGraphCommonNeighbors({
+        ...next,
+        common: [...graphCommonNeighbors.common, ...next.common]
+      })
+    } catch (error: any) {
+      if (!graphPairQueryGate.current.isCurrent(request)) return
+      const message = error?.message || String(error)
+      setGraphCommonNeighborsError(message)
+    } finally {
+      if (graphPairQueryGate.current.isCurrent(request)) setGraphCommonNeighborsLoadingMore(false)
     }
   }
 
@@ -14831,16 +14876,20 @@ function AiAssistantPage() {
               placeholder="搜索路径起点…"
               ariaLabel="关系路径起点"
               onSelect={entity => {
+                graphPairQueryGate.current.invalidate()
                 setPathFromSelection(entity)
                 setPathFromId(entity.id)
                 setGraphPath(null)
                 setGraphCommonNeighbors(null)
+                setGraphCommonNeighborsError('')
               }}
               onClear={() => {
+                graphPairQueryGate.current.invalidate()
                 setPathFromSelection(null)
                 setPathFromId('')
                 setGraphPath(null)
                 setGraphCommonNeighbors(null)
+                setGraphCommonNeighborsError('')
               }}
               onError={setMessage} />
             <span>→</span>
@@ -14850,16 +14899,20 @@ function AiAssistantPage() {
               placeholder="搜索路径终点…"
               ariaLabel="关系路径终点"
               onSelect={entity => {
+                graphPairQueryGate.current.invalidate()
                 setPathToSelection(entity)
                 setPathToId(entity.id)
                 setGraphPath(null)
                 setGraphCommonNeighbors(null)
+                setGraphCommonNeighborsError('')
               }}
               onClear={() => {
+                graphPairQueryGate.current.invalidate()
                 setPathToSelection(null)
                 setPathToId('')
                 setGraphPath(null)
                 setGraphCommonNeighbors(null)
+                setGraphCommonNeighborsError('')
               }}
               onError={setMessage} />
             <button onClick={() => void findGraphPath()} disabled={!pathFromId || !pathToId}>查找关系路径</button>
@@ -14914,6 +14967,18 @@ function AiAssistantPage() {
                 </div>)}
               </div>
             </article>)}
+            {graphCommonNeighborsError && <div className="assistant-inline-error">
+              继续读取失败：{graphCommonNeighborsError}
+              <button onClick={() => void (/已经变化|重新加载/.test(graphCommonNeighborsError)
+                ? findGraphPath()
+                : loadMoreGraphCommonNeighbors())}>{/已经变化|重新加载/.test(graphCommonNeighborsError)
+                  ? '重新加载第一页'
+                  : '重试当前页'}</button>
+            </div>}
+            {graphCommonNeighbors.hasMore && <button
+              onClick={() => void loadMoreGraphCommonNeighbors()}
+              disabled={graphCommonNeighborsLoadingMore}
+            >{graphCommonNeighborsLoadingMore ? '正在读取…' : `加载更多（已加载 ${graphCommonNeighbors.common.length} / ${graphCommonNeighbors.total}）`}</button>}
             {!graphCommonNeighbors.common.length && <div className="assistant-empty">当前图谱中没有共同的一跳联系人或实体。</div>}
           </div>}
           {graphWorkspace.status === 'loading' ? <div className="assistant-empty">正在从本机图谱构建当前语义视口…</div>
@@ -18171,6 +18236,7 @@ function AiAssistantPage() {
                 <span>全图邻接副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.unscopedGraphAdjacencyMaterializations || 0)}</b> 份</span>
                 <span>共同实体 <b>{memoryDiagnostics.memorySearchScopePlanning.commonNeighborStrategy === 'sqlcipher_ranked_aggregate' ? 'SQLCipher 聚合' : '需要检查'}</b></span>
                 <span>共同实体预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.commonNeighborLimit || 0)}</b> 个</span>
+                <span>共同实体翻页 <b>{memoryDiagnostics.memorySearchScopePlanning.commonNeighborRevisionBound ? 'revision 保护' : '需要检查'}</b></span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

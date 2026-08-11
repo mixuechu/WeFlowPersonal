@@ -13678,8 +13678,10 @@ test('common graph neighbors are ranked and bounded inside SQLCipher with honest
     } as any)
     const result = store.findCommonRelationNeighbors('common-left', 'common-right')
     assert.equal(result.total, 105)
-    assert.equal(result.items.length, 100)
-    assert.equal(result.limit, 100)
+    assert.equal(result.items.length, 40)
+    assert.equal(result.offset, 0)
+    assert.equal(result.limit, 40)
+    assert.equal(result.hasMore, true)
     assert.equal(result.truncated, true)
     assert.equal(result.edgeLimitPerSide, 4)
     assert.equal(result.items[0].entityId, 'common-104')
@@ -13693,10 +13695,27 @@ test('common graph neighbors are ranked and bounded inside SQLCipher with honest
     )
     assert.equal(result.items[0].leftTotal, 1)
     assert.equal(result.items[0].rightTotal, 1)
+    const second = store.findCommonRelationNeighbors('common-left', 'common-right', {
+      offset: 40,
+      limit: 40
+    })
+    const last = store.findCommonRelationNeighbors('common-left', 'common-right', {
+      offset: 80,
+      limit: 40
+    })
+    assert.equal(second.items.length, 40)
+    assert.equal(second.hasMore, true)
+    assert.equal(last.items.length, 25)
+    assert.equal(last.hasMore, false)
+    assert.equal(last.truncated, false)
+    assert.equal(new Set([...result.items, ...second.items, ...last.items]
+      .map(item => item.entityId)).size, 105)
     assert.deepEqual(store.findCommonRelationNeighbors('common-left', 'missing'), {
       items: [],
       total: 0,
-      limit: 100,
+      offset: 0,
+      limit: 40,
+      hasMore: false,
       truncated: false,
       edgeLimitPerSide: 4
     })

@@ -4856,8 +4856,8 @@ function registerIpcHandlers() {
     _, fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string
   ) => aiAssistantService.findGraphPath(fromId, toId, maxDepth, null, entityDirectoryRevision))
   ipcMain.handle('ai-assistant:findCommonNeighbors', (
-    _, fromId: string, toId: string, entityDirectoryRevision?: string
-  ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision))
+    _, fromId: string, toId: string, entityDirectoryRevision?: string, pagination?: any
+  ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision, pagination))
   ipcMain.handle('ai-assistant:getMemoryDiagnostics', (_, options?: any) =>
     aiAssistantService.getMemoryDiagnostics({
       forceIntegrityCheck: options?.forceIntegrityCheck === true

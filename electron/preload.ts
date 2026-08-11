@@ -805,8 +805,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
     findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) =>
       ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth, entityDirectoryRevision),
-    findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string) =>
-      ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId, entityDirectoryRevision),
+    findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string, pagination?: any) =>
+      ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId, entityDirectoryRevision, pagination),
     getMemoryDiagnostics: (options?: { forceIntegrityCheck?: boolean }) =>
       ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics', options),
     repairMemorySearchIndexes: () => ipcRenderer.invoke('ai-assistant:repairMemorySearchIndexes'),

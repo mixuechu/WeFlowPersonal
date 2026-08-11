@@ -12038,7 +12038,12 @@ export class AiAssistantService {
     }
   }
 
-  findCommonNeighbors(fromId: string, toId: string, entityDirectoryRevision?: string): any {
+  findCommonNeighbors(
+    fromId: string,
+    toId: string,
+    entityDirectoryRevision?: string,
+    pagination: { offset?: number; limit?: number; expectedGraphRevision?: string } = {}
+  ): any {
     if (entityDirectoryRevision) {
       const selection = resolveTrustedEntityPairSelection(this.state.graph.entities, {
         fromId,
@@ -12047,9 +12052,17 @@ export class AiAssistantService {
       })
       if (selection.stale) throw new Error('共同实体查询所选身份已经变化，请重新选择起点和终点')
     }
+    const startingGraphRevision = String(personalMemoryStore.getGraphReviewRevision())
+    if (pagination.expectedGraphRevision && pagination.expectedGraphRevision !== startingGraphRevision) {
+      throw new Error('共同实体结果在浏览期间已经变化，请从第一页重新加载')
+    }
     const entities = this.state.graph.entities.filter(isTrustedEntity)
     const entityMap = new Map(entities.map(entity => [entity.id, entity]))
-    const authority = personalMemoryStore.findCommonRelationNeighbors(fromId, toId)
+    const authority = personalMemoryStore.findCommonRelationNeighbors(fromId, toId, pagination)
+    const completedGraphRevision = String(personalMemoryStore.getGraphReviewRevision())
+    if (completedGraphRevision !== startingGraphRevision) {
+      throw new Error('共同实体结果在读取期间已经变化，请从第一页重新加载')
+    }
     const common = authority.items.flatMap((item: any) => {
       const entity = entityMap.get(item.entityId)
       return entity ? [{ ...item, entity }] : []
@@ -12074,9 +12087,12 @@ export class AiAssistantService {
       from: entities.find(entity => entity.id === fromId) || null,
       to: entities.find(entity => entity.id === toId) || null,
       total: authority.total,
+      offset: authority.offset,
       limit: authority.limit,
+      hasMore: authority.hasMore,
       truncated: authority.truncated,
       edgeLimitPerSide: authority.edgeLimitPerSide,
+      graphRevision: startingGraphRevision,
       common: common.map((item: any) => ({
         ...item,
         leftEdges: enrichEdges(item.leftEdges),
