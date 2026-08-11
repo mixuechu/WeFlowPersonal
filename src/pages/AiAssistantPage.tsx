@@ -1110,6 +1110,10 @@ function AiAssistantPage() {
   const [sourceTypeFilter, setSourceTypeFilter] = useState<'all' | 'group' | 'private'>('all')
   const [sourceEnabledFilter, setSourceEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all')
   const sourceDirectoryGate = useRef(new LatestRequestGate())
+  const [sourceMutating, setSourceMutating] = useState<Record<string, boolean>>({})
+  const [sourceBulkMutating, setSourceBulkMutating] = useState(false)
+  const sourceMutationGates = useRef(new KeyedLatestRequestGates())
+  const sourceBulkMutationGate = useRef(new LatestRequestGate())
   const [dataSources, setDataSources] = useState<any[]>([])
   const [dataSourcesLoading, setDataSourcesLoading] = useState(false)
   const [dataSourcesError, setDataSourcesError] = useState('')
@@ -3887,6 +3891,7 @@ function AiAssistantPage() {
     [taskCalendarPage.items, calendarMonth]
   )
   const selectedCalendarDay = taskCalendar.days.find(day => day.date === selectedCalendarDate)
+  const sourceMutationBusy = sourceBulkMutating || Object.values(sourceMutating).some(Boolean)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
     if (taskReminderSaving[key]) return
@@ -9683,31 +9688,48 @@ function AiAssistantPage() {
   }
 
   const toggleSource = async (source: any) => {
+    if (sourceMutationBusy) return
+    const request = sourceMutationGates.current.begin(source.sessionId)
+    setSourceMutating(current => setKeyedLoadingState(current, source.sessionId, true))
     try {
-      await window.electronAPI.aiAssistant.setConversationSource({
+      const result = await window.electronAPI.aiAssistant.setConversationSource({
         sessionId: source.sessionId,
         enabled: !source.enabled,
         mutationToken: source.mutationToken
       })
+      if (!sourceMutationGates.current.isCurrent(source.sessionId, request)) return
+      setMessage(`${source.displayName || '该会话'}已${result.enabled ? '参与' : '停止'}后续分析。`)
       await loadConversationSources(0, false)
     } catch (error: any) {
+      if (!sourceMutationGates.current.isCurrent(source.sessionId, request)) return
       setMessage(error?.message || String(error))
       await loadConversationSources(0, false)
+    } finally {
+      if (sourceMutationGates.current.isCurrent(source.sessionId, request)) {
+        setSourceMutating(current => setKeyedLoadingState(current, source.sessionId, false))
+      }
     }
   }
 
   const setSourceType = async (type: 'group' | 'private', enabled: boolean) => {
+    if (sourceMutationBusy) return
+    const request = sourceBulkMutationGate.current.begin()
+    setSourceBulkMutating(true)
     try {
       const result = await window.electronAPI.aiAssistant.setConversationSourcesBulk({
         type,
         enabled,
         expectedRevision: sourceDirectory.revision
       })
+      if (!sourceBulkMutationGate.current.isCurrent(request)) return
       setMessage(`已更新 ${result.updated} 个${type === 'group' ? '群聊' : '私聊'}来源。`)
       await loadConversationSources(0, false)
     } catch (error: any) {
+      if (!sourceBulkMutationGate.current.isCurrent(request)) return
       setMessage(error?.message || String(error))
       await loadConversationSources(0, false)
+    } finally {
+      if (sourceBulkMutationGate.current.isCurrent(request)) setSourceBulkMutating(false)
     }
   }
 
@@ -19930,7 +19952,7 @@ function AiAssistantPage() {
       {showSources && (
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal assistant-source-modal">
-            <div className="assistant-modal-title"><div><h2>信息来源</h2><p>关闭后消息不会发送给模型，也不会进入待办和知识图谱。</p></div><button onClick={() => setShowSources(false)}><X size={16} /></button></div>
+            <div className="assistant-modal-title"><div><h2>信息来源</h2><p>关闭后消息不会发送给模型，也不会进入待办和知识图谱。</p></div><button disabled={sourceMutationBusy} onClick={() => setShowSources(false)}><X size={16} /></button></div>
             {Number(dashboard?.conversationSourceMutationCommits?.prepared || 0) > 0 && <div className="assistant-error">
               <strong>来源开关恢复现场仍待处理</strong>
               <span>{Number(dashboard.conversationSourceMutationCommits.prepared)} 组变更的游标状态不明确；
@@ -19943,19 +19965,19 @@ function AiAssistantPage() {
               冲突 {Number(dashboard.conversationSourceMutationCommits.startupRecovery.conflicts)}。
             </small>}
             <div className="assistant-source-actions">
-              <button disabled={sourceLoading || Boolean(sourceDirectoryError)}
+              <button disabled={sourceLoading || sourceMutationBusy || Boolean(sourceDirectoryError)}
                 onClick={() => void setSourceType('group', false)}>关闭全部群聊</button>
-              <button disabled={sourceLoading || Boolean(sourceDirectoryError)}
+              <button disabled={sourceLoading || sourceMutationBusy || Boolean(sourceDirectoryError)}
                 onClick={() => void setSourceType('group', true)}>开启全部群聊</button>
-              <button disabled={sourceLoading || Boolean(sourceDirectoryError)}
+              <button disabled={sourceLoading || sourceMutationBusy || Boolean(sourceDirectoryError)}
                 onClick={() => void setSourceType('private', true)}>开启全部私聊</button>
             </div>
-            <input className="assistant-source-search" value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} placeholder="搜索群聊或联系人" />
+            <input className="assistant-source-search" value={sourceQuery} disabled={sourceMutationBusy} onChange={event => setSourceQuery(event.target.value)} placeholder="搜索群聊或联系人" />
             <div className="assistant-source-filters">
-              <select value={sourceTypeFilter} onChange={event => setSourceTypeFilter(event.target.value as any)}>
+              <select value={sourceTypeFilter} disabled={sourceMutationBusy} onChange={event => setSourceTypeFilter(event.target.value as any)}>
                 <option value="all">全部类型</option><option value="group">群聊</option><option value="private">私聊</option>
               </select>
-              <select value={sourceEnabledFilter} onChange={event => setSourceEnabledFilter(event.target.value as any)}>
+              <select value={sourceEnabledFilter} disabled={sourceMutationBusy} onChange={event => setSourceEnabledFilter(event.target.value as any)}>
                 <option value="all">全部状态</option><option value="enabled">参与分析</option><option value="disabled">停止分析</option>
               </select>
               <span>{sourceDirectoryError
@@ -19966,7 +19988,7 @@ function AiAssistantPage() {
               {sourceDirectory.items.map((source: any) => (
                 <label className="assistant-source-row" key={source.sessionId}>
                   <span><strong>{source.displayName}</strong><small>{source.type === 'group' ? '群聊' : '私聊'} · {source.enabled ? '参与分析' : '已停止分析'}</small></span>
-                  <input type="checkbox" checked={source.enabled} disabled={sourceLoading} onChange={() => void toggleSource(source)} />
+                  <input type="checkbox" checked={source.enabled} disabled={sourceLoading || sourceMutationBusy} onChange={() => void toggleSource(source)} />
                 </label>
               ))}
               {sourceDirectoryError && <div className="assistant-task-load-failure" role="alert">
@@ -19975,7 +19997,7 @@ function AiAssistantPage() {
                 <span>{sourceDirectoryError}。{sourceDirectory.items.length
                   ? ` 已加载的 ${sourceDirectory.items.length} 个来源仍可查看，但当前目录尚未读完。`
                   : ' 当前不会把读取故障解释为“没有匹配的信息来源”。'}</span>
-                <button type="button" disabled={sourceLoading}
+                <button type="button" disabled={sourceLoading || sourceMutationBusy}
                   onClick={() => void loadConversationSources(
                     sourceDirectory.items.length,
                     sourceDirectory.items.length > 0
@@ -19987,7 +20009,7 @@ function AiAssistantPage() {
                 <div className="assistant-source-empty">没有匹配的信息来源</div>}
               {sourceDirectory.hasMore && !sourceDirectoryError && <button
                 className="assistant-source-more"
-                disabled={sourceLoading}
+                disabled={sourceLoading || sourceMutationBusy}
                 onClick={() => void loadConversationSources(sourceDirectory.items.length, true)}>
                 {sourceLoading ? '加载中…' : '加载更多'}
               </button>}
@@ -19996,7 +20018,7 @@ function AiAssistantPage() {
               <span>{sourceDirectoryError && !sourceDirectory.items.length
                 ? '来源数量未知 · 请重试读取'
                 : `显示 ${sourceDirectory.items.length}/${sourceDirectory.total} · 全部 ${sourceDirectory.counts.enabled} 个来源已开启`}</span>
-              <button className="primary" onClick={() => setShowSources(false)}>完成</button>
+              <button className="primary" disabled={sourceMutationBusy} onClick={() => setShowSources(false)}>完成</button>
             </div>
           </div>
         </div>

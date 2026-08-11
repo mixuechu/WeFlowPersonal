@@ -15,7 +15,7 @@ test('conversation source failures do not masquerade as empty results and retain
   assert.match(page, /sourceDirectory\.items\.length,[\s\S]*sourceDirectory\.items\.length > 0/)
   assert.match(page, /!sourceLoading && !sourceDirectoryError && !sourceDirectory\.items\.length/)
   assert.match(page, /来源数量未知 · 请重试读取/)
-  assert.match(page, /disabled=\{sourceLoading \|\| Boolean\(sourceDirectoryError\)\}/)
+  assert.match(page, /disabled=\{sourceLoading \|\| sourceMutationBusy \|\| Boolean\(sourceDirectoryError\)\}/)
 })
 
 test('connector directory failures expose an explicit retry instead of a false enabled count', () => {
