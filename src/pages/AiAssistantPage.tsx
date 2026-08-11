@@ -11668,9 +11668,16 @@ function AiAssistantPage() {
             {briefingPeriod === 'latest' ? <>
               <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
               <p>{briefing?.summary || '服务会在启动时自动补齐，也会在每天设定时间整理新增消息。'}</p>
-              <small>派生简报只保留最近 {dashboard?.briefingStorage?.retentionDays || 90} 天；事实、事件、任务和原文证据长期保留，不受影响。</small>
+              <small>
+                派生简报只保留最近 {dashboard?.briefingStorage?.retentionDays || 90} 天；
+                每日摘要最多内嵌 {dashboard?.briefingStorage?.summaryEvidenceLimit || 40} 条去重引用，
+                当前另有 {Number(dashboard?.briefingStorage?.summaryEvidenceRowsOmitted || 0).toLocaleString()} 条仅保留完整计数。
+                事实、事件、任务和原消息仍在 SQLCipher 长期保留，不受影响。
+              </small>
               {briefing?.summary && <details className="assistant-query-plan">
-                <summary>{briefing.summaryVerified ? `查看摘要原文（${briefing.summaryEvidence?.length || 0}）` : '历史摘要 · 生成时尚未保存逐条引用'}</summary>
+                <summary>{briefing.summaryVerified
+                  ? `查看摘要原文（显示 ${briefing.summaryEvidence?.length || 0} / ${briefing.summaryEvidenceTotal || briefing.summaryEvidence?.length || 0}）`
+                  : '历史摘要 · 生成时尚未保存逐条引用'}</summary>
                 {briefing.summaryVerified
                   ? <div className="assistant-briefing-evidence"><EvidenceRows
                     evidence={briefing.summaryEvidence}
@@ -11686,13 +11693,16 @@ function AiAssistantPage() {
                     <time>{item.date}</time>
                     <strong title={item.headline || item.summary}>{item.headline || item.summary}</strong>
                     <em className={item.verified ? 'verified' : 'legacy'}>
-                      {item.verified ? `已核验 · ${item.evidence?.length || 0} 条原文` : '历史未验证'}
+                      {item.verified ? `已核验 · ${item.evidenceTotal || item.evidence?.length || 0} 条原文` : '历史未验证'}
                     </em>
                   </summary>
                   {(item.summary || item.headline) && <p>{item.summary || item.headline}</p>}
                   {!!item.evidence?.length && <div className="assistant-weekly-summary-evidence">
                     <EvidenceRows evidence={item.evidence} total={item.evidence.length} />
                   </div>}
+                  {item.evidenceTruncated && <small>
+                    当前展示 {item.evidence.length} / {item.evidenceTotal} 条摘要引用；完整原消息仍保存在 SQLCipher，可通过统一检索按日期核验。
+                  </small>}
                   {item.verified && !item.evidence?.length
                     ? <small>该日摘要被标记为已核验，但当前没有可展示原文；不会据此形成新的可信结论。</small>
                     : !item.verified
@@ -11704,6 +11714,9 @@ function AiAssistantPage() {
                 完整展示 {weeklyBriefing?.summaryCount || 0} 天摘要 ·
                 {weeklyBriefing?.verifiedSummaryCount || 0} 天已核验 ·
                 {weeklyBriefing?.summaryEvidenceCount || 0} 条摘要原文
+                {Number(weeklyBriefing?.summaryEvidencePreviewCount || 0) < Number(weeklyBriefing?.summaryEvidenceCount || 0)
+                  ? ` · 当前预览 ${weeklyBriefing?.summaryEvidencePreviewCount || 0} 条`
+                  : ''}
               </small>
             </>}
           </div>

@@ -447,6 +447,7 @@ import { buildCursorStatusPayload } from '../../shared/cursorPayload'
 import { collectStableCursorPages } from '../../shared/stableCursorPagination'
 import {
   BRIEFING_RETENTION_DAYS,
+  BRIEFING_SUMMARY_EVIDENCE_LIMIT,
   BRIEFING_STORAGE_VERSION,
   compactBriefings
 } from '../../shared/briefingRetention'
@@ -1170,6 +1171,11 @@ export class AiAssistantService {
     removedDays: 0,
     strippedTaskSnapshots: 0,
     strippedTaskCount: 0,
+    summaryEvidenceLimit: BRIEFING_SUMMARY_EVIDENCE_LIMIT,
+    summaryEvidenceRows: 0,
+    summaryEvidenceRowsOmitted: 0,
+    summaryEvidenceRowsDeduplicatedThisStart: 0,
+    summaryEvidenceDaysCompactedThisStart: 0,
     lastCompactedAt: ''
   }
   private graphReviewStorage = {
@@ -2118,10 +2124,16 @@ export class AiAssistantService {
     const result = compactBriefings(this.state.briefings, BRIEFING_RETENTION_DAYS)
     this.state.briefings = result.briefings
     this.briefingStorage.retainedDays = result.retainedDays
+    this.briefingStorage.summaryEvidenceRows = result.summaryEvidenceRows
+    this.briefingStorage.summaryEvidenceRowsOmitted = result.summaryEvidenceRowsOmitted
     if (result.changed) {
       this.briefingStorage.removedDays += result.removedDays
       this.briefingStorage.strippedTaskSnapshots += result.strippedTaskSnapshots
       this.briefingStorage.strippedTaskCount += result.strippedTaskCount
+      this.briefingStorage.summaryEvidenceRowsDeduplicatedThisStart +=
+        result.summaryEvidenceRowsDeduplicated
+      this.briefingStorage.summaryEvidenceDaysCompactedThisStart +=
+        result.summaryEvidenceDaysCompacted
       this.briefingStorage.lastCompactedAt = new Date().toISOString()
     }
   }

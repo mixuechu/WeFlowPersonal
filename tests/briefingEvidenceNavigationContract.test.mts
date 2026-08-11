@@ -10,6 +10,10 @@ const page = readFileSync(join(root, 'src/pages/AiAssistantPage.tsx'), 'utf8')
 test('latest briefing summary and highlights use the shared evidence navigation surface', () => {
   assert.match(page, /className="assistant-briefing-evidence"><EvidenceRows[\s\S]*?evidence=\{briefing\.summaryEvidence\}/)
   assert.match(page, /className="assistant-highlight-evidence"><EvidenceRows[\s\S]*?evidence=\{highlight\.evidence\}/)
+  assert.match(page, /summaryEvidenceLimit \|\| 40/)
+  assert.match(page, /summaryEvidenceRowsOmitted \|\| 0/)
+  assert.match(page, /briefing\.summaryEvidenceTotal \|\| briefing\.summaryEvidence\?\.length/)
+  assert.match(page, /item\.evidenceTruncated/)
 })
 
 test('shared evidence rows fail closed for non-WeChat and malformed message identities', () => {

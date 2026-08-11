@@ -32,7 +32,12 @@ export function buildWeeklyBriefing(
     summary: String(briefing?.summary || ''),
     headline: String(briefing?.headline || ''),
     verified: briefing?.summaryVerified === true,
-    evidence: Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence : []
+    evidence: Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence : [],
+    evidenceTotal: Math.max(
+      Number(briefing?.summaryEvidenceTotal || 0),
+      Array.isArray(briefing?.summaryEvidence) ? briefing.summaryEvidence.length : 0
+    ),
+    evidenceTruncated: briefing?.summaryEvidenceTruncated === true
   }))
     .filter(item => item.summary || item.headline)
   return {
@@ -48,7 +53,8 @@ export function buildWeeklyBriefing(
       activeTasks.filter(task => task.priority === 'high').length,
     summaryCount: summaries.length,
     verifiedSummaryCount: summaries.filter(item => item.verified).length,
-    summaryEvidenceCount: summaries.reduce((total, item) => total + item.evidence.length, 0),
+    summaryEvidenceCount: summaries.reduce((total, item) => total + item.evidenceTotal, 0),
+    summaryEvidencePreviewCount: summaries.reduce((total, item) => total + item.evidence.length, 0),
     summaries
   }
 }

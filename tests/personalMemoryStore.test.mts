@@ -154,6 +154,7 @@ import {
 import { buildCursorStatusPayload, CURSOR_STATUS_PAYLOAD_VERSION } from '../shared/cursorPayload.ts'
 import {
   BRIEFING_RETENTION_DAYS,
+  BRIEFING_SUMMARY_EVIDENCE_LIMIT,
   compactBriefings
 } from '../shared/briefingRetention.ts'
 import {
@@ -735,6 +736,49 @@ test('derived briefings stay bounded without duplicating durable task evidence',
     buildWeeklyBriefing(compacted.briefings, [], new Date('2025-12-24T12:00:00+08:00')).daysWithUpdates,
     7
   )
+})
+
+test('derived briefing summary citations are deduplicated, bounded and truthfully counted', () => {
+  const uniqueEvidence = Array.from({ length: 80 }, (_, index) => ({
+    evidenceKey: `wechat:session:${index}`,
+    sourceId: 'wechat',
+    sessionId: 'session',
+    messageId: String(index),
+    excerpt: `摘要原文 ${index}`
+  }))
+  const compacted = compactBriefings({
+    '2026-08-12': {
+      date: '2026-08-12',
+      summary: '高消息量日期摘要',
+      summaryVerified: true,
+      summaryEvidence: [...uniqueEvidence, ...uniqueEvidence.slice(0, 20)]
+    }
+  })
+  const briefing = compacted.briefings['2026-08-12']
+  assert.equal(briefing.summaryEvidence.length, BRIEFING_SUMMARY_EVIDENCE_LIMIT)
+  assert.equal(briefing.summaryEvidenceTotal, 80)
+  assert.equal(briefing.summaryEvidenceTruncated, true)
+  assert.equal(compacted.summaryEvidenceRows, BRIEFING_SUMMARY_EVIDENCE_LIMIT)
+  assert.equal(compacted.summaryEvidenceRowsOmitted, 40)
+  assert.equal(compacted.summaryEvidenceRowsDeduplicated, 20)
+  assert.equal(compacted.summaryEvidenceDaysCompacted, 1)
+
+  const repeated = compactBriefings(compacted.briefings)
+  assert.equal(repeated.changed, false)
+  assert.equal(repeated.summaryEvidenceRowsDeduplicated, 0)
+  assert.equal(repeated.briefings['2026-08-12'].summaryEvidenceTotal, 80)
+  const weekly = buildWeeklyBriefing(
+    repeated.briefings, [], new Date('2026-08-12T12:00:00+08:00')
+  )
+  assert.equal(weekly.summaryEvidenceCount, 80)
+  assert.equal(weekly.summaryEvidencePreviewCount, BRIEFING_SUMMARY_EVIDENCE_LIMIT)
+  assert.equal(weekly.summaries[0].evidenceTruncated, true)
+
+  const malformed = compactBriefings({
+    '2026-08-12': { summaryEvidenceTotal: Number.POSITIVE_INFINITY,
+      summaryEvidence: [uniqueEvidence[0]] }
+  })
+  assert.equal(malformed.briefings['2026-08-12'].summaryEvidenceTotal, 1)
 })
 
 test('entity merge direction must explicitly preserve one candidate', () => {
