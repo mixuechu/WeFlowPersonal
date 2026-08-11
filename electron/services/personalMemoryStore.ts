@@ -579,8 +579,18 @@ function decodeRecoveryPayload(row: any, keys: string[]): {
   }
 }
 
+export type SearchDocumentScopeHandle = Readonly<{
+  kind: 'sqlcipher_search_scope'
+  id: number
+  size: number
+}>
+
+type SearchDocumentScope = Set<string> | SearchDocumentScopeHandle
+
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
+  private searchScopeSequence = 0
+  private activeSearchScopes = new Map<number, string>()
   private databasePath = ''
   private encryptionKey: Buffer | null = null
   private encryptionMigrated = false
@@ -7273,6 +7283,7 @@ export class PersonalMemoryStore {
   }
 
   close(): void {
+    this.activeSearchScopes.clear()
     this.db?.close()
     this.db = null
     this.taskReviewFeedbackStatsCache = null
@@ -7837,11 +7848,14 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 1,
+        version: 2,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
-        primaryScopeStrategy: 'single_shared_identity_set',
-        hybridScopeReused: true
+        primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
+        primaryIdentityMaterializations: 0,
+        hybridScopeReused: true,
+        concurrentScopeIsolation: true,
+        releasedAfterRequest: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20679,6 +20693,72 @@ export class PersonalMemoryStore {
       .map(row => row.id))
   }
 
+  createSearchDocumentScope(options: MemorySearchOptions = {}): SearchDocumentScopeHandle | null {
+    if (!this.db) throw new Error('个人记忆数据库尚未初始化')
+    const scope = this.buildScopedSearchDocumentQuery(options)
+    if (!scope) return null
+    this.searchScopeSequence += 1
+    const id = this.searchScopeSequence
+    const table = `active_memory_search_scope_${id}`
+    this.db.exec(`CREATE TEMP TABLE ${table}(id TEXT PRIMARY KEY) WITHOUT ROWID`)
+    try {
+      const result = this.db.prepare(`INSERT INTO ${table}(id) ${scope.sql}`)
+        .run(...scope.parameters)
+      this.activeSearchScopes.set(id, table)
+      return Object.freeze({
+        kind: 'sqlcipher_search_scope' as const,
+        id,
+        size: Number(result.changes || 0)
+      })
+    } catch (error) {
+      this.db.exec(`DROP TABLE IF EXISTS ${table}`)
+      throw error
+    }
+  }
+
+  releaseSearchDocumentScope(scope: SearchDocumentScopeHandle | null): void {
+    if (!scope) return
+    const table = this.activeSearchScopes.get(scope.id)
+    if (!table) return
+    this.activeSearchScopes.delete(scope.id)
+    this.db?.exec(`DROP TABLE IF EXISTS ${table}`)
+  }
+
+  isSearchDocumentInScope(scope: SearchDocumentScopeHandle | null, documentId: string): boolean {
+    if (!scope) return true
+    if (!this.db || !documentId) return false
+    const table = this.activeSearchScopes.get(scope.id)
+    if (!table) throw new Error('检索范围已经释放或不属于当前数据库')
+    return Boolean(this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(documentId))
+  }
+
+  listSearchDocumentSourceIdsInScope(
+    scope: SearchDocumentScopeHandle | null,
+    documentType: SearchDocumentType
+  ): string[] | null {
+    if (!scope) return null
+    if (!this.db) return []
+    const table = this.activeSearchScopes.get(scope.id)
+    if (!table) throw new Error('检索范围已经释放或不属于当前数据库')
+    return (this.db.prepare(`
+      SELECT d.source_id FROM search_documents d
+      JOIN ${table} scope ON scope.id=d.id
+      WHERE d.document_type=?
+      ORDER BY d.source_id ASC
+    `).all(documentType) as Array<{ source_id: string }>).map(row => row.source_id)
+  }
+
+  private searchDocumentScopeJoin(scope: SearchDocumentScope | null, expression: string): string {
+    if (!scope) return ''
+    if (scope instanceof Set) {
+      this.replaceActiveSearchScope(scope)
+      return `JOIN active_memory_search_scope scope ON scope.id=${expression}`
+    }
+    const table = this.activeSearchScopes.get(scope.id)
+    if (!table) throw new Error('检索范围已经释放或不属于当前数据库')
+    return `JOIN ${table} scope ON scope.id=${expression}`
+  }
+
   countSearchDocumentsInScope(
     options: MemorySearchOptions = {},
     query = ''
@@ -20828,7 +20908,7 @@ export class PersonalMemoryStore {
   }
 
   listSearchDocumentsInScopePage(
-    allowedIds: Set<string>,
+    allowedIds: SearchDocumentScope,
     options: {
       offset?: number
       limit?: number
@@ -20840,7 +20920,7 @@ export class PersonalMemoryStore {
     const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0
     const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
     if (!this.db || !allowedIds.size) return { items: [], total: 0, offset, limit, hasMore: false }
-    this.replaceActiveSearchScope(allowedIds)
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const queryFingerprint = String(options.queryFingerprint || '').trim().toLowerCase()
     const scopeFingerprint = String(options.scopeFingerprint || '').trim().toLowerCase()
     const feedbackEnabled = /^[a-f0-9]{64}$/.test(queryFingerprint) &&
@@ -20850,7 +20930,7 @@ export class PersonalMemoryStore {
       : ['-', '-']
     const total = Number((this.db.prepare(`
       SELECT COUNT(*) AS count FROM search_documents d
-      JOIN active_memory_search_scope scope ON scope.id=d.id
+      ${scopeJoin}
       WHERE NOT (
         d.document_type IN ('claim','relation','event')
         AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -20861,7 +20941,7 @@ export class PersonalMemoryStore {
         SELECT d.*,
           ROW_NUMBER() OVER (ORDER BY d.updated_at DESC,d.id)-1 AS browse_index
         FROM search_documents d
-        JOIN active_memory_search_scope scope ON scope.id=d.id
+        ${scopeJoin}
         WHERE NOT (
           d.document_type IN ('claim','relation','event')
           AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -20905,7 +20985,7 @@ export class PersonalMemoryStore {
 
   listSearchDocumentsByKeywordPage(
     query: string,
-    allowedIds: Set<string> | null,
+    allowedIds: SearchDocumentScope | null,
     options: { offset?: number; limit?: number } = {}
   ): {
     items: any[]
@@ -20922,10 +21002,7 @@ export class PersonalMemoryStore {
     if (!this.db || !normalized || (allowedIds && !allowedIds.size)) {
       return { items: [], total: 0, offset, limit, hasMore: false, searchMode: 'fts' }
     }
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds
-      ? 'JOIN active_memory_search_scope scope ON scope.id=d.id'
-      : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const trustedCondition = `NOT (
       d.document_type IN ('claim','relation','event')
       AND COALESCE(json_extract(d.metadata_json,'$.status'),'')='rejected'
@@ -21456,15 +21533,14 @@ export class PersonalMemoryStore {
   searchText(
     query: string,
     limit = 20,
-    allowedIds: Set<string> | null = null,
+    allowedIds: SearchDocumentScope | null = null,
     evidenceScope: Pick<MemorySearchOptions, 'sourceIds' | 'sessionId' | 'sessionName' | 'from' | 'to'> = {}
   ): any[] {
     if (!this.db || !query.trim()) return []
     if (allowedIds && !allowedIds.size) return []
     const safeLimit = Math.max(1, Math.min(500, limit))
     const normalized = query.trim().replace(/["']/g, ' ')
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     let exactMatches: any[] = []
     try {
       const matches = this.db.prepare(`
@@ -22342,12 +22418,11 @@ export class PersonalMemoryStore {
     vector: number[],
     model: string,
     limit: number,
-    allowedIds: Set<string> | null = null
+    allowedIds: SearchDocumentScope | null = null
   ): any[] {
     if (!this.db) return []
     if (allowedIds && !allowedIds.size) return []
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
-    const scopeJoin = allowedIds ? 'JOIN active_memory_search_scope scope ON scope.id=d.id' : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const rows = this.db.prepare(`
       SELECT d.*,chunk.vector_json AS embedding_json,chunk.chunk_index,
         chunk.start_offset,chunk.end_offset
@@ -22418,13 +22493,13 @@ export class PersonalMemoryStore {
       minimumDocuments?: number
       minimumCandidates?: number
       maximumCandidates?: number
-      allowedIds?: Set<string> | null
+      allowedIds?: SearchDocumentScope | null
     } = {}
   ): any[] {
     if (!this.db || !validateEmbeddingBatch([vector], 1).valid) return []
     const allowedIds = options.allowedIds ?? null
     if (allowedIds && !allowedIds.size) return []
-    if (allowedIds) this.replaceActiveSearchScope(allowedIds)
+    const documentScopeJoin = this.searchDocumentScopeJoin(allowedIds, 'd.id')
     const minimumDocuments = Math.max(1, Number(options.minimumDocuments || LOCAL_ANN_DEFAULT_MINIMUM_DOCUMENTS))
     const stats = this.getApproximateVectorIndexStats(model, vector.length)
     const canUseAnn = stats.status === 'ready' &&
@@ -22445,9 +22520,7 @@ export class PersonalMemoryStore {
     const probeRows = signatures.flatMap((signature, table) =>
       listMultiProbeSignatures(signature, stats.bits).map(probe => [table, probe] as const))
     const probeValuesSql = probeRows.map(() => '(?,?)').join(',')
-    const scopeJoin = allowedIds
-      ? 'JOIN active_memory_search_scope scope ON scope.id=matches.document_id'
-      : ''
+    const scopeJoin = this.searchDocumentScopeJoin(allowedIds, 'matches.document_id')
     const candidateRows = this.db.prepare(`
       WITH probes(table_id,signature) AS (VALUES ${probeValuesSql}),
       matches AS (
@@ -22476,7 +22549,7 @@ export class PersonalMemoryStore {
     const scopedEligible = allowedIds
       ? Number((this.db.prepare(`
           SELECT COUNT(*) AS count FROM search_documents d
-          JOIN active_memory_search_scope scope ON scope.id=d.id
+          ${documentScopeJoin}
           WHERE d.embedding_model=? AND d.embedding_dimensions=? AND d.embedding_json IS NOT NULL
         `).get(model, vector.length) as any)?.count || 0)
       : stats.eligible

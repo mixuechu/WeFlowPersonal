@@ -15,7 +15,11 @@ import { httpService } from './httpService'
 import { wcdbService } from './wcdbService'
 import { collectRuntimeMemoryDiagnostics } from './runtimeMemoryDiagnostics'
 import { showSystemNotification } from './systemNotificationService'
-import { personalMemoryStore, RESOURCE_CONTENT_CHAR_LIMIT } from './personalMemoryStore'
+import {
+  personalMemoryStore,
+  RESOURCE_CONTENT_CHAR_LIMIT,
+  type SearchDocumentScopeHandle
+} from './personalMemoryStore'
 import { localEmbeddingService } from './localEmbeddingService'
 import { presentMemorySearchResults } from './memorySearchResultPolicy'
 import {
@@ -11036,7 +11040,7 @@ export class AiAssistantService {
   searchMemory(
     query: string,
     limit = 200,
-    allowedIds: Set<string> | null = null,
+    allowedIds: Set<string> | SearchDocumentScopeHandle | null = null,
     evidenceScope: MemorySearchOptions = {}
   ): any[] {
     return personalMemoryStore.searchText(
@@ -11086,7 +11090,7 @@ export class AiAssistantService {
     options: MemorySearchOptions = {},
     maxResults = 40,
     execution?: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' },
-    preparedScope?: { allowedIds: Set<string> | null }
+    preparedScope?: { allowedIds: SearchDocumentScopeHandle | null }
   ): Promise<any[]> {
     const selectedEntity = options.entityId ? this.state.graph.entities.find(entity => entity.id === options.entityId && isTrustedEntity(entity)) : null
     const scopedOptions = selectedEntity
@@ -11102,10 +11106,12 @@ export class AiAssistantService {
       : options
     const allowedIds = preparedScope
       ? preparedScope.allowedIds
-      : personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
-    const scopeCandidateCount = allowedIds?.size ?? null
-    const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
-    const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
+      : personalMemoryStore.createSearchDocumentScope(scopedOptions)
+    const ownsScope = !preparedScope
+    try {
+      const scopeCandidateCount = allowedIds?.size ?? null
+      const candidateLimit = Math.max(300, Math.min(500, Number(maxResults) || 40))
+      const lexical = this.searchMemory(query, candidateLimit, allowedIds, scopedOptions)
     if (!this.config.get('aiAssistantEnabled')) {
       if (execution) execution.mode = 'lexical_ai_disabled'
       const filtered = filterMemorySearchResults(lexical, scopedOptions, allowedIds !== null)
@@ -11198,6 +11204,9 @@ export class AiAssistantService {
         retrieval_scope_applied: allowedIds !== null,
         retrieval_scope_candidates: scopeCandidateCount
       }))
+      }
+    } finally {
+      if (ownsScope) personalMemoryStore.releaseSearchDocumentScope(allowedIds)
     }
   }
 
@@ -11299,40 +11308,44 @@ export class AiAssistantService {
         ])
       ]
     } : options
-    const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
-    const document = personalMemoryStore.getSearchDocumentById(documentId, scopedOptions)
-    if (!document || (allowedIds !== null && !allowedIds.has(documentId))) {
-      throw new Error('这条记忆已经删除或不再属于当前检索范围，请刷新后重试')
-    }
-    if (!mutationToken || mutationToken !== this.memorySearchFeedbackMutationToken(
-      query,
-      scopedOptions,
-      document
-    )) {
-      throw new Error('这条检索结果或当前反馈状态已经变化，请刷新后重新提交')
-    }
-    const context = buildMemorySearchFeedbackContext(query, options)
-    const result = personalMemoryStore.recordMemorySearchFeedback({
-      queryFingerprint: context.queryFingerprint,
-      scopeFingerprint: context.scopeFingerprint,
-      queryText: context.query,
-      scopeJson: context.scopeJson,
-      documentId,
-      action: input?.action as MemorySearchFeedbackAction
-    })
-    return {
-      ...result,
-      version: MEMORY_SEARCH_FEEDBACK_VERSION,
-      feedback: personalMemoryStore.listMemorySearchFeedback(
-        context.queryFingerprint,
-        context.scopeFingerprint,
-        500
-      ),
-      mutationToken: this.memorySearchFeedbackMutationToken(
+    const allowedIds = personalMemoryStore.createSearchDocumentScope(scopedOptions)
+    try {
+      const document = personalMemoryStore.getSearchDocumentById(documentId, scopedOptions)
+      if (!document || !personalMemoryStore.isSearchDocumentInScope(allowedIds, documentId)) {
+        throw new Error('这条记忆已经删除或不再属于当前检索范围，请刷新后重试')
+      }
+      if (!mutationToken || mutationToken !== this.memorySearchFeedbackMutationToken(
         query,
         scopedOptions,
         document
-      )
+      )) {
+        throw new Error('这条检索结果或当前反馈状态已经变化，请刷新后重新提交')
+      }
+      const context = buildMemorySearchFeedbackContext(query, options)
+      const result = personalMemoryStore.recordMemorySearchFeedback({
+        queryFingerprint: context.queryFingerprint,
+        scopeFingerprint: context.scopeFingerprint,
+        queryText: context.query,
+        scopeJson: context.scopeJson,
+        documentId,
+        action: input?.action as MemorySearchFeedbackAction
+      })
+      return {
+        ...result,
+        version: MEMORY_SEARCH_FEEDBACK_VERSION,
+        feedback: personalMemoryStore.listMemorySearchFeedback(
+          context.queryFingerprint,
+          context.scopeFingerprint,
+          500
+        ),
+        mutationToken: this.memorySearchFeedbackMutationToken(
+          query,
+          scopedOptions,
+          document
+        )
+      }
+    } finally {
+      personalMemoryStore.releaseSearchDocumentScope(allowedIds)
     }
   }
 
@@ -11429,7 +11442,8 @@ export class AiAssistantService {
         ...(selectedEntity.externalIdentities || []).flatMap(identity => [identity.accountId, identity.displayName])
       ]
     } : options
-    const allowedIds = personalMemoryStore.listScopedSearchDocumentIds(scopedOptions)
+    const allowedIds = personalMemoryStore.createSearchDocumentScope(scopedOptions)
+    try {
     const sourceFacetOptions = {
       ...scopedOptions,
       sourceIds: undefined
@@ -11709,6 +11723,9 @@ export class AiAssistantService {
       entityScopeStale: false,
       sessionScopeStale: false,
       entityDirectoryRevision: entitySelection?.revision
+    }
+    } finally {
+      personalMemoryStore.releaseSearchDocumentScope(allowedIds)
     }
   }
 
@@ -12142,18 +12159,27 @@ export class AiAssistantService {
         ...(plannedEntity.externalIdentities || []).flatMap(identity => [identity.accountId, identity.displayName])
       ]
     } : plannedOptions
-    const plannedScopeIds = personalMemoryStore.listScopedSearchDocumentIds(scopeAuditOptions)
-    if (plannedScopeIds) plan.explanation.push(`召回前范围约束：${plannedScopeIds.size} 个候选文档`)
+    const plannedScope = personalMemoryStore.createSearchDocumentScope(scopeAuditOptions)
+    if (plannedScope) plan.explanation.push(`召回前范围约束：${plannedScope.size} 个候选文档`)
     const mergedResults = new Map<string, any>()
     const retrievalModes = new Set<string>()
     let plannedGraphPath: any = null
+    let results: any[] = []
+    let context: ReturnType<typeof buildModelMemoryContext> = []
+    let mailSource: any = null
+    let modelSourcePolicies: any = null
+    let eligibleResults: any[] = []
+    let sentResults: any[] = []
+    try {
     if (plan.matchedEntities.length >= 2) {
-      if (plannedScopeIds !== null) plan.explanation.push('图路径同样受当前检索范围约束')
-      const allowedRelationIds = plannedScopeIds === null
+      if (plannedScope !== null) plan.explanation.push('图路径同样受当前检索范围约束')
+      const scopedRelationIds = personalMemoryStore.listSearchDocumentSourceIdsInScope(
+        plannedScope,
+        'relation'
+      )
+      const allowedRelationIds = scopedRelationIds === null
         ? null
-        : new Set([...plannedScopeIds]
-          .filter(documentId => documentId.startsWith('relation:'))
-          .map(documentId => documentId.slice('relation:'.length)))
+        : new Set(scopedRelationIds)
       plannedGraphPath = this.findGraphPath(
         plan.matchedEntities[0].id,
         plan.matchedEntities[1].id,
@@ -12176,24 +12202,30 @@ export class AiAssistantService {
         for (const result of filterMemorySearchResults(
           pathResults,
           plannedOptions,
-          plannedScopeIds !== null
+          plannedScope !== null
         )) mergedResults.set(result.id, result)
         plan.explanation.push(`图路径：${plannedGraphPath.steps.length} 跳`)
       } else {
-        plan.explanation.push(plannedScopeIds === null
+        plan.explanation.push(plannedScope === null
           ? '图路径：未找到已知连接'
           : '图路径：当前检索范围内未找到已知连接')
       }
     }
     for (const plannedQuery of plan.queries.slice(0, 6)) {
       const execution: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' } = {}
-      for (const result of await this.searchMemoryHybrid(plannedQuery, plannedOptions, 40, execution)) {
+      for (const result of await this.searchMemoryHybrid(
+        plannedQuery,
+        plannedOptions,
+        40,
+        execution,
+        { allowedIds: plannedScope }
+      )) {
         const existing = mergedResults.get(result.id)
         if (!existing || Number(result.hybrid_score || 0) > Number(existing.hybrid_score || 0)) mergedResults.set(result.id, result)
       }
       if (execution.mode) retrievalModes.add(execution.mode)
     }
-    let results = [...mergedResults.values()]
+    results = [...mergedResults.values()]
       .sort((left, right) => Number(right.hybrid_score || 0) - Number(left.hybrid_score || 0))
     let usedFallbackTerms = false
     if (!results.length) {
@@ -12202,7 +12234,13 @@ export class AiAssistantService {
       const merged = new Map<string, any>()
       for (const term of terms.slice(0, 6)) {
         const execution: { mode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' } = {}
-        for (const result of await this.searchMemoryHybrid(term, plannedOptions, 40, execution)) {
+        for (const result of await this.searchMemoryHybrid(
+          term,
+          plannedOptions,
+          40,
+          execution,
+          { allowedIds: plannedScope }
+        )) {
           merged.set(result.id, result)
         }
         if (execution.mode) retrievalModes.add(execution.mode)
@@ -12216,24 +12254,27 @@ export class AiAssistantService {
     // adjustment before applying the final context decision.
     results = this.applyStoredMemorySearchFeedback(contextualQuestion.query, plannedOptions, results)
       .slice(0, usedFallbackTerms ? 30 : 40)
-    const mailSource = personalMemoryStore.listDataSources().find(source => source.id === 'mail')
-    const modelSourcePolicies = {
+    mailSource = personalMemoryStore.listDataSources().find(source => source.id === 'mail')
+    modelSourcePolicies = {
       mail: { allowModelAnalysis: Boolean(mailSource?.config?.allowModelAnalysis) }
     }
-    const eligibleResults = filterModelEligibleMemoryResults(results, modelSourcePolicies)
+    eligibleResults = filterModelEligibleMemoryResults(results, modelSourcePolicies)
     const privacyExcludedResults = Math.max(0, results.length - eligibleResults.length)
     if (privacyExcludedResults) {
       plan.explanation.push(
         `来源隐私门禁：${privacyExcludedResults} 份未授权、未知来源或已拒绝资料仅留在本机，未进入 DeepSeek 上下文`
       )
     }
-    const sentResults = eligibleResults.slice(0, 20)
-    const context = buildModelMemoryContext(sentResults, modelSourcePolicies, 20)
+    sentResults = eligibleResults.slice(0, 20)
+    context = buildModelMemoryContext(sentResults, modelSourcePolicies, 20)
     const semanticChunkHits = context.filter(item => item.semanticMatchExcerpt).length
     if (semanticChunkHits) {
       plan.explanation.push(
         `长文语义命中：${semanticChunkHits} 份资料优先发送实际命中片段，完整正文继续留在本机`
       )
+    }
+    } finally {
+      personalMemoryStore.releaseSearchDocumentScope(plannedScope)
     }
     await this.assertMemoryScopeSelectionsCurrent(options, 'after_retrieval')
     const apiKey = String(this.config.get('aiAssistantApiKey') || '').trim()

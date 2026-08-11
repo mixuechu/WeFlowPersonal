@@ -9,10 +9,15 @@ const pageSource = readFileSync(join(process.cwd(), 'src/pages/AiAssistantPage.t
 const pageStart = service.indexOf('  async searchMemoryPage(')
 const pageEnd = service.indexOf('\n  getMemoryEvidencePage(', pageStart)
 const page = service.slice(pageStart, pageEnd)
+const questionStart = service.indexOf('  private async runMemoryQuestion(')
+const questionEnd = service.indexOf('\n  private ', questionStart + 10)
+const question = service.slice(questionStart, questionEnd)
 
 test('memory search facets stay in SQLCipher instead of materializing one id set per facet', () => {
   assert.ok(pageStart > 0 && pageEnd > pageStart)
-  assert.equal((page.match(/listScopedSearchDocumentIds\(/g) || []).length, 1)
+  assert.equal((page.match(/listScopedSearchDocumentIds\(/g) || []).length, 0)
+  assert.equal((page.match(/createSearchDocumentScope\(/g) || []).length, 1)
+  assert.equal((page.match(/releaseSearchDocumentScope\(/g) || []).length, 1)
   assert.ok((page.match(/countSearchDocumentsInScope\(/g) || []).length >= 4)
   assert.doesNotMatch(page, /facetAllowedIds|trustFacetAllowedIds|supportFacetAllowedIds|conflictFacetAllowedIds/)
 })
@@ -21,7 +26,20 @@ test('hybrid paging reuses the already authorized primary scope', () => {
   assert.match(page, /searchMemoryHybrid\([\s\S]*?\{ allowedIds \}\s*\)/)
 })
 
+test('evidence Q&A reuses one SQLCipher scope across planning branches and releases it before model I/O', () => {
+  assert.ok(questionStart > 0 && questionEnd > questionStart)
+  assert.equal((question.match(/listScopedSearchDocumentIds\(/g) || []).length, 0)
+  assert.equal((question.match(/createSearchDocumentScope\(/g) || []).length, 1)
+  assert.equal((question.match(/releaseSearchDocumentScope\(/g) || []).length, 1)
+  assert.ok((question.match(/\{ allowedIds: plannedScope \}/g) || []).length >= 2)
+  assert.match(question, /listSearchDocumentSourceIdsInScope\([\s\S]*?'relation'/)
+  assert.ok(
+    question.indexOf('releaseSearchDocumentScope(plannedScope)')
+      < question.indexOf('runWithMemoryScopeRevalidation(')
+  )
+})
+
 test('scope planning is honest and visible in complete diagnostics', () => {
-  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'single_shared_identity_set'[\s\S]*?hybridScopeReused: true/)
-  assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>单份复用/)
+  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true/)
+  assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围/)
 })

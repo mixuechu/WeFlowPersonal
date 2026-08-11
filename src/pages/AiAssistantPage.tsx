@@ -18150,13 +18150,16 @@ function AiAssistantPage() {
             </div>}
             {memoryDiagnostics.memorySearchScopePlanning?.version && <div className="assistant-recovery-audit healthy">
               <header><Search size={15} /><span><b>检索范围执行策略</b>
-                <small>来源、类型、可信度、证据强度、冲突和审阅预设的分面计数直接在 SQLCipher 内完成，不再把每个分面的全部文档 ID 复制进主进程；全文与向量召回复用同一份已鉴权主范围。</small>
+                <small>来源、类型、可信度、证据强度、冲突和审阅预设的分面计数直接在 SQLCipher 内完成；每次检索的主范围也保留在独立临时表中，全文、范围浏览、ANN 与精确向量共同使用并在请求结束后释放，不把多年文档 ID 复制进主进程。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>分面范围 <b>SQLCipher 直接计数</b></span>
                 <span>分面 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.facetIdentityMaterializations || 0)}</b> 份</span>
-                <span>主检索范围 <b>单份复用</b></span>
+                <span>主检索范围 <b>SQLCipher 临时范围</b></span>
+                <span>主范围 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.primaryIdentityMaterializations || 0)}</b> 份</span>
                 <span>全文 / 向量 <b>{memoryDiagnostics.memorySearchScopePlanning.hybridScopeReused ? '范围一致' : '需要检查'}</b></span>
+                <span>并发查询 <b>{memoryDiagnostics.memorySearchScopePlanning.concurrentScopeIsolation ? '独立隔离' : '需要检查'}</b></span>
+                <span>请求结束 <b>{memoryDiagnostics.memorySearchScopePlanning.releasedAfterRequest ? '自动释放' : '需要检查'}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>

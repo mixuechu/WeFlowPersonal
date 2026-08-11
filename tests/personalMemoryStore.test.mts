@@ -13468,6 +13468,59 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
   const scopedVector = store.searchVector([1, 0], model, 40, { allowedIds: scope })
   assert.deepEqual(scopedVector.map(item => item.id), ['task:scoped-target'])
   assert.equal(scopedVector[0].semantic_search_mode, 'exact')
+
+  const targetHandle = store.createSearchDocumentScope({
+    sessionId: 'session-target',
+    sourceIds: ['documents'],
+    documentTypes: ['task']
+  })!
+  const wechatHandle = store.createSearchDocumentScope({
+    sourceIds: ['wechat'],
+    documentTypes: ['task']
+  })!
+  const database = (store as any).db
+  assert.equal(targetHandle.size, 1)
+  assert.equal(wechatHandle.size, 350)
+  assert.deepEqual(store.listSearchDocumentSourceIdsInScope(targetHandle, 'relation'), [])
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM sqlite_temp_master
+    WHERE type='table' AND name LIKE 'active_memory_search_scope_%'
+      AND name!='active_memory_search_scope'
+  `).get().count), 2)
+  assert.deepEqual(
+    store.searchText('共同关键词', 40, targetHandle).map(item => item.id),
+    ['task:scoped-target']
+  )
+  assert.equal(
+    store.searchText('共同关键词', 500, wechatHandle)
+      .some(item => item.id === 'task:scoped-target'),
+    false
+  )
+  assert.deepEqual(
+    store.listSearchDocumentsByKeywordPage('共同关键词', targetHandle, { limit: 40 })
+      .items.map(item => item.id),
+    ['task:scoped-target']
+  )
+  assert.deepEqual(
+    store.searchVector([1, 0], model, 40, { allowedIds: targetHandle }).map(item => item.id),
+    ['task:scoped-target']
+  )
+  store.releaseSearchDocumentScope(targetHandle)
+  assert.throws(
+    () => store.searchText('共同关键词', 40, targetHandle),
+    /检索范围已经释放/
+  )
+  assert.throws(
+    () => store.listSearchDocumentSourceIdsInScope(targetHandle, 'relation'),
+    /检索范围已经释放/
+  )
+  assert.equal(store.searchText('共同关键词', 500, wechatHandle).length, 350)
+  store.releaseSearchDocumentScope(wechatHandle)
+  assert.equal(Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM sqlite_temp_master
+    WHERE type='table' AND name LIKE 'active_memory_search_scope_%'
+      AND name!='active_memory_search_scope'
+  `).get().count), 0)
 }))
 
 test('memory result pages are stable, bounded and report remaining ranked candidates', () => {
