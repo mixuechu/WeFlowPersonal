@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import { buildTaskDependencyCandidates } from '../shared/taskDependencyCandidates.ts'
+
+const serviceSource = readFileSync(new URL('../electron/services/aiAssistantService.ts', import.meta.url), 'utf8')
+const storeSource = readFileSync(new URL('../electron/services/personalMemoryStore.ts', import.meta.url), 'utf8')
+
+test('production dependency search delegates to SQLCipher without scanning runtime tasks', () => {
+  const serviceMethod = serviceSource.slice(
+    serviceSource.indexOf('  getTaskDependencyCandidates('),
+    serviceSource.indexOf('\n  getTaskArchive(', serviceSource.indexOf('  getTaskDependencyCandidates('))
+  )
+  assert.match(serviceMethod, /personalMemoryStore\.listTaskDependencyCandidates\(/)
+  assert.doesNotMatch(serviceMethod, /this\.state\.tasks|buildTaskDependencyCandidates/)
+  const storeMethod = storeSource.slice(
+    storeSource.indexOf('  listTaskDependencyCandidates('),
+    storeSource.indexOf('\n  listTaskArchive(', storeSource.indexOf('  listTaskDependencyCandidates('))
+  )
+  assert.match(storeMethod, /FROM task_directory task/)
+  assert.match(storeMethod, /ROW_NUMBER\(\) OVER\(PARTITION BY is_selected/)
+  assert.match(storeMethod, /is_selected=1 OR item_rank<=\?/)
+})
 
 test('task dependency search covers the authoritative collection and preserves selected tasks', () => {
   const tasks = Array.from({ length: 2_000 }, (_, index) => ({

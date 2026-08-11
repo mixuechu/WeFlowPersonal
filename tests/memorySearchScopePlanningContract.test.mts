@@ -65,6 +65,8 @@ test('scope planning is honest and visible in complete diagnostics', () => {
   assert.match(pageSource, /事实 \/ 事件身份可信度[\s\S]*?SQLCipher 当前页联查[\s\S]*?记忆可信判定全图副本[\s\S]*?structuredMemoryTrustFullGraphMaterializations[\s\S]*?缺失事件参与者[\s\S]*?保留并进入审阅/)
   assert.match(store, /graphReviewHydration: 'sqlcipher_current_page_batch'[\s\S]*?graphReviewFullGraphMaterializations: 0[\s\S]*?graphReviewSameNamePreviewLimit: 20[\s\S]*?graphReviewRelationCorrectionsBatched: true/)
   assert.match(pageSource, /图谱候选水合[\s\S]*?SQLCipher 当前页批量[\s\S]*?候选审阅全图副本[\s\S]*?graphReviewFullGraphMaterializations[\s\S]*?同名实体预览[\s\S]*?graphReviewSameNamePreviewLimit/)
+  assert.match(store, /taskDependencyCandidateStrategy: 'sqlcipher_ranked_selected_plus_matches'[\s\S]*?taskDependencyCandidateFullTaskMaterializations: 0[\s\S]*?taskDependencyCandidateOrdinaryLimit: 50[\s\S]*?taskDependencySelectedPreserved: true/)
+  assert.match(pageSource, /任务依赖搜索[\s\S]*?SQLCipher 全目录排序[\s\S]*?依赖搜索全任务副本[\s\S]*?taskDependencyCandidateFullTaskMaterializations[\s\S]*?已选依赖[\s\S]*?始终保留/)
   assert.match(pageSource, /问答实体识别[\s\S]*?SQLCipher 反向词匹配[\s\S]*?单轮规划预算[\s\S]*?questionEntityPlanningLimit[\s\S]*?超预算语义[\s\S]*?显示总数且禁止单人自动绑定/)
   assert.match(pageSource, /稠密关系已按 SQLCipher 安全预算隐藏/)
 })

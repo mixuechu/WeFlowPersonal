@@ -18338,6 +18338,9 @@ function AiAssistantPage() {
                 <span>图谱候选水合 <b>{memoryDiagnostics.memorySearchScopePlanning.graphReviewHydration === 'sqlcipher_current_page_batch' ? 'SQLCipher 当前页批量' : '需要检查'}</b></span>
                 <span>候选审阅全图副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.graphReviewFullGraphMaterializations || 0)} 份</b></span>
                 <span>同名实体预览 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.graphReviewSameNamePreviewLimit || 0)} 个 / 候选</b></span>
+                <span>任务依赖搜索 <b>{memoryDiagnostics.memorySearchScopePlanning.taskDependencyCandidateStrategy === 'sqlcipher_ranked_selected_plus_matches' ? 'SQLCipher 全目录排序' : '需要检查'}</b></span>
+                <span>依赖搜索全任务副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.taskDependencyCandidateFullTaskMaterializations || 0)} 份</b></span>
+                <span>已选依赖 <b>{memoryDiagnostics.memorySearchScopePlanning.taskDependencySelectedPreserved ? '始终保留' : '需要检查'}</b></span>
                 <span>问答实体识别 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningStrategy === 'sqlcipher_reverse_term_match' ? 'SQLCipher 反向词匹配' : '需要检查'}</b></span>
                 <span>单轮规划预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningLimit || 0)} 个实体</b></span>
                 <span>超预算语义 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningTruncationSafe ? '显示总数且禁止单人自动绑定' : '需要检查'}</b></span>

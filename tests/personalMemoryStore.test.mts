@@ -6363,6 +6363,50 @@ test('task search keeps original message evidence', () => withStore(store => {
   }])
 }))
 
+test('task dependency candidates search the SQLCipher authority and preserve selected exceptions', () => withStore(store => {
+  const tasks = Array.from({ length: 1_205 }, (_, index) => ({
+    id: `dependency-task-${String(index).padStart(4, '0')}`,
+    title: index === 1_100 ? '深页火星依赖' : `普通依赖 ${index}`,
+    detail: index === 1_101 ? '详情火星关键词' : '',
+    owner: index === 1_102 ? '火星负责人' : '',
+    project: index === 1_103 ? '火星项目' : '',
+    priority: index % 3 === 0 ? 'high' : index % 3 === 1 ? 'medium' : 'low',
+    status: 'todo', classification: 'mine',
+    createdAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+    updatedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+    evidence: []
+  }))
+  tasks[1_203] = { ...tasks[1_203], status: 'cancelled', classification: 'others' }
+  tasks[1_204] = { ...tasks[1_204], status: 'done', classification: 'uncertain' }
+  store.syncTasks(tasks)
+
+  const selectedIds = ['dependency-task-1203', 'dependency-task-1204', 'missing-selected']
+  const first = store.listTaskDependencyCandidates({
+    selectedIds, excludeId: 'dependency-task-0000', limit: 20
+  })
+  assert.equal(first.total, 1_204)
+  assert.equal(first.items.length, 22)
+  assert.deepEqual(new Set(first.items.slice(0, 2).map(item => item.id)),
+    new Set(['dependency-task-1203', 'dependency-task-1204']))
+  assert.equal(first.items.some(item => item.id === 'missing-selected'), false)
+
+  const searched = store.listTaskDependencyCandidates({
+    query: '火星', selectedIds, limit: 20, revision: first.revision
+  })
+  assert.equal(searched.total, 6)
+  assert.equal(searched.items.length, 6)
+  assert.deepEqual(new Set(searched.items.slice(0, 2).map(item => item.id)),
+    new Set(['dependency-task-1203', 'dependency-task-1204']))
+  assert.deepEqual(new Set(searched.items.slice(2).map(item => item.id)), new Set([
+    'dependency-task-1100', 'dependency-task-1101',
+    'dependency-task-1102', 'dependency-task-1103'
+  ]))
+
+  store.syncTasks(tasks.map(task => task.id === 'dependency-task-1100'
+    ? { ...task, title: '已经变化' } : task))
+  assert.equal(store.listTaskDependencyCandidates({ revision: first.revision }).stale, true)
+}))
+
 test('task ownership fingerprint keeps cross-source carrier collisions after SQL normalization', () => withStore(store => {
   const task = {
     id: 'task-cross-source-ownership',

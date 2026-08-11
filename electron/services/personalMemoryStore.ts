@@ -8602,6 +8602,10 @@ export class PersonalMemoryStore {
         graphReviewFullGraphMaterializations: 0,
         graphReviewSameNamePreviewLimit: 20,
         graphReviewRelationCorrectionsBatched: true,
+        taskDependencyCandidateStrategy: 'sqlcipher_ranked_selected_plus_matches',
+        taskDependencyCandidateFullTaskMaterializations: 0,
+        taskDependencyCandidateOrdinaryLimit: 50,
+        taskDependencySelectedPreserved: true,
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,
@@ -15537,6 +15541,71 @@ export class PersonalMemoryStore {
       revision,
       stale: false
     }
+  }
+
+  listTaskDependencyCandidates(options: {
+    query?: string
+    selectedIds?: string[]
+    excludeId?: string
+    limit?: number
+    revision?: string
+  } = {}): { items: any[]; total: number; revision: string; stale: boolean } {
+    const revision = this.getTaskArchiveRevision()
+    if (!this.db) return { items: [], total: 0, revision, stale: false }
+    const expectedRevision = String(options.revision || '').trim()
+    if (expectedRevision && expectedRevision !== revision) {
+      return { items: [], total: 0, revision, stale: true }
+    }
+    const selectedIds = [...new Set((options.selectedIds || [])
+      .map(value => String(value || '').trim()).filter(Boolean))].slice(0, 100)
+    const selectedJson = JSON.stringify(selectedIds)
+    const excludeId = String(options.excludeId || '').trim()
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN')
+    const selectedSql = `EXISTS(SELECT 1 FROM json_each(?) selected
+      WHERE CAST(selected.value AS TEXT)=task.id)`
+    const where = `task.id<>? AND
+      (task.classification='mine' OR ${selectedSql}) AND
+      (task.status<>'cancelled' OR ${selectedSql}) AND
+      (${selectedSql} OR ?='' OR instr(lower(
+        task.title || char(0) ||
+        COALESCE(json_extract(task.payload_json,'$.detail'),'') || char(0) ||
+        task.project || char(0) ||
+        COALESCE(json_extract(task.payload_json,'$.owner'),'')
+      ),?)>0)`
+    const parameters = [excludeId, selectedJson, selectedJson, selectedJson, query, query]
+    const total = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM task_directory task WHERE ${where}
+    `).get(...parameters) as any)?.count || 0)
+    const limit = Math.max(1, Math.min(50, Math.floor(Number(options.limit) || 20)))
+    const rows = this.db.prepare(`
+      WITH scoped AS (
+        SELECT task.id,task.title,task.status,task.priority,task.project,task.due,task.updated_at,
+          CASE WHEN ${selectedSql} THEN 1 ELSE 0 END AS is_selected
+        FROM task_directory task WHERE ${where}
+      ), ranked AS (
+        SELECT scoped.*,ROW_NUMBER() OVER(PARTITION BY is_selected ORDER BY
+          CASE WHEN status IN ('done','cancelled') THEN 1 ELSE 0 END,
+          CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+          updated_at DESC,id ASC) AS item_rank
+        FROM scoped
+      )
+      SELECT id,title,status,priority,project,due,is_selected FROM ranked
+      WHERE is_selected=1 OR item_rank<=?
+      ORDER BY is_selected DESC,item_rank
+    `).all(
+      selectedJson,
+      ...parameters,
+      limit
+    ) as any[]
+    const items = rows.map(row => ({
+      id: String(row.id), title: String(row.title || ''), status: String(row.status || ''),
+      priority: String(row.priority || ''), project: String(row.project || ''),
+      due: String(row.due || '')
+    }))
+    const completedRevision = this.getTaskArchiveRevision()
+    return completedRevision === revision
+      ? { items, total, revision, stale: false }
+      : { items: [], total: 0, revision: completedRevision, stale: true }
   }
 
   listTaskArchive(options: {
