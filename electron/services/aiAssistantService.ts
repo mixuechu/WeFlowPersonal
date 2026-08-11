@@ -13142,8 +13142,7 @@ export class AiAssistantService {
       personalMemoryStore.getGraphReviewRevision(),
       personalMemoryStore.getStructuredMemoryRevision()
     )
-    const relation = this.state.graph.relations.find(item =>
-      item.id === String(id || '').trim())
+    const relation = personalMemoryStore.getGraphRelationById(String(id || '').trim())
     if (!relation) return null
     const entityDirectory = this.getTrustedEntityPresentations([
       relation.subjectId, relation.objectId

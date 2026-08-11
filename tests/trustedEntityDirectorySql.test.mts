@@ -74,6 +74,11 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
     assert.match(source, /getTrustedEntityPresentations\(/, startMarker)
     assert.doesNotMatch(source, /this\.state\.graph\.entities\.(?:find|filter)/, startMarker)
   }
+  const relationStart = serviceSource.indexOf('  getMemoryRelation(')
+  const relationEnd = serviceSource.indexOf('\n  previewRelationCorrection(', relationStart)
+  const relationSource = serviceSource.slice(relationStart, relationEnd)
+  assert.match(relationSource, /personalMemoryStore\.getGraphRelationById\(/)
+  assert.doesNotMatch(relationSource, /this\.state\.graph\.relations\.(?:find|filter|map)/)
   const pickerStart = pageSource.indexOf('function TrustedEntityPicker(')
   const pickerEnd = pageSource.indexOf('\nfunction EventParticipantEditor(', pickerStart)
   const picker = pageSource.slice(pickerStart, pickerEnd)
@@ -126,6 +131,12 @@ test('SQLCipher trusted entity directory searches and paginates without material
       relations: [{
         id: 'relation-direct-neighbor', subjectId: 'trusted-123', objectId: 'trusted-1000',
         predicate: '协作', status: 'confirmed', confidence: 1,
+        directionExplanation: 'trusted-123 向 trusted-1000 提供协作支持',
+        evidence: Array.from({ length: 25 }, (_, index) => ({
+          sourceId: 'wechat', messageId: `relation-evidence-${String(index).padStart(2, '0')}`,
+          sessionId: 'relation-session', timestamp: index + 1, sender: `sender-${index}`,
+          excerpt: `关系原文 ${index}`, role: index % 2 === 0 ? 'direct' : 'indirect'
+        })),
         createdAt: '2026-08-12T00:00:00.000Z', updatedAt: '2026-08-12T00:00:00.000Z'
       }, {
         id: 'relation-two-hop', subjectId: 'trusted-1000', objectId: 'trusted-1001',
@@ -147,6 +158,10 @@ test('SQLCipher trusted entity directory searches and paginates without material
       const value = `额外名-${String(index).padStart(3, '0')}`
       insertAlias.run('trusted-123', value, value.toLowerCase(), 'name', 1)
     }
+    database.prepare(`
+      UPDATE evidence SET evidence_role='indirect'
+      WHERE relation_id='relation-direct-neighbor' AND message_id='relation-evidence-05'
+    `).run()
 
     const first = store.listTrustedEntityDirectoryPage({ limit: 100 })
     assert.equal(first.total, 1_204)
@@ -211,6 +226,20 @@ test('SQLCipher trusted entity directory searches and paginates without material
     }), null)
     assert.equal(store.getGraphEntityById('trusted-1204', { trust: 'visible' })?.trustStatus, 'candidate')
     assert.equal(store.getGraphEntityById('trusted-1204', { trust: 'confirmed' }), null)
+    const pointRelation = store.getGraphRelationById('relation-direct-neighbor')
+    assert.equal(pointRelation.id, 'relation-direct-neighbor')
+    assert.equal(pointRelation.subjectId, 'trusted-123')
+    assert.equal(pointRelation.objectId, 'trusted-1000')
+    assert.equal(pointRelation.status, 'confirmed')
+    assert.equal(pointRelation.directionExplanation, 'trusted-123 向 trusted-1000 提供协作支持')
+    assert.equal(pointRelation.evidenceTotal, 25)
+    assert.equal(pointRelation.evidence.length, 20)
+    assert.equal(pointRelation.evidenceTruncated, true)
+    assert.equal(pointRelation.evidence[0].messageId, 'relation-evidence-05')
+    assert.equal(pointRelation.evidence[19].messageId, 'relation-evidence-24')
+    assert.equal(pointRelation.evidence[0].role, 'indirect')
+    assert.equal(store.getGraphRelationById('relation-direct-neighbor', 3).evidence.length, 3)
+    assert.equal(store.getGraphRelationById('missing-relation'), null)
     const taskNames = store.listGraphEntityTaskSearchNames('trusted-123')
     assert.equal(taskNames.length, 100)
     assert.equal(taskNames[0], '实体0123')

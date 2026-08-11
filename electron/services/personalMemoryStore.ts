@@ -4847,6 +4847,40 @@ export class PersonalMemoryStore {
     }
   }
 
+  getGraphRelationById(relationIdInput: string, evidenceLimit = MEMORY_CARD_EVIDENCE_LIMIT): any | null {
+    if (!this.db) return null
+    const relationId = String(relationIdInput || '').trim()
+    if (!relationId) return null
+    const row = this.db.prepare(`
+      SELECT relation.*,
+        (SELECT COUNT(*) FROM evidence item WHERE item.relation_id=relation.id) AS evidence_total
+      FROM relations relation WHERE relation.id=?
+    `).get(relationId) as any
+    if (!row) return null
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(evidenceLimit) || MEMORY_CARD_EVIDENCE_LIMIT)))
+    const evidence = (this.db.prepare(`
+      SELECT source_id,message_id,session_id,timestamp,sender,excerpt,evidence_role
+      FROM evidence WHERE relation_id=?
+      ORDER BY timestamp DESC,source_id,session_id,message_id DESC LIMIT ?
+    `).all(relationId, limit) as any[]).reverse().map(item => ({
+      sourceId: String(item.source_id || 'legacy'), messageId: String(item.message_id || ''),
+      sessionId: String(item.session_id || ''), timestamp: Number(item.timestamp || 0),
+      sender: String(item.sender || ''), excerpt: String(item.excerpt || ''),
+      role: String(item.evidence_role || 'direct')
+    }))
+    return {
+      id: String(row.id), subjectId: String(row.subject_id || ''),
+      predicate: String(row.predicate || ''), objectId: String(row.object_id || ''),
+      directionExplanation: String(row.direction_explanation || ''),
+      confidence: Number(row.confidence || 0), status: String(row.status || 'candidate'),
+      validFrom: String(row.valid_from || ''), validTo: String(row.valid_to || ''),
+      searchText: String(row.search_text || ''), createdAt: String(row.created_at || ''),
+      updatedAt: String(row.updated_at || ''), evidence,
+      evidenceTotal: Number(row.evidence_total || 0),
+      evidenceTruncated: Number(row.evidence_total || 0) > evidence.length
+    }
+  }
+
   listGraphEntityTaskSearchNames(entityIdInput: string, options: {
     projectOnly?: boolean
     limit?: number
@@ -8610,6 +8644,10 @@ export class PersonalMemoryStore {
         taskHistoryFullTaskMaterializations: 0,
         taskReviewRevertEligibility: 'sqlcipher_snapshot_or_current_task',
         taskReviewFullTaskMaterializations: 0,
+        relationDossierLookup: 'sqlcipher_point_by_stable_id',
+        relationDossierEvidenceLimit: MEMORY_CARD_EVIDENCE_LIMIT,
+        relationDossierFullGraphMaterializations: 0,
+        relationDossierEndpointHydration: 'requested_ids_only',
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,
