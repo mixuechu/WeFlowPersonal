@@ -63,6 +63,8 @@ test('scope planning is honest and visible in complete diagnostics', () => {
   assert.match(pageSource, /抽取上下文[\s\S]*?SQLCipher 直接命中＋一跳[\s\S]*?抽取实体预算[\s\S]*?extractionContextEntityLimit[\s\S]*?抽取关系预算[\s\S]*?extractionContextRelationLimit[\s\S]*?全图内存副本[\s\S]*?extractionContextFullGraphMaterializations[\s\S]*?抽取上下文一致性[\s\S]*?实体＋关系 revision 保护/)
   assert.match(pageSource, /人物档案身份[\s\S]*?SQLCipher 稳定 ID 点查[\s\S]*?人物身份预览[\s\S]*?entityDossierIdentityPreviewLimit[\s\S]*?任务匹配身份[\s\S]*?entityDossierTaskNameLimit[\s\S]*?可信项目档案[\s\S]*?SQLCipher 稳定 ID 点查[\s\S]*?可信详情全图副本[\s\S]*?confirmedDossierFullGraphMaterializations/)
   assert.match(pageSource, /事实 \/ 事件身份可信度[\s\S]*?SQLCipher 当前页联查[\s\S]*?记忆可信判定全图副本[\s\S]*?structuredMemoryTrustFullGraphMaterializations[\s\S]*?缺失事件参与者[\s\S]*?保留并进入审阅/)
+  assert.match(store, /graphReviewHydration: 'sqlcipher_current_page_batch'[\s\S]*?graphReviewFullGraphMaterializations: 0[\s\S]*?graphReviewSameNamePreviewLimit: 20[\s\S]*?graphReviewRelationCorrectionsBatched: true/)
+  assert.match(pageSource, /图谱候选水合[\s\S]*?SQLCipher 当前页批量[\s\S]*?候选审阅全图副本[\s\S]*?graphReviewFullGraphMaterializations[\s\S]*?同名实体预览[\s\S]*?graphReviewSameNamePreviewLimit/)
   assert.match(pageSource, /问答实体识别[\s\S]*?SQLCipher 反向词匹配[\s\S]*?单轮规划预算[\s\S]*?questionEntityPlanningLimit[\s\S]*?超预算语义[\s\S]*?显示总数且禁止单人自动绑定/)
   assert.match(pageSource, /稠密关系已按 SQLCipher 安全预算隐藏/)
 })

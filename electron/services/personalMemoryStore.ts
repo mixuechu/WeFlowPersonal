@@ -8598,6 +8598,10 @@ export class PersonalMemoryStore {
         structuredMemoryTrustFullGraphMaterializations: 0,
         structuredMemoryTrustReviewTargetLimit: 20,
         structuredMemoryMissingParticipantsVisible: true,
+        graphReviewHydration: 'sqlcipher_current_page_batch',
+        graphReviewFullGraphMaterializations: 0,
+        graphReviewSameNamePreviewLimit: 20,
+        graphReviewRelationCorrectionsBatched: true,
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,
@@ -11428,7 +11432,7 @@ export class PersonalMemoryStore {
         evidenceByReview.set(reviewId, bucket)
       }
     }
-    const items = rows.map(row => {
+    const baseItems = rows.map(row => {
       let payload: any = {}
       try { payload = JSON.parse(String(row.payload_json || '{}')) } catch {}
       const rejectionCascadeSnapshot = payload.entityRejectionCascadeSnapshot
@@ -11451,6 +11455,163 @@ export class PersonalMemoryStore {
         reviewReasonCode: row.status === 'rejected' &&
           (REVIEW_REASON_CODES as readonly string[]).includes(String(row.review_reason_code || ''))
           ? String(row.review_reason_code) : ''
+      }
+    })
+    const reviewIds = baseItems.map(item => String(item.id || '')).filter(Boolean)
+    const relationIds = [...new Set(baseItems.flatMap(item => [
+      item.correctedRelationId, item.relationId, item.originalRelationId
+    ]).map(value => String(value || '').trim()).filter(Boolean))]
+    const relationRows = relationIds.length ? this.db.prepare(`
+      SELECT id,subject_id,predicate,object_id,direction_explanation,status,confidence,
+        created_at,updated_at
+      FROM relations
+      WHERE id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+    `).all(JSON.stringify(relationIds)) as any[] : []
+    const relationById = new Map(relationRows.map(row => [String(row.id), {
+      id: String(row.id), subjectId: String(row.subject_id || ''),
+      predicate: String(row.predicate || ''), objectId: String(row.object_id || ''),
+      directionExplanation: String(row.direction_explanation || ''),
+      status: String(row.status || 'candidate'), confidence: Number(row.confidence || 0),
+      createdAt: String(row.created_at || ''), updatedAt: String(row.updated_at || '')
+    }]))
+    const correctionRows = reviewIds.length ? this.db.prepare(`
+      WITH ranked AS (
+        SELECT *,ROW_NUMBER() OVER(PARTITION BY review_id ORDER BY id DESC) AS correction_rank
+        FROM relation_corrections
+        WHERE review_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+      )
+      SELECT id,review_id,before_relation_id,after_relation_id,
+        before_subject_id,before_predicate,before_object_id,before_direction_explanation,
+        after_subject_id,after_predicate,after_object_id,after_direction_explanation,created_at
+      FROM ranked WHERE correction_rank=1 ORDER BY review_id
+    `).all(JSON.stringify(reviewIds)) as any[] : []
+    const correctionByReview = new Map<string, any>()
+    for (const correction of correctionRows) {
+      const correctionReviewId = String(correction.review_id || '')
+      if (!correctionByReview.has(correctionReviewId)) {
+        correctionByReview.set(correctionReviewId, correction)
+      }
+    }
+    const relatedIds = [...new Set(baseItems.flatMap(item => {
+      const relationId = String(item.correctedRelationId || item.relationId || item.originalRelationId || '')
+      const relation = relationById.get(relationId)
+      const correction = correctionByReview.get(String(item.id || ''))
+      return [
+        item.entityId, item.leftEntityId, item.rightEntityId,
+        item.mergeSourceEntityId, item.mergeTargetEntityId,
+        relation?.subjectId, relation?.objectId,
+        correction?.before_subject_id, correction?.before_object_id,
+        correction?.after_subject_id, correction?.after_object_id
+      ]
+    }).map(value => String(value || '').trim()).filter(Boolean))]
+    const sameNameInputs = baseItems.filter(item =>
+      item.kind === 'entity_creation' && String(item.entityCanonicalName || '').trim())
+      .map(item => ({
+        reviewId: String(item.id), entityId: String(item.entityId || ''),
+        normalizedName: String(item.entityCanonicalName).trim().toLocaleLowerCase('zh-CN')
+      }))
+    const sameNameRows = sameNameInputs.length ? this.db.prepare(`
+      WITH requested AS (
+        SELECT json_extract(value,'$.reviewId') AS review_id,
+          json_extract(value,'$.entityId') AS entity_id,
+          json_extract(value,'$.normalizedName') AS normalized_name
+        FROM json_each(?)
+      ), ranked AS (
+        SELECT requested.review_id,entity.id,
+          COUNT(*) OVER(PARTITION BY requested.review_id) AS collision_total,
+          ROW_NUMBER() OVER(PARTITION BY requested.review_id
+            ORDER BY lower(entity.canonical_name),entity.id) AS collision_rank
+        FROM requested JOIN entities entity
+          ON lower(trim(entity.canonical_name))=requested.normalized_name
+        WHERE entity.id<>requested.entity_id AND entity.deleted_at IS NULL
+          AND entity.trust_status<>'rejected'
+      )
+      SELECT review_id,id,collision_total FROM ranked WHERE collision_rank<=20
+      ORDER BY review_id,collision_rank
+    `).all(JSON.stringify(sameNameInputs)) as any[] : []
+    const allEntityIds = [...new Set([
+      ...relatedIds, ...sameNameRows.map(row => String(row.id || ''))
+    ].filter(Boolean))]
+    const entityRows = allEntityIds.length ? this.db.prepare(`
+      SELECT id,type,canonical_name,trust_status,identity_version,summary_status,updated_at
+      FROM entities WHERE id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+        AND deleted_at IS NULL
+    `).all(JSON.stringify(allEntityIds)) as any[] : []
+    const aliases = new Map<string, string[]>()
+    const accounts = new Map<string, string[]>()
+    const external = new Map<string, any[]>()
+    if (allEntityIds.length) {
+      for (const row of this.db.prepare(`
+        WITH ranked AS (
+          SELECT entity_id,value,ROW_NUMBER() OVER(PARTITION BY entity_id ORDER BY id) AS item_rank
+          FROM aliases WHERE entity_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+        )
+        SELECT entity_id,value FROM ranked WHERE item_rank<=8 ORDER BY entity_id,item_rank
+      `).all(JSON.stringify(allEntityIds)) as any[]) {
+        const list = aliases.get(String(row.entity_id)) || []
+        if (list.length < 8 && !list.includes(String(row.value))) list.push(String(row.value))
+        aliases.set(String(row.entity_id), list)
+      }
+      for (const row of this.db.prepare(`
+        WITH ranked AS (
+          SELECT entity_id,platform,account_id,display_name,confidence,
+            ROW_NUMBER() OVER(PARTITION BY entity_id,CASE WHEN lower(platform)='wechat'
+              THEN 'wechat' ELSE 'external' END ORDER BY id) AS item_rank
+          FROM identities WHERE entity_id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+        )
+        SELECT entity_id,platform,account_id,display_name,confidence FROM ranked
+        WHERE item_rank<=8 ORDER BY entity_id,item_rank
+      `).all(JSON.stringify(allEntityIds)) as any[]) {
+        const id = String(row.entity_id)
+        if (String(row.platform || '').toLowerCase() === 'wechat') {
+          const list = accounts.get(id) || []
+          if (list.length < 8 && !list.includes(String(row.account_id))) list.push(String(row.account_id))
+          accounts.set(id, list)
+        } else {
+          const list = external.get(id) || []
+          if (list.length < 8) list.push({
+            platform: String(row.platform || ''), accountId: String(row.account_id || ''),
+            displayName: String(row.display_name || ''), confidence: Number(row.confidence || 0)
+          })
+          external.set(id, list)
+        }
+      }
+    }
+    const entityById = new Map(entityRows.map(row => [String(row.id), {
+      id: String(row.id), type: String(row.type || ''), canonicalName: String(row.canonical_name || ''),
+      aliases: aliases.get(String(row.id)) || [], accountIds: accounts.get(String(row.id)) || [],
+      externalIdentities: external.get(String(row.id)) || [],
+      summaryStatus: String(row.summary_status || 'empty'),
+      trustStatus: String(row.trust_status || 'legacy_unverified'),
+      identityVersion: Math.max(1, Number(row.identity_version || 1)),
+      updatedAt: String(row.updated_at || '')
+    }]))
+    const sameNamesByReview = new Map<string, any[]>()
+    const sameNameTotalByReview = new Map<string, number>()
+    for (const row of sameNameRows) {
+      const id = String(row.review_id || '')
+      const entity = entityById.get(String(row.id || ''))
+      if (entity) sameNamesByReview.set(id, [...(sameNamesByReview.get(id) || []), entity])
+      sameNameTotalByReview.set(id, Number(row.collision_total || 0))
+    }
+    const items = baseItems.map(item => {
+      const relationId = String(item.correctedRelationId || item.relationId || item.originalRelationId || '')
+      const relation = relationById.get(relationId) || null
+      const correction = correctionByReview.get(String(item.id || '')) || null
+      const itemRelatedIds = [...new Set([
+        item.entityId, item.leftEntityId, item.rightEntityId,
+        item.mergeSourceEntityId, item.mergeTargetEntityId,
+        relation?.subjectId, relation?.objectId,
+        correction?.before_subject_id, correction?.before_object_id,
+        correction?.after_subject_id, correction?.after_object_id
+      ].map(value => String(value || '').trim()).filter(Boolean))]
+      return {
+        ...item,
+        relation,
+        relationCorrection: item.kind === 'relation' ? correction : null,
+        relatedEntities: itemRelatedIds.flatMap(id => entityById.has(id) ? [entityById.get(id)] : []),
+        sameNameEntities: sameNamesByReview.get(String(item.id || '')) || [],
+        sameNameEntityTotal: sameNameTotalByReview.get(String(item.id || '')) || 0
       }
     })
     const completedRevision = this.getGraphReviewRevision()

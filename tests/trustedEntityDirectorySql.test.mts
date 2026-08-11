@@ -10,6 +10,7 @@ const serviceSource = readFileSync(new URL(
   '../electron/services/aiAssistantService.ts', import.meta.url
 ), 'utf8')
 const pageSource = readFileSync(new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8')
+const storeSource = readFileSync(new URL('../electron/services/personalMemoryStore.ts', import.meta.url), 'utf8')
 
 test('all trusted directory reads and selection gates use SQLCipher authority', () => {
   const directoryStart = serviceSource.indexOf('  getTrustedEntityDirectory(')
@@ -79,6 +80,24 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   assert.match(picker, /offset: nextOffset[\s\S]*?expectedRevision: revision/)
   assert.match(picker, /setNextOffset\(Number\(result\.nextOffset/)
   assert.match(picker, /加载更多（已加载 \{options\.length\} \/ \{total\}）/)
+})
+
+test('graph review pages hydrate current-page entities and relations inside SQLCipher', () => {
+  const method = serviceSource.slice(
+    serviceSource.indexOf('  getGraphReviewPage('),
+    serviceSource.indexOf('\n  getGraphReviewEvidencePage(', serviceSource.indexOf('  getGraphReviewPage('))
+  )
+  const storeMethod = storeSource.slice(
+    storeSource.indexOf('  listReviewLedgerPage('),
+    storeSource.indexOf('\n  listGraphReviewEvidencePage(', storeSource.indexOf('  listReviewLedgerPage('))
+  )
+  assert.match(method, /return page/)
+  assert.doesNotMatch(method, /this\.state\.graph\.(entities|relations)/)
+  assert.match(storeMethod, /FROM relations/)
+  assert.match(storeMethod, /FROM relation_corrections/)
+  assert.match(storeMethod, /sameNameEntityTotal/)
+  assert.match(storeMethod, /collision_rank<=20/)
+  assert.match(storeMethod, /relatedEntities/)
 })
 
 test('SQLCipher trusted entity directory searches and paginates without materializing the graph', () => {

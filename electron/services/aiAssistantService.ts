@@ -443,7 +443,6 @@ import {
 import type { GraphViewportOptions } from '../../shared/graphViewport'
 import {
   buildGraphDashboardPayload,
-  buildGraphReviewEntityPayload,
   toGraphViewportEdge,
   toGraphViewportNode
 } from '../../shared/graphPayload'
@@ -6796,43 +6795,7 @@ export class AiAssistantService {
       limit: options?.limit,
       revision: String(options?.revision || '')
     })
-    if (page.stale) return page
-    const items = page.items.map(review => {
-      const relationId = review.correctedRelationId || review.relationId || review.originalRelationId
-      const relation = relationId
-        ? this.state.graph.relations.find(item => item.id === relationId) || null
-        : null
-      const relationCorrection = review.kind === 'relation'
-        ? personalMemoryStore.getRelationCorrectionByReview(review.id)
-        : null
-      return {
-        ...review,
-        relation,
-        relationCorrection,
-        ...buildGraphReviewEntityPayload(
-          this.state.graph.entities,
-          review,
-          relation,
-          relationCorrection
-        )
-      }
-    })
-    const completedRevision = personalMemoryStore.getGraphReviewRevision()
-    if (completedRevision !== page.revision) {
-      return {
-        ...page,
-        items: [],
-        total: 0,
-        hasMore: false,
-        counts: { pending: 0, resolved: 0, all: 0 },
-        revision: completedRevision,
-        stale: true
-      }
-    }
-    return {
-      ...page,
-      items
-    }
+    return page
   }
 
   getGraphReviewEvidencePage(reviewId: string, options?: any): any {

@@ -882,6 +882,56 @@ test('review ledger persists resolution time, actor and reason', () => {
   })
 })
 
+test('review ledger hydrates only current-page relations, corrections and same-name entities', () => {
+  withStore(store => {
+    const entities = [
+      { id: 'review-person', type: 'person', canonicalName: '林海', trustStatus: 'candidate' },
+      ...Array.from({ length: 25 }, (_, index) => ({
+        id: `same-name-${String(index).padStart(2, '0')}`,
+        type: 'person', canonicalName: '林海',
+        trustStatus: index % 2 ? 'candidate' : 'confirmed',
+        aliases: index === 0 ? Array.from({ length: 12 }, (__, aliasIndex) => `林别名${aliasIndex}`) : []
+      })),
+      { id: 'relation-left', type: 'person', canonicalName: '关系左侧', trustStatus: 'confirmed' },
+      { id: 'relation-right', type: 'organization', canonicalName: '关系右侧', trustStatus: 'confirmed' }
+    ]
+    const relation = {
+      id: 'review-relation-after', subjectId: 'relation-left', predicate: '负责',
+      objectId: 'relation-right', directionExplanation: '左侧负责右侧',
+      status: 'candidate', confidence: 0.8
+    }
+    store.syncGraph({
+      entities,
+      relations: [relation],
+      reviewQueue: [
+        { id: 'review-current-entity', kind: 'entity_creation', title: '实体候选', detail: '',
+          entityId: 'review-person', entityCanonicalName: '林海', status: 'pending', confidence: 0.7 },
+        { id: 'review-current-relation', kind: 'relation', title: '关系候选', detail: '',
+          relationId: relation.id, status: 'pending', confidence: 0.8 }
+      ]
+    } as any)
+    store.recordRelationCorrection('review-current-relation', {
+      id: 'review-relation-before', subjectId: 'relation-right', predicate: '被负责',
+      objectId: 'relation-left', directionExplanation: '原方向'
+    }, relation)
+
+    const page = store.listReviewLedgerPage({ status: 'pending', limit: 40 })
+    const entityReview = page.items.find(item => item.id === 'review-current-entity')
+    assert.equal(entityReview.sameNameEntityTotal, 25)
+    assert.equal(entityReview.sameNameEntities.length, 20)
+    assert.equal(entityReview.sameNameEntities[0].id, 'same-name-00')
+    assert.equal(entityReview.sameNameEntities[0].aliases.length, 8)
+    assert.deepEqual(entityReview.relatedEntities.map((item: any) => item.id), ['review-person'])
+
+    const relationReview = page.items.find(item => item.id === 'review-current-relation')
+    assert.equal(relationReview.relation.id, 'review-relation-after')
+    assert.equal(relationReview.relation.directionExplanation, '左侧负责右侧')
+    assert.equal(relationReview.relationCorrection.before_relation_id, 'review-relation-before')
+    assert.deepEqual(new Set(relationReview.relatedEntities.map((item: any) => item.id)),
+      new Set(['relation-left', 'relation-right']))
+  })
+})
+
 test('resolved graph reviews leave encrypted state but remain paginated in SQLCipher', () => {
   withStore(store => {
     const reviews = [
