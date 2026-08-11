@@ -11795,7 +11795,8 @@ function AiAssistantPage() {
             </small>}
             {dashboard?.taskPayloadPolicy?.activeDirectory === 'paginated_on_demand' && <small className="assistant-evidence">
               进行中待办按当前筛选从 SQLCipher 分页读取（已加载 {tasks.length} / {taskWorkset.total}）；
-              已完成和已取消任务进入下方档案。原文证据和修改历史仅在展开单条任务时读取。
+              已完成和已取消任务进入下方档案。原文证据和修改历史仅在展开单条任务时读取；
+              单页操作令牌复用权威任务索引，不再为每次翻页重建全任务 ID 集合。
             </small>}
             {(!!taskReminders.length || reminderPreferences?.mutedKinds?.length) && <div className="assistant-task-reminders">
               {taskReminders.map(reminder => <article key={reminder.id} className={reminder.severity}>
@@ -18036,6 +18037,10 @@ function AiAssistantPage() {
                 <span>快照内重复原文 <b>{Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.embeddedEvidenceRows || 0).toLocaleString()}</b></span>
                 <span>归属旧副本回收 <b>{(Number(memoryDiagnostics.taskStateStorage.reviewSnapshots?.migration?.bytesReclaimed || 0) / 1024).toFixed(1)} KB</b></span>
                 <span>失败提交冷存储 <b>{Number(memoryDiagnostics.taskMutationCommits?.compressedPayloads || 0).toLocaleString()}</b></span>
+                <span>操作令牌索引 <b>{dashboard?.taskPayloadPolicy?.mutationTokenLookup === 'cached_authoritative_state_index' ? '跨页面复用' : '需要检查'}</b></span>
+                <span>单页全量重建 <b>{Number(dashboard?.taskPayloadPolicy?.perPageFullIndexBuilds || 0)}</b> 次</span>
+                <span>当前索引任务 <b>{Number(dashboard?.taskPayloadPolicy?.indexedTasks || 0).toLocaleString()}</b></span>
+                <span>累计索引构建 <b>{Number(dashboard?.taskPayloadPolicy?.indexBuilds || 0).toLocaleString()}</b></span>
                 <span>任务恢复双副本 <b>{Number(memoryDiagnostics.taskMutationCommits?.redundantPayloads || 0).toLocaleString()}</b></span>
                 <span>任务副本自愈 <b>{Number(memoryDiagnostics.taskMutationCommits?.backupRecoveries || 0).toLocaleString()}</b></span>
                 <span>失败载荷回收 <b>{(Number(memoryDiagnostics.taskMutationCommits?.reclaimedPayloadBytes || 0) / 1024).toFixed(1)} KB</b></span>

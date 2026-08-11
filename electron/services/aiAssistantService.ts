@@ -166,6 +166,7 @@ import {
 } from './taskIntelligence'
 import { buildEntityInsights, entityTaskSearchNames } from './relationshipInsights'
 import { boundEntityIdentityPresentation } from './entityIdentityPresentation'
+import { ReferenceArrayIndex } from './referenceArrayIndex.ts'
 import {
   TASK_ASSIGNMENT_POLICY_VERSION,
   classifyTaskAssignment,
@@ -881,6 +882,7 @@ export class AiAssistantService {
   }> = []
   private config = ConfigService.getInstance()
   private state: AssistantState = structuredClone(EMPTY_STATE)
+  private taskStateIndex = new ReferenceArrayIndex<AssistantTask>(task => String(task.id))
   private statePath = ''
   private stateEncryptionKey = ''
   private activeSync: Promise<any> | null = null
@@ -924,6 +926,10 @@ export class AiAssistantService {
     lastRunAt: '',
     lastRecoveredAt: '',
     lastError: ''
+  }
+
+  private getTaskStateIndex(): Map<string, AssistantTask> {
+    return this.taskStateIndex.get(this.state.tasks)
   }
 
   private beginMemoryMaintenance(kind: MemoryMaintenanceKind): MemoryMaintenanceLease {
@@ -1963,8 +1969,11 @@ export class AiAssistantService {
   }
 
   private hydrateTaskEvidenceFromSql(taskIds: string[]): void {
-    const missing = this.state.tasks.filter(task =>
-      taskIds.includes(task.id) && !Array.isArray(task.evidence))
+    const taskIndex = this.getTaskStateIndex()
+    const missing = [...new Set((taskIds || []).map(String).filter(Boolean))].flatMap(id => {
+      const task = taskIndex.get(id)
+      return task && !Array.isArray(task.evidence) ? [task] : []
+    })
     if (!missing.length) return
     const evidence = personalMemoryStore.listTaskEvidence(missing.map(task => task.id))
     for (const task of missing) task.evidence = evidence.get(task.id) || []
@@ -5814,8 +5823,9 @@ export class AiAssistantService {
     for (let offset = startOffset; offset < candidateIds.length; offset += 10) {
       if (this.activeSync) throw new Error('增量处理已经开始，待办复核已在下一批模型请求前安全停止')
       const batchIds = candidateIds.slice(offset, offset + 10)
+      const currentTaskIndex = this.getTaskStateIndex()
       const batch = batchIds.flatMap(id => {
-        const task = this.state.tasks.find(item => item.id === id)
+        const task = currentTaskIndex.get(id)
         return task && task.classification === 'mine' &&
           ['todo', 'doing', 'waiting'].includes(task.status) ? [task] : []
       })
@@ -5907,7 +5917,7 @@ export class AiAssistantService {
         const decisionByTask = new Map(decisions.map((decision: any) => [String(decision.taskId || ''), decision]))
         const updates: Array<{ id: string; patch: any; mutationToken: string }> = []
         for (const task of batch) {
-          const current = this.state.tasks.find(item => item.id === task.id)
+          const current = this.getTaskStateIndex().get(task.id)
           const mutationToken = mutationTokens.get(task.id) || ''
           const allowedEvidenceIds = (evidenceWindowByTask.get(task.id) || [])
             .map((_item, index) => `${task.id}:e${index + 1}`)
@@ -6020,8 +6030,10 @@ export class AiAssistantService {
     const taskWorksetStats = personalMemoryStore.listActiveTaskWorkset({ limit: 1 })
     const taskOwnershipReviewStats = personalMemoryStore.getTaskOwnershipReviewStats()
     const mineTaskOwnershipAudit = personalMemoryStore.getMineTaskOwnershipAuditSample()
+    const taskStateIndex = this.getTaskStateIndex()
+    const taskStateIndexStats = this.taskStateIndex.stats(this.state.tasks)
     const mineTaskOwnershipAuditState = mineTaskOwnershipAudit.item
-      ? this.state.tasks.find(task => task.id === mineTaskOwnershipAudit.item.id)
+      ? taskStateIndex.get(String(mineTaskOwnershipAudit.item.id || ''))
       : null
     const allTaskReminders = buildTaskReminders(tasks)
     const reminderResult = applyReminderPreferences(allTaskReminders, this.state.reminderPreferences)
@@ -6084,12 +6096,16 @@ export class AiAssistantService {
         dossier: 'authoritative_task_workspace'
       },
       taskPayloadPolicy: {
-        version: 'task-active-workset-v3',
+        version: 'task-active-workset-v4',
         directoryEvidence: 'count_only',
         activeDirectory: 'paginated_on_demand',
         dossier: 'on_demand',
         activeStatuses: ['todo', 'doing', 'waiting'],
-        closedTasks: 'sqlcipher_archive'
+        closedTasks: 'sqlcipher_archive',
+        mutationTokenLookup: 'cached_authoritative_state_index',
+        perPageFullIndexBuilds: 0,
+        indexBuilds: taskStateIndexStats.builds,
+        indexedTasks: taskStateIndexStats.indexedItems
       },
       taskMutationCommits: {
         ...personalMemoryStore.getTaskMutationCommitHealth(),
@@ -6331,7 +6347,7 @@ export class AiAssistantService {
 
   getTaskWorkspace(taskId: string): any {
     this.hydrateTaskEvidenceFromSql([String(taskId || '')])
-    const task = this.state.tasks.find(item => item.id === String(taskId || ''))
+    const task = this.getTaskStateIndex().get(String(taskId || ''))
     if (!task) return null
     const historyPage = personalMemoryStore.listTaskHistoryPage({
       taskId: task.id,
@@ -6448,7 +6464,7 @@ export class AiAssistantService {
       revision: String(options?.revision || '')
     })
     if (page.stale) return page
-    const tasks = new Map(this.state.tasks.map(task => [task.id, task]))
+    const tasks = this.getTaskStateIndex()
     return {
       ...page,
       items: page.items.map((item: any) => {
@@ -6479,7 +6495,7 @@ export class AiAssistantService {
       revision: String(options?.revision || '')
     })
     if (page.stale) return page
-    const tasks = new Map(this.state.tasks.map(task => [task.id, task]))
+    const tasks = this.getTaskStateIndex()
     return {
       ...page,
       items: page.items.map((item: any) => {
@@ -6501,7 +6517,7 @@ export class AiAssistantService {
       revision: String(options?.revision || '')
     })
     if (page.stale) return page
-    const tasks = new Map(this.state.tasks.map(task => [task.id, task]))
+    const tasks = this.getTaskStateIndex()
     return {
       ...page,
       items: page.items.map((item: any) => {
@@ -6816,7 +6832,7 @@ export class AiAssistantService {
       const relatedTasks = personalMemoryStore.listEntityRelatedTaskPage(
         entityTaskSearchNames(focusEntity), { limit: 40 }
       )
-      const currentTasksById = new Map(this.state.tasks.map(task => [task.id, task]))
+      const currentTasksById = this.getTaskStateIndex()
       const candidateReviewCounts =
         personalMemoryStore.getEntityCandidateReviewCounts(focusEntity.id)
       const insights = buildEntityInsights({
@@ -7004,7 +7020,7 @@ export class AiAssistantService {
         nextOffset: offset, revision: completedRevision, stale: true
       }
     }
-    const currentTasksById = new Map(this.state.tasks.map(task => [task.id, task]))
+    const currentTasksById = this.getTaskStateIndex()
     return {
       ...page,
       revision,
@@ -7152,7 +7168,7 @@ export class AiAssistantService {
             (project.pendingReview?.decisions?.length || 0)),
         memoryTruncated: false,
         tasks: taskPage.items.map((item: any) => {
-          const task = this.state.tasks.find(candidate => candidate.id === item.id)
+          const task = this.getTaskStateIndex().get(String(item.id || ''))
           return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
         }),
         taskTotal: taskPage.total,
@@ -7222,7 +7238,7 @@ export class AiAssistantService {
     return {
       ...page,
       items: page.items.map((item: any) => {
-        const task = this.state.tasks.find(candidate => candidate.id === item.id)
+        const task = this.getTaskStateIndex().get(String(item.id || ''))
         return task ? { ...item, mutationToken: buildTaskMutationToken(task) } : item
       })
     }
@@ -7959,7 +7975,7 @@ export class AiAssistantService {
         ...Object.keys(commit.afterTokens || {})
       ])]
       this.hydrateTaskEvidenceFromSql(ids)
-      const byId = new Map(this.state.tasks.map(task => [task.id, task]))
+      const byId = this.getTaskStateIndex()
       const currentTokens = Object.fromEntries(ids.map(id => {
         const task = byId.get(id)
         return [id, task ? buildTaskMutationToken(task) : TASK_ABSENT_MUTATION_TOKEN]
@@ -9127,7 +9143,7 @@ export class AiAssistantService {
     if (Array.isArray(updates) && updates.length > 500) throw new Error('单次最多批量更新 500 条待办')
     const normalized = Array.isArray(updates) ? updates : []
     if (!normalized.length) return []
-    const byId = new Map(this.state.tasks.map(task => [task.id, task]))
+    const byId = this.getTaskStateIndex()
     assertTaskMutationBatch(this.state.tasks, normalized)
     const now = new Date().toISOString()
     const changes = normalized.map(update => {
@@ -9188,7 +9204,7 @@ export class AiAssistantService {
       : null
     if (!decision) throw new Error('待办归属反馈无效')
     this.hydrateTaskEvidenceFromSql([id])
-    const task = this.state.tasks.find(item => item.id === id)
+    const task = this.getTaskStateIndex().get(id)
     if (!task) throw new Error('待办已不存在，请刷新后再操作')
     assertTaskMutationBatch(this.state.tasks, [{ id, mutationToken: String(mutationToken || '') }])
     if (task.classification !== 'mine') {
@@ -9306,7 +9322,7 @@ export class AiAssistantService {
     const evidence = buildTaskEvidenceFromCitations(citations)
     if (!evidence.length) throw new Error('这段回答没有可写入待办的权威原文证据')
     const taskId = taskIdFromAssistantAnswer(assistantMessageId)
-    const existingTask = this.state.tasks.find(item => item.id === taskId) || null
+    const existingTask = this.getTaskStateIndex().get(taskId) || null
     const digest = (value: unknown): string => crypto.createHash('sha256')
       .update(JSON.stringify(value))
       .digest('hex')
@@ -9461,7 +9477,7 @@ export class AiAssistantService {
         'ownership_review_rejected',
         task.evidence || []
       )
-      this.state.tasks.splice(index, 1)
+      this.state.tasks = this.state.tasks.filter(item => item.id !== task.id)
       this.saveState()
       return task
     }
@@ -9481,7 +9497,7 @@ export class AiAssistantService {
     const fingerprint = String(evidenceFingerprint || '').trim()
     const decision = personalMemoryStore.getTaskReviewDecision(fingerprint)
     if (!decision) return null
-    const existing = this.state.tasks.find(item => item.id === decision.task_id)
+    const existing = this.getTaskStateIndex().get(String(decision.task_id || ''))
     let snapshot: AssistantTask | null = null
     try { snapshot = JSON.parse(String(decision.task_json || '{}')) as AssistantTask } catch {}
     if (!existing && (!snapshot?.id || !snapshot?.title)) {
@@ -9503,7 +9519,7 @@ export class AiAssistantService {
       classification: restoredClassification,
       updatedAt: new Date().toISOString()
     }
-    this.state.tasks.unshift(restored)
+    this.state.tasks = [restored, ...this.state.tasks]
     personalMemoryStore.recordTaskChanges(restored.id, {}, restored, 'ownership_review_restored', restored.evidence || [])
     this.saveState()
     return restored
