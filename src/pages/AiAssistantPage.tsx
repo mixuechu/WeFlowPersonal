@@ -6843,7 +6843,7 @@ function AiAssistantPage() {
         selectedProjectId,
         {
           limit: 40,
-          offset: project.tasks?.length || 0,
+          offset: Number(project.taskOffset || project.tasks?.length || 0),
           revision: project.taskRevision
         }
       )
@@ -6864,6 +6864,7 @@ function AiAssistantPage() {
           ],
           taskTotal: page.total,
           taskHasMore: page.hasMore,
+          taskOffset: page.nextOffset ?? Number(current.project?.taskOffset || 0) + page.items.length,
           taskRevision: page.revision
         }
       }))
@@ -6884,7 +6885,7 @@ function AiAssistantPage() {
         selectedProjectId,
         {
           limit: 40,
-          offset: project.risks?.length || 0,
+          offset: Number(project.riskOffset || project.risks?.length || 0),
           revision: project.riskRevision
         }
       )
@@ -6906,6 +6907,7 @@ function AiAssistantPage() {
           ],
           riskTotal: page.total,
           riskHasMore: page.hasMore,
+          riskOffset: page.nextOffset ?? Number(current.project?.riskOffset || 0) + page.items.length,
           riskRevision: page.revision
         }
       }))
@@ -17282,6 +17284,9 @@ function AiAssistantPage() {
             {!selectedProject.entityId && <div className="assistant-query-plan">
               这是尚未形成可信项目实体的派生项目；当前只展示明确写入待办“项目”字段的任务、进度和风险。
               在你确认项目实体前，系统不会按名称猜测并吸收事实、关系或事件，以免把同名项目和普通消息混在一起。
+            </div>}
+            {selectedProject.entityId && <div className="assistant-query-plan">
+              这是已确认的可信项目；任务、进度、风险和聚合原文由 SQLCipher 按项目名与已确认别名直接筛选、计数和分页，不会先加载全部历史待办。
             </div>}
             <div className="assistant-dossier-grid">
               <section>

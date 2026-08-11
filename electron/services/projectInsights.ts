@@ -9,6 +9,13 @@ function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
 }
 
+export function projectTaskSearchNames(entity: any): string[] {
+  return [...new Set([
+    entity?.canonicalName,
+    ...(Array.isArray(entity?.aliases) ? entity.aliases : [])
+  ].map(normalize).filter(Boolean))]
+}
+
 function shanghaiDate(value: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',

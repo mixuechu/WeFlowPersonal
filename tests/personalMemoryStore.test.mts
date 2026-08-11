@@ -145,7 +145,8 @@ import {
   countProjectDirectory,
   paginateProjectDirectory,
   paginateProjectRisks,
-  paginateProjectTasks
+  paginateProjectTasks,
+  projectTaskSearchNames
 } from '../electron/services/projectInsights.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT, PROJECT_EVIDENCE_LIMIT } from '../shared/evidencePayload.ts'
 import {
@@ -22392,6 +22393,98 @@ test('entity related task pages match names and evidence inside SQLCipher with b
       [...(evidenceTask?.evidence || [])].map((item: any) => item.timestamp)
         .sort((left: number, right: number) => right - left)
     )
+  }))
+
+test('trusted project task pages count, filter, and page inside SQLCipher', () =>
+  withStore(store => {
+    const entity = { canonicalName: '项目 4', aliases: ['四号工程'] }
+    const tasks: any[] = Array.from({ length: 150 }, (_, index) => ({
+      id: `sql-project-task-${String(index).padStart(3, '0')}`,
+      title: `项目任务 ${index}`,
+      detail: '', owner: '我', collaborators: [], project: index < 125 ? '项目 4' : '项目 42',
+      status: ['todo', 'doing', 'waiting', 'done', 'cancelled'][index % 5],
+      classification: 'mine', priority: 'medium', taskKind: 'action',
+      createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      updatedAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      evidence: index === 124 ? Array.from({ length: 25 }, (_, evidenceIndex) => ({
+        sourceId: 'wechat', sessionId: 'project-task-session',
+        messageId: `project-task-message-${evidenceIndex}`,
+        timestamp: 1_700_000_000 + evidenceIndex,
+        sender: '项目组', excerpt: `项目原文 ${evidenceIndex}`
+      })) : []
+    }))
+    tasks.push({
+      id: 'sql-project-alias-fallback', title: '跟进四号工程交付', detail: '', project: '',
+      status: 'todo', classification: 'mine', priority: 'high', taskKind: 'action',
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', evidence: []
+    }, {
+      id: 'sql-project-others', title: '跟进四号工程', detail: '', project: '',
+      status: 'todo', classification: 'others', priority: 'high', taskKind: 'action',
+      createdAt: '2026-08-11T00:00:00.000Z', updatedAt: '2026-08-11T00:00:00.000Z', evidence: []
+    })
+    store.syncTasks(tasks)
+    const names = projectTaskSearchNames(entity)
+    const first = store.listProjectTaskPage(names, { limit: 40 })
+    const second = store.listProjectTaskPage(names, { offset: first.nextOffset, limit: 40 })
+    const last = store.listProjectTaskPage(names, { offset: 120, limit: 40 })
+    assert.equal(first.total, 126)
+    assert.equal(first.activeTotal, 76)
+    assert.equal(first.doingTotal, 25)
+    assert.equal(first.completedTotal, 25)
+    assert.equal(first.progressTotal, 101)
+    assert.equal(first.taskEvidenceTotal, 25)
+    assert.equal(first.aggregateEvidence.length, 25)
+    assert.equal(first.items.length, 40)
+    assert.equal(second.nextOffset, 80)
+    assert.equal(last.items.length, 6)
+    assert.equal(last.nextOffset, 126)
+    assert.equal(last.hasMore, false)
+    assert.equal(new Set([...first.items, ...second.items, ...last.items]
+      .map(item => item.id)).size, 86)
+    const evidenceTask = first.items.find(item => item.id === 'sql-project-task-124')
+    assert.equal(evidenceTask.evidence.length, MEMORY_CARD_EVIDENCE_LIMIT)
+    assert.equal(evidenceTask.evidenceTotal, 25)
+    assert.equal(first.items.some(item => item.project === '项目 42'), false)
+    assert.equal(first.items.some(item => item.classification === 'others'), false)
+  }))
+
+test('trusted project risk pages use deterministic SQLCipher unions and external dependencies', () =>
+  withStore(store => {
+    const tasks: any[] = Array.from({ length: 45 }, (_, index) => ({
+      id: `sql-risk-task-${String(index).padStart(3, '0')}`,
+      title: `风险任务 ${index}`, detail: '', owner: '我', collaborators: [], project: '风险项目',
+      status: 'waiting', classification: 'mine', priority: 'high', taskKind: 'waiting',
+      due: '2026-08-01', dependsOnIds: ['sql-risk-external-blocker'],
+      createdAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(),
+      updatedAt: new Date(1_700_000_000_000 + index * 1_000).toISOString(), evidence: []
+    }))
+    tasks.push({
+      id: 'sql-risk-external-blocker', title: '外部前置任务', detail: '', project: '其他项目',
+      status: 'todo', classification: 'mine', priority: 'medium', taskKind: 'action',
+      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', evidence: []
+    }, {
+      id: 'sql-risk-similar-project', title: '不应匹配', detail: '', project: '风险项目二',
+      status: 'waiting', classification: 'mine', priority: 'high', taskKind: 'waiting', due: '2026-08-01',
+      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z', evidence: []
+    })
+    store.syncTasks(tasks)
+    const first = store.listProjectRiskPage(['风险项目'], '2026-08-11', { limit: 40 })
+    const second = store.listProjectRiskPage(['风险项目'], '2026-08-11', {
+      offset: first.nextOffset, limit: 40
+    })
+    const last = store.listProjectRiskPage(['风险项目'], '2026-08-11', {
+      offset: 120, limit: 40
+    })
+    assert.equal(first.total, 135)
+    assert.equal(first.items.length, 40)
+    assert.ok(first.items.every(item => item.severity === 'high'))
+    assert.ok([...first.items, ...second.items, ...last.items]
+      .some(item => item.kind === 'blocked' && item.detail.includes('外部前置任务')))
+    assert.equal(last.items.length, 15)
+    assert.equal(last.nextOffset, 135)
+    assert.equal(last.hasMore, false)
+    assert.equal([...first.items, ...second.items, ...last.items]
+      .some(item => item.taskId === 'sql-risk-similar-project'), false)
   }))
 
 test('anonymous task-assignment golden set meets the published quality baseline', () => {

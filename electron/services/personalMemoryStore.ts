@@ -13706,6 +13706,225 @@ export class PersonalMemoryStore {
     }
   }
 
+  listProjectTaskPage(
+    normalizedNamesInput: string[],
+    options: { offset?: number; limit?: number } = {}
+  ): {
+    items: any[]
+    total: number
+    activeTotal: number
+    doingTotal: number
+    completedTotal: number
+    progressTotal: number
+    taskEvidenceTotal: number
+    aggregateEvidence: any[]
+    hasMore: boolean
+    offset: number
+    nextOffset: number
+    limit: number
+  } {
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const empty = {
+      items: [], total: 0, activeTotal: 0, doingTotal: 0, completedTotal: 0, progressTotal: 0,
+      taskEvidenceTotal: 0, aggregateEvidence: [], hasMore: false,
+      offset, nextOffset: offset, limit
+    }
+    const names = [...new Set((normalizedNamesInput || [])
+      .map(value => String(value || '').trim()).filter(Boolean))].slice(0, 100)
+    if (!this.db || !names.length) return empty
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const matches = `
+      FROM task_directory task
+      WHERE task.classification='mine' AND EXISTS (
+        SELECT 1 FROM json_each(?) requested
+        WHERE ${normalize('task.project')}=CAST(requested.value AS TEXT)
+          OR (
+            ${normalize('task.project')}='' AND LENGTH(CAST(requested.value AS TEXT))>=3
+            AND (
+              INSTR(${normalize('task.title')},CAST(requested.value AS TEXT))>0
+              OR INSTR(${normalize(`json_extract(task.payload_json,'$.detail')`)},CAST(requested.value AS TEXT))>0
+            )
+          )
+      )
+    `
+    const namesJson = JSON.stringify(names)
+    const counts = this.db.prepare(`
+      SELECT COUNT(*) AS task_count,
+        SUM(CASE WHEN task.status NOT IN ('done','cancelled') THEN 1 ELSE 0 END) AS active_count,
+        SUM(CASE WHEN task.status='doing' THEN 1 ELSE 0 END) AS doing_count,
+        SUM(CASE WHEN task.status='done' THEN 1 ELSE 0 END) AS completed_count,
+        SUM(CASE WHEN task.status!='cancelled' THEN 1 ELSE 0 END) AS progress_count,
+        SUM((SELECT COUNT(*) FROM search_document_evidence evidence
+          WHERE evidence.document_id='task:' || task.id)) AS evidence_count
+      ${matches}
+    `).get(namesJson) as any
+    const total = Number(counts?.task_count || 0)
+    const rows = this.db.prepare(`
+      SELECT task.id,task.payload_json ${matches}
+      ORDER BY task.updated_at DESC,task.id ASC
+      LIMIT ? OFFSET ?
+    `).all(namesJson, limit, offset) as Array<{ id: string; payload_json: string }>
+    const taskIds = rows.map(row => String(row.id))
+    const evidenceByTask = new Map<string, { evidence: any[]; total: number }>(
+      taskIds.map(id => [id, { evidence: [], total: 0 }]))
+    if (taskIds.length) {
+      const documentIds = taskIds.map(id => `task:${id}`)
+      const placeholders = documentIds.map(() => '?').join(',')
+      const evidenceRows = this.db.prepare(`
+        WITH ranked AS (
+          SELECT substr(document_id,6) AS task_id,source_id,message_id,session_id,
+            timestamp,sender,excerpt,
+            COUNT(*) OVER (PARTITION BY document_id) AS evidence_total,
+            ROW_NUMBER() OVER (PARTITION BY document_id
+              ORDER BY timestamp DESC,source_id,session_id,message_id DESC) AS evidence_rank
+          FROM search_document_evidence
+          WHERE document_id IN (${placeholders})
+        )
+        SELECT * FROM ranked WHERE evidence_rank<=?
+        ORDER BY task_id,evidence_rank ASC
+      `).all(...documentIds, MEMORY_CARD_EVIDENCE_LIMIT) as any[]
+      for (const row of evidenceRows) {
+        const bucket = evidenceByTask.get(String(row.task_id || ''))
+        if (!bucket) continue
+        bucket.total = Number(row.evidence_total || 0)
+        bucket.evidence.push({
+          sourceId: String(row.source_id || 'legacy'),
+          messageId: String(row.message_id || ''),
+          sessionId: String(row.session_id || ''),
+          timestamp: Number(row.timestamp || 0),
+          sender: String(row.sender || ''),
+          excerpt: String(row.excerpt || '')
+        })
+      }
+    }
+    const aggregateRows = this.db.prepare(`
+      WITH matched AS (
+        SELECT task.id ${matches}
+      ), ranked AS (
+        SELECT evidence.source_id,evidence.message_id,evidence.session_id,evidence.timestamp,
+          evidence.sender,evidence.excerpt,COUNT(*) OVER () AS evidence_total
+        FROM matched JOIN search_document_evidence evidence
+          ON evidence.document_id='task:' || matched.id
+      )
+      SELECT * FROM ranked
+      ORDER BY timestamp DESC,source_id,session_id,message_id DESC
+      LIMIT ?
+    `).all(namesJson, 50) as any[]
+    const aggregateEvidence = aggregateRows.map(row => ({
+      sourceId: String(row.source_id || 'legacy'),
+      messageId: String(row.message_id || ''),
+      sessionId: String(row.session_id || ''),
+      timestamp: Number(row.timestamp || 0),
+      sender: String(row.sender || ''),
+      excerpt: String(row.excerpt || '')
+    }))
+    const items = rows.flatMap(row => {
+      let task: any = null
+      try { task = JSON.parse(String(row.payload_json || '{}')) } catch {}
+      if (!task || typeof task !== 'object' || Array.isArray(task)) return []
+      const evidence = evidenceByTask.get(String(row.id)) || { evidence: [], total: 0 }
+      return [{ ...task, id: String(row.id), evidence: evidence.evidence, evidenceTotal: evidence.total }]
+    })
+    return {
+      items,
+      total,
+      activeTotal: Number(counts?.active_count || 0),
+      doingTotal: Number(counts?.doing_count || 0),
+      completedTotal: Number(counts?.completed_count || 0),
+      progressTotal: Number(counts?.progress_count || 0),
+      taskEvidenceTotal: Number(counts?.evidence_count || 0),
+      aggregateEvidence,
+      hasMore: offset + rows.length < total,
+      offset,
+      nextOffset: offset + rows.length,
+      limit
+    }
+  }
+
+  listProjectRiskPage(
+    normalizedNamesInput: string[],
+    todayInput: string,
+    options: { offset?: number; limit?: number } = {}
+  ): { items: any[]; total: number; hasMore: boolean; offset: number; nextOffset: number; limit: number } {
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 40)))
+    const empty = { items: [], total: 0, hasMore: false, offset, nextOffset: offset, limit }
+    const names = [...new Set((normalizedNamesInput || [])
+      .map(value => String(value || '').trim()).filter(Boolean))].slice(0, 100)
+    const today = /^\d{4}-\d{2}-\d{2}$/.test(String(todayInput || ''))
+      ? String(todayInput) : ''
+    if (!this.db || !names.length || !today) return empty
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const ctes = `
+      WITH matched AS (
+        SELECT task.* FROM task_directory task
+        WHERE task.classification='mine' AND task.status NOT IN ('done','cancelled')
+          AND EXISTS (
+            SELECT 1 FROM json_each(?) requested
+            WHERE ${normalize('task.project')}=CAST(requested.value AS TEXT)
+              OR (
+                ${normalize('task.project')}='' AND LENGTH(CAST(requested.value AS TEXT))>=3
+                AND (
+                  INSTR(${normalize('task.title')},CAST(requested.value AS TEXT))>0
+                  OR INSTR(${normalize(`json_extract(task.payload_json,'$.detail')`)},CAST(requested.value AS TEXT))>0
+                )
+              )
+          )
+      ), risks AS (
+        SELECT 'overdue' AS kind,'high' AS severity,id AS task_id,title,
+          '截止 ' || due AS detail FROM matched
+          WHERE due!='' AND substr(due,1,10)<?
+        UNION ALL
+        SELECT 'waiting','medium',id,title,'正在等待他人或外部输入' FROM matched
+          WHERE status='waiting' OR task_kind='waiting'
+        UNION ALL
+        SELECT 'blocked','high',matched.id,matched.title,
+          '被 ' || COALESCE((
+            SELECT group_concat(dependency.title,'、')
+            FROM json_each(matched.payload_json,'$.dependsOnIds') requested_dependency
+            JOIN task_directory dependency ON dependency.id=CAST(requested_dependency.value AS TEXT)
+            WHERE dependency.status NOT IN ('done','cancelled')
+          ),'未完成依赖') || ' 阻塞'
+        FROM matched
+        WHERE EXISTS (
+          SELECT 1 FROM json_each(matched.payload_json,'$.dependsOnIds') requested_dependency
+          JOIN task_directory dependency ON dependency.id=CAST(requested_dependency.value AS TEXT)
+          WHERE dependency.status NOT IN ('done','cancelled')
+        )
+        UNION ALL
+        SELECT 'unscheduled_high_priority','medium',id,title,'高优先级但没有截止时间'
+        FROM matched WHERE priority='high' AND due=''
+      )
+    `
+    const namesJson = JSON.stringify(names)
+    const total = Number((this.db.prepare(`${ctes} SELECT COUNT(*) AS count FROM risks`)
+      .get(namesJson, today) as any)?.count || 0)
+    const rows = this.db.prepare(`
+      ${ctes}
+      SELECT kind,severity,task_id,title,detail FROM risks
+      ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+        kind COLLATE NOCASE,title COLLATE NOCASE,task_id
+      LIMIT ? OFFSET ?
+    `).all(namesJson, today, limit, offset) as any[]
+    return {
+      items: rows.map(row => ({
+        kind: String(row.kind || ''),
+        severity: String(row.severity || ''),
+        taskId: String(row.task_id || ''),
+        title: String(row.title || ''),
+        detail: String(row.detail || '')
+      })),
+      total,
+      hasMore: offset + rows.length < total,
+      offset,
+      nextOffset: offset + rows.length,
+      limit
+    }
+  }
+
   getMineTaskOwnershipAuditSample(): {
     item: any | null
     total: number
