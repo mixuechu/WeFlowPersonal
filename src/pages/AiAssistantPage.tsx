@@ -17414,6 +17414,18 @@ function AiAssistantPage() {
                 {' · '}已恢复中断清理 {Number(memoryDiagnostics.memoryBackupTrashRecovery.restored || 0)}
                 {' · '}需人工检查 {Number(memoryDiagnostics.memoryBackupTrashRecovery.conflicts || 0)}
               </small>}
+              {memoryDiagnostics.memoryRestoreRecovery && <small>
+                恢复事务启动检查 {Number(memoryDiagnostics.memoryRestoreRecovery.checked || 0)} 次
+                {' · '}已回滚中断恢复 {Number(memoryDiagnostics.memoryRestoreRecovery.recovered || 0)} 次
+                {' · '}已清理完成日志 {Number(memoryDiagnostics.memoryRestoreRecovery.committedCleanups || 0)} 次
+                {' · '}冲突 {Number(memoryDiagnostics.memoryRestoreRecovery.conflicts || 0)} 次
+                {memoryDiagnostics.memoryRestoreRecovery.lastRecoveredAt
+                  ? ` · 最近回滚 ${new Date(memoryDiagnostics.memoryRestoreRecovery.lastRecoveredAt).toLocaleString('zh-CN', { hour12: false })}`
+                  : ''}
+                {memoryDiagnostics.memoryRestoreRecovery.lastError
+                  ? ` · ${memoryDiagnostics.memoryRestoreRecovery.lastError}`
+                  : ''}
+              </small>}
             </div>}
             {memoryDiagnostics.ingestionSummary?.recent24Hours && <div className={`assistant-recovery-audit ${
               Number(memoryDiagnostics.ingestionSummary.recent24Hours.partial || 0) > 0 ||

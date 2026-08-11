@@ -862,6 +862,17 @@ export class AiAssistantService {
     conflicts: 0,
     lastRunAt: ''
   }
+  private memoryRestoreJournalPath = ''
+  private memoryRestoreRecovery = {
+    version: 'memory-restore-recovery-v1',
+    checked: 0,
+    recovered: 0,
+    committedCleanups: 0,
+    conflicts: 0,
+    lastRunAt: '',
+    lastRecoveredAt: '',
+    lastError: ''
+  }
   private lastSchedulerAttemptAt = 0
   private lastSchedulerTickAt = 0
   private vectorIndexPromise: Promise<any> | null = null
@@ -1032,6 +1043,86 @@ export class AiAssistantService {
     }
   }
 
+  private clearMemoryRestoreJournal(): void {
+    for (const path of [this.memoryRestoreJournalPath, `${this.memoryRestoreJournalPath}.bak`]) {
+      try { if (path && existsSync(path)) unlinkSync(path) } catch {}
+    }
+  }
+
+  private writeMemoryRestoreJournal(input: {
+    phase: 'prepared' | 'committed'
+    safetyDatabasePath: string
+    safetyStatePath: string
+  }): void {
+    writeEncryptedDurableJson(this.memoryRestoreJournalPath, {
+      version: 'memory-restore-journal-v1',
+      phase: input.phase,
+      safetyDatabasePath: input.safetyDatabasePath,
+      safetyStatePath: input.safetyStatePath,
+      updatedAt: new Date().toISOString()
+    }, this.stateEncryptionKey)
+  }
+
+  private recoverInterruptedMemoryRestore(): void {
+    const recovery = {
+      ...this.memoryRestoreRecovery,
+      checked: this.memoryRestoreRecovery.checked + 1,
+      lastRunAt: new Date().toISOString(),
+      lastError: ''
+    }
+    this.memoryRestoreRecovery = recovery
+    if (![this.memoryRestoreJournalPath, `${this.memoryRestoreJournalPath}.bak`]
+      .some(path => path && existsSync(path))) return
+    const durable = readEncryptedDurableJson<any>(
+      this.memoryRestoreJournalPath,
+      null,
+      this.stateEncryptionKey
+    )
+    const journal = durable.value
+    if (durable.recovery.source === 'empty' ||
+        journal?.version !== 'memory-restore-journal-v1' ||
+        !['prepared', 'committed'].includes(String(journal?.phase || ''))) {
+      recovery.conflicts += 1
+      recovery.lastError = '恢复日志损坏或无法解密'
+      throw new Error('检测到无法验证的个人记忆恢复日志；为避免数据库与 AI 状态混合，初始化已停止')
+    }
+    if (journal.phase === 'committed') {
+      recovery.committedCleanups += 1
+      this.clearMemoryRestoreJournal()
+      return
+    }
+    const safetyDatabasePath = String(journal.safetyDatabasePath || '')
+    const safetyStatePath = String(journal.safetyStatePath || '')
+    if (!safetyDatabasePath || safetyStatePath !== `${safetyDatabasePath}.state.json`) {
+      recovery.conflicts += 1
+      recovery.lastError = '恢复日志中的安全快照身份无效'
+      throw new Error('个人记忆恢复日志中的安全快照身份无效；初始化已停止')
+    }
+    try {
+      personalMemoryStore.restoreBackup(safetyDatabasePath, safetyDatabasePath)
+      const safetyState = readEncryptedDurableJson<any>(
+        safetyStatePath,
+        null,
+        this.stateEncryptionKey
+      )
+      if (safetyState.recovery.source === 'empty' || !safetyState.value) {
+        throw new Error('安全状态快照无法解密')
+      }
+      writeEncryptedDurableJson(
+        this.statePath,
+        buildEncryptedAssistantState(safetyState.value),
+        this.stateEncryptionKey
+      )
+      recovery.recovered += 1
+      recovery.lastRecoveredAt = new Date().toISOString()
+      this.clearMemoryRestoreJournal()
+    } catch (error) {
+      recovery.conflicts += 1
+      recovery.lastError = sanitizeDiagnosticText(error)
+      throw new Error('个人记忆恢复在上次退出时中断，安全回滚尚未完成；初始化已停止，请保留备份并重试')
+    }
+  }
+
   async initialize(): Promise<void> {
     this.disposed = false
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
@@ -1074,10 +1165,12 @@ export class AiAssistantService {
       throw new Error('AI 状态密钥未能写入 macOS 安全存储')
     }
     this.stateEncryptionKey = stateKey
+    this.memoryRestoreJournalPath = join(app.getPath('userData'), 'memory-restore-journal.json')
     localOcrService.initialize(join(app.getPath('userData'), 'ai-ocr-cache.json'), stateKey)
     localImageSemanticService.initialize(join(app.getPath('userData'), 'ai-image-semantic-cache.json'), stateKey)
     chatService.initializeTranscriptCacheEncryption(stateKey)
     personalMemoryStore.initialize(databasePath, databaseKey)
+    this.recoverInterruptedMemoryRestore()
     this.recoverInterruptedMemoryBackupTrash(databasePath)
     this.vectorIndexContinuationHealth = personalMemoryStore.getVectorIndexContinuationHealth()
     this.vectorQueryHealth = personalMemoryStore.getVectorQueryHealth()
@@ -7183,6 +7276,7 @@ export class AiAssistantService {
       backups: annotatedBackups,
       backupRestoreAudit,
       memoryBackupTrashRecovery: this.memoryBackupTrashRecovery,
+      memoryRestoreRecovery: this.memoryRestoreRecovery,
       backgroundWrites: describeBackgroundWriteState({
         syncing: Boolean(this.activeSync),
         syncPhase: this.activeSyncPhase,
@@ -7875,6 +7969,14 @@ export class AiAssistantService {
       restoredState = restored.value
     }
     const safety = this.createMemoryBackup([path])
+    if (!safety.stateBackupPath || !existsSync(safety.stateBackupPath)) {
+      throw new Error('恢复前的联合安全快照不完整，当前记忆未被修改')
+    }
+    this.writeMemoryRestoreJournal({
+      phase: 'prepared',
+      safetyDatabasePath: safety.path,
+      safetyStatePath: safety.stateBackupPath
+    })
     try {
       const result = personalMemoryStore.restoreBackup(path, safety.path)
       writeEncryptedDurableJson(
@@ -7884,8 +7986,15 @@ export class AiAssistantService {
       )
       this.loadState()
       this.saveState()
+      this.writeMemoryRestoreJournal({
+        phase: 'committed',
+        safetyDatabasePath: safety.path,
+        safetyStatePath: safety.stateBackupPath
+      })
+      this.clearMemoryRestoreJournal()
       return { ...result, safetyBackup: safety.path, restoredStateFrom: stateBackupPath }
     } catch (error) {
+      let rollbackError: unknown = null
       try {
         personalMemoryStore.restoreBackup(safety.path, safety.path)
         if (safety.stateBackupPath && existsSync(safety.stateBackupPath)) {
@@ -7904,7 +8013,15 @@ export class AiAssistantService {
         }
         this.loadState()
         this.saveState()
-      } catch {}
+        this.clearMemoryRestoreJournal()
+      } catch (caughtRollbackError) {
+        rollbackError = caughtRollbackError
+      }
+      if (rollbackError) {
+        this.memoryRestoreRecovery.conflicts += 1
+        this.memoryRestoreRecovery.lastError = sanitizeDiagnosticText(rollbackError)
+        throw new Error('个人记忆恢复失败且安全回滚尚未完成；恢复日志已保留，重启后会在初始化前继续回滚')
+      }
       throw error
     }
   }
