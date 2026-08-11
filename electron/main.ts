@@ -4892,6 +4892,12 @@ function registerIpcHandlers() {
     aiAssistantService.previewDiscardImportedBackupStagingConflict(id))
   ipcMain.handle('ai-assistant:discardImportedBackupStagingConflict', (_, id: string, input?: any) =>
     aiAssistantService.discardImportedBackupStagingConflict(id, input))
+  ipcMain.handle('ai-assistant:previewResolveMemoryBackupTrashConflict', (
+    _, id: string, action: 'restore' | 'discard'
+  ) => aiAssistantService.previewResolveMemoryBackupTrashConflict(id, action))
+  ipcMain.handle('ai-assistant:resolveMemoryBackupTrashConflict', (
+    _, id: string, action: 'restore' | 'discard', input?: any
+  ) => aiAssistantService.resolveMemoryBackupTrashConflict(id, action, input))
   ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string, passphrase: string) =>
     aiAssistantService.exportMemoryBundle(path, passphrase))
   ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string, passphrase?: string) =>

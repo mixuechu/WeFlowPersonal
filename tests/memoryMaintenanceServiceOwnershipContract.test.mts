@@ -34,6 +34,7 @@ test('the main process owns one lease across every mutating memory maintenance e
   assert.match(service, /runMemoryMaintenanceSync\('backup_restore'/)
   assert.match(service, /runMemoryMaintenanceAsync\('backup_delete'/)
   assert.match(service, /runMemoryMaintenanceAsync\('import_staging_discard'/)
+  assert.match(service, /runMemoryMaintenanceAsync\('backup_trash_conflict'/)
   assert.match(service, /runMemoryMaintenanceAsync\('bundle_export'/)
   assert.match(service, /runMemoryMaintenanceAsync\('bundle_import'/)
 })
@@ -91,4 +92,26 @@ test('import staging conflicts have a content-bound trash preview and visible re
   assert.match(page, /openImportedBackupStagingDialog/)
   assert.match(page, /discardImportedBackupStagingConflict/)
   assert.match(page, /预览后任一内容变化都会使本次确认失效/)
+})
+
+test('trash recovery conflicts bind an explicit non-overwriting direction', () => {
+  const resolution = between(
+    '  private inspectMemoryBackupTrashConflictForResolution(',
+    '  private inspectImportedBackupStagingConflictForDiscard('
+  )
+  assert.match(resolution, /action === 'restore' && !internal\.canRestore/)
+  assert.match(resolution, /原位置已有同名快照，不能覆盖恢复/)
+  assert.match(resolution, /action === 'discard' && !internal\.canDiscard/)
+  assert.match(resolution, /readFileSync\(artifact\.staged\)/)
+  assert.match(resolution, /bytes\.fill\(0\)/)
+  assert.match(resolution, /version: 'memory-backup-trash-conflict-resolution-v1'/)
+  assert.match(resolution, /expectedConfirmation = action === 'restore' \? '恢复原位置' : '移到废纸篓'/)
+  assert.match(resolution, /rollbackStagedMemoryBackupTrash\(/)
+  assert.match(resolution, /shell\.trashItem\(inspected\.internal\.stagingDirectory\)/)
+  assert.doesNotMatch(resolution, /preview:\s*\{[\s\S]{0,500}\bpath:/)
+
+  assert.match(page, /快照安全暂存需人工处理/)
+  assert.match(page, /禁止覆盖恢复/)
+  assert.match(page, /方向：安全暂存 → 原位置/)
+  assert.match(page, /方向：保留原位置当前文件 →/)
 })

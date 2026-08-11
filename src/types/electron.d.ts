@@ -2256,6 +2256,15 @@ export interface ElectronAPI {
         id: string,
         input?: { previewToken?: string; confirmation?: string }
       ) => Promise<any>
+      previewResolveMemoryBackupTrashConflict: (
+        id: string,
+        action: 'restore' | 'discard'
+      ) => Promise<any>
+      resolveMemoryBackupTrashConflict: (
+        id: string,
+        action: 'restore' | 'discard',
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
       exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
       inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
       importMemoryBundle: (

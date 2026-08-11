@@ -67,6 +67,8 @@ import {
   type JointMemoryBackupValidationCache
 } from './jointMemoryBackupPolicy'
 import {
+  inspectMemoryBackupTrashConflict,
+  listMemoryBackupTrashConflicts,
   recoverInterruptedMemoryBackupTrash,
   rollbackStagedMemoryBackupTrash,
   stageMemoryArtifactsTrash,
@@ -533,6 +535,7 @@ type MemoryMaintenanceKind =
   | 'backup_create'
   | 'backup_restore'
   | 'backup_delete'
+  | 'backup_trash_conflict'
   | 'import_staging_discard'
   | 'bundle_export'
   | 'bundle_import'
@@ -547,6 +550,7 @@ const MEMORY_MAINTENANCE_LABELS: Record<MemoryMaintenanceKind, string> = {
   backup_create: '创建个人记忆联合备份',
   backup_restore: '恢复个人记忆快照',
   backup_delete: '清理个人记忆快照',
+  backup_trash_conflict: '处理快照安全暂存冲突',
   import_staging_discard: '清理导入暂存冲突',
   bundle_export: '导出个人记忆迁移包',
   bundle_import: '导入个人记忆迁移包'
@@ -1135,6 +1139,29 @@ export class AiAssistantService {
     this.memoryBackupTrashRecovery = {
       ...recovery,
       lastRunAt: new Date().toISOString()
+    }
+  }
+
+  private getMemoryBackupTrashConflictCatalog(): any {
+    const backupDirectory = join(app.getPath('userData'), 'personal-memory-backups')
+    const conflicts = listMemoryBackupTrashConflicts(backupDirectory)
+    return {
+      version: 'memory-backup-trash-conflicts-v1',
+      revision: crypto.createHash('sha256').update(JSON.stringify(
+        conflicts.map(item => [item.id, item.identity])
+      )).digest('hex'),
+      total: conflicts.length,
+      items: conflicts.map(item => ({
+        id: item.id,
+        artifactCount: item.artifactCount,
+        bytes: item.bytes,
+        detectedAt: item.detectedAt,
+        invalidArtifactCount: item.invalidArtifactCount,
+        targetConflictCount: item.targetConflictCount,
+        canRestore: item.canRestore,
+        canDiscard: item.canDiscard,
+        reason: item.reason
+      }))
     }
   }
 
@@ -7379,6 +7406,7 @@ export class AiAssistantService {
       backups: annotatedBackups,
       backupRestoreAudit,
       memoryBackupTrashRecovery: this.memoryBackupTrashRecovery,
+      memoryBackupTrashConflicts: this.getMemoryBackupTrashConflictCatalog(),
       memoryRestoreRecovery: this.memoryRestoreRecovery,
       memoryMaintenance: this.getMemoryMaintenanceStatus(),
       backgroundWrites: describeBackgroundWriteState({
@@ -8085,6 +8113,109 @@ export class AiAssistantService {
         return await operation
       } finally {
         if (this.memoryBackupTrashPromise === operation) this.memoryBackupTrashPromise = null
+      }
+    })
+  }
+
+  private inspectMemoryBackupTrashConflictForResolution(
+    id: string,
+    action: 'restore' | 'discard'
+  ): { internal: any; preview: any; previewToken: string } {
+    if (!['restore', 'discard'].includes(action)) throw new Error('快照安全暂存处理方向无效')
+    const backupDirectory = join(app.getPath('userData'), 'personal-memory-backups')
+    const internal = inspectMemoryBackupTrashConflict(backupDirectory, id)
+    if (action === 'restore' && !internal.canRestore) {
+      throw new Error(internal.targetConflictCount > 0
+        ? '原位置已有同名快照，不能覆盖恢复；请保留当前文件并将暂存组移到废纸篓，或先在 Finder 中人工处理同名文件'
+        : '暂存组包含异常文件，不能自动恢复原位')
+    }
+    if (action === 'discard' && !internal.canDiscard) {
+      throw new Error('暂存组包含目录、链接或无法读取的异常项，不能由应用自动移动')
+    }
+    const artifacts = internal.artifacts.map((artifact: any, index: number) => {
+      const bytes = readFileSync(artifact.staged)
+      try {
+        return {
+          slot: index,
+          bytes: bytes.length,
+          sha256: crypto.createHash('sha256').update(bytes).digest('hex')
+        }
+      } finally {
+        bytes.fill(0)
+      }
+    })
+    const identity = {
+      version: 'memory-backup-trash-conflict-resolution-v1',
+      action,
+      id: internal.id,
+      identity: internal.identity,
+      artifacts
+    }
+    return {
+      internal,
+      previewToken: crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
+      preview: {
+        id: internal.id,
+        action,
+        artifactCount: internal.artifactCount,
+        bytes: internal.bytes,
+        detectedAt: internal.detectedAt,
+        invalidArtifactCount: internal.invalidArtifactCount,
+        targetConflictCount: internal.targetConflictCount,
+        canRestore: internal.canRestore,
+        canDiscard: internal.canDiscard,
+        reason: internal.reason
+      }
+    }
+  }
+
+  previewResolveMemoryBackupTrashConflict(
+    id: string,
+    action: 'restore' | 'discard'
+  ): any {
+    const inspected = this.inspectMemoryBackupTrashConflictForResolution(id, action)
+    return { ...inspected.preview, previewToken: inspected.previewToken }
+  }
+
+  async resolveMemoryBackupTrashConflict(
+    id: string,
+    action: 'restore' | 'discard',
+    input: { previewToken?: string; confirmation?: string } = {}
+  ): Promise<any> {
+    return this.runMemoryMaintenanceAsync('backup_trash_conflict', async lease => {
+      this.assertMemoryMaintenanceLease(lease)
+      const inspected = this.inspectMemoryBackupTrashConflictForResolution(id, action)
+      if (String(input.previewToken || '') !== inspected.previewToken) {
+        throw new Error('快照安全暂存冲突已经变化，请重新预览后再处理')
+      }
+      const expectedConfirmation = action === 'restore' ? '恢复原位置' : '移到废纸篓'
+      if (String(input.confirmation || '') !== expectedConfirmation) {
+        throw new Error(`请输入“${expectedConfirmation}”确认处理方向`)
+      }
+      if (action === 'restore') {
+        const restored = rollbackStagedMemoryBackupTrash({
+          stagingDirectory: inspected.internal.stagingDirectory,
+          artifacts: inspected.internal.artifacts.map((artifact: any) => ({
+            source: artifact.source,
+            staged: artifact.staged
+          }))
+        })
+        if (!restored) throw new Error('恢复原位置未完全完成；现场已保留，下次启动会再次尝试恢复')
+        return {
+          success: true,
+          action,
+          artifactCount: inspected.preview.artifactCount,
+          bytes: inspected.preview.bytes,
+          restoredWithoutOverwrite: true
+        }
+      }
+      await shell.trashItem(inspected.internal.stagingDirectory)
+      return {
+        success: true,
+        action,
+        artifactCount: inspected.preview.artifactCount,
+        bytes: inspected.preview.bytes,
+        recoverableFromTrash: true
       }
     })
   }

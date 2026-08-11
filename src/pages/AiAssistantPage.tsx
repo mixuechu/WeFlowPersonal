@@ -1661,11 +1661,15 @@ function AiAssistantPage() {
   const [discardingImportedBackupStaging, setDiscardingImportedBackupStaging] = useState(false)
   const [importedBackupStagingDialog, setImportedBackupStagingDialog] = useState<any>(null)
   const [importedBackupStagingConfirmation, setImportedBackupStagingConfirmation] = useState('')
+  const [resolvingMemoryBackupTrashConflict, setResolvingMemoryBackupTrashConflict] = useState(false)
+  const [memoryBackupTrashConflictDialog, setMemoryBackupTrashConflictDialog] = useState<any>(null)
+  const [memoryBackupTrashConflictConfirmation, setMemoryBackupTrashConflictConfirmation] = useState('')
   const memoryMaintenanceLock = useRef(false)
   const memoryBackupCreateGate = useRef(new LatestRequestGate())
   const memoryRestoreGate = useRef(new LatestRequestGate())
   const memoryBackupDeleteGate = useRef(new LatestRequestGate())
   const importedBackupStagingGate = useRef(new LatestRequestGate())
+  const memoryBackupTrashConflictGate = useRef(new LatestRequestGate())
   const [migratingMemory, setMigratingMemory] = useState(false)
   const [migrationDialog, setMigrationDialog] = useState<any>(null)
   const [migrationPassphrase, setMigrationPassphrase] = useState('')
@@ -3915,7 +3919,7 @@ function AiAssistantPage() {
     memoryRestoreDialog?.status === 'loading' || memoryRestoreDialog?.status === 'restoring' ||
     memoryBackupDeleteDialog?.status === 'loading' || memoryBackupDeleteDialog?.status === 'deleting'
   const memoryMaintenanceBusy = memoryBackupOperationBusy || migratingMemory || indexingVectors ||
-    discardingImportedBackupStaging ||
+    discardingImportedBackupStaging || resolvingMemoryBackupTrashConflict ||
     Boolean(status?.memoryMaintenance?.active)
   const updateReminderPreference = async (reminder: any, action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind') => {
     const key = action === 'restore_kind' ? `restore:${reminder.kind}` : reminder.id
@@ -7178,6 +7182,93 @@ function AiAssistantPage() {
       if (importedBackupStagingGate.current.isCurrent(request)) {
         memoryMaintenanceLock.current = false
         setDiscardingImportedBackupStaging(false)
+      }
+    }
+  }
+
+  const openMemoryBackupTrashConflictDialog = async (
+    conflict: any,
+    action: 'restore' | 'discard'
+  ) => {
+    if (memoryMaintenanceBusy || memoryMaintenanceLock.current || !conflict?.id) return
+    if (action === 'restore' && !conflict.canRestore) return
+    if (action === 'discard' && !conflict.canDiscard) return
+    memoryMaintenanceLock.current = true
+    const request = memoryBackupTrashConflictGate.current.begin()
+    setMemoryBackupTrashConflictConfirmation('')
+    setMemoryBackupTrashConflictDialog({ conflict, action, status: 'loading' })
+    try {
+      const preview = await window.electronAPI.aiAssistant
+        .previewResolveMemoryBackupTrashConflict(conflict.id, action)
+      if (!memoryBackupTrashConflictGate.current.isCurrent(request)) return
+      setMemoryBackupTrashConflictDialog((current: any) =>
+        current?.conflict?.id === conflict.id && current?.action === action
+          ? { conflict, action, preview, status: 'ready' }
+          : current)
+    } catch (error: any) {
+      if (!memoryBackupTrashConflictGate.current.isCurrent(request)) return
+      setMemoryBackupTrashConflictDialog((current: any) =>
+        current?.conflict?.id === conflict.id && current?.action === action
+          ? { conflict, action, status: 'error', error: error?.message || String(error) }
+          : current)
+    } finally {
+      if (memoryBackupTrashConflictGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+      }
+    }
+  }
+
+  const closeMemoryBackupTrashConflictDialog = () => {
+    if (resolvingMemoryBackupTrashConflict) return
+    memoryBackupTrashConflictGate.current.invalidate()
+    memoryMaintenanceLock.current = false
+    setMemoryBackupTrashConflictDialog(null)
+    setMemoryBackupTrashConflictConfirmation('')
+  }
+
+  const resolveMemoryBackupTrashConflict = async () => {
+    const preview = memoryBackupTrashConflictDialog?.preview
+    const action = memoryBackupTrashConflictDialog?.action as 'restore' | 'discard' | undefined
+    const expectedConfirmation = action === 'restore' ? '恢复原位置' : '移到废纸篓'
+    if (
+      memoryMaintenanceBusy
+      || memoryMaintenanceLock.current
+      || memoryBackupTrashConflictDialog?.status !== 'ready'
+      || !preview?.id
+      || !action
+      || memoryBackupTrashConflictConfirmation !== expectedConfirmation
+    ) return
+    memoryMaintenanceLock.current = true
+    const request = memoryBackupTrashConflictGate.current.begin()
+    setResolvingMemoryBackupTrashConflict(true)
+    setMemoryBackupTrashConflictDialog((current: any) =>
+      current ? { ...current, status: 'resolving', error: '' } : current)
+    try {
+      const result = await window.electronAPI.aiAssistant.resolveMemoryBackupTrashConflict(
+        preview.id,
+        action,
+        {
+          previewToken: preview.previewToken,
+          confirmation: expectedConfirmation
+        }
+      )
+      if (!memoryBackupTrashConflictGate.current.isCurrent(request)) return
+      setMessage(action === 'restore'
+        ? `已在不覆盖任何现有文件的前提下恢复 ${Number(result.artifactCount || 0)} 个快照文件`
+        : `冲突暂存组已移到废纸篓，共 ${Number(result.artifactCount || 0)} 个文件`)
+      setMemoryBackupTrashConflictDialog(null)
+      setMemoryBackupTrashConflictConfirmation('')
+      await refreshMemoryDiagnostics().catch(() => {})
+    } catch (error: any) {
+      if (!memoryBackupTrashConflictGate.current.isCurrent(request)) return
+      const message = error?.message || String(error)
+      setMessage(message)
+      setMemoryBackupTrashConflictDialog((current: any) =>
+        current ? { ...current, status: 'error', error: message } : current)
+    } finally {
+      if (memoryBackupTrashConflictGate.current.isCurrent(request)) {
+        memoryMaintenanceLock.current = false
+        setResolvingMemoryBackupTrashConflict(false)
       }
     }
   }
@@ -10870,6 +10961,37 @@ function AiAssistantPage() {
                       </button>
                     </div>
                   })}
+                </div>
+              </details>}
+              {!!memoryDiagnostics.memoryBackupTrashConflicts?.items?.length && <details open>
+                <summary>快照安全暂存需人工处理（{Number(
+                  memoryDiagnostics.memoryBackupTrashConflicts.total || 0
+                )} 组）</summary>
+                <div>
+                  {memoryDiagnostics.memoryBackupTrashConflicts.items.map((conflict: any) =>
+                    <div key={conflict.id}>
+                      <span>
+                        {conflict.reason === 'target_conflict'
+                          ? `原位置已有 ${Number(conflict.targetConflictCount || 0)} 个同名文件，禁止覆盖恢复`
+                          : conflict.reason === 'invalid_artifact'
+                            ? `包含 ${Number(conflict.invalidArtifactCount || 0)} 个异常文件，禁止自动恢复`
+                            : '原位置当前为空，可以安全重试恢复'}
+                        {' · '}{Number(conflict.artifactCount || 0)} 个文件
+                        {' · '}{(Number(conflict.bytes || 0) / 1024 / 1024).toFixed(1)} MB
+                      </span>
+                      {conflict.canRestore && <button disabled={memoryMaintenanceBusy}
+                        title="只恢复到原文件名；服务端再次确认没有同名目标，绝不覆盖"
+                        onClick={() => void openMemoryBackupTrashConflictDialog(conflict, 'restore')}>
+                        恢复原位置
+                      </button>}
+                      <button disabled={memoryMaintenanceBusy || !conflict.canDiscard}
+                        title={conflict.canDiscard
+                          ? '保留当前文件，把冲突暂存组整体移到 macOS 废纸篓'
+                          : '包含目录、链接或无法读取项，需要在 Finder 中人工处理'}
+                        onClick={() => void openMemoryBackupTrashConflictDialog(conflict, 'discard')}>
+                        保留当前文件，移走暂存组
+                      </button>
+                    </div>)}
                 </div>
               </details>}
               {!!memoryDiagnostics.importedBackupStagingConflicts?.items?.length && <details open>
@@ -17520,7 +17642,8 @@ function AiAssistantPage() {
               {memoryDiagnostics.memoryBackupTrashRecovery && <small>
                 启动检查安全暂存区 {Number(memoryDiagnostics.memoryBackupTrashRecovery.checked || 0)}
                 {' · '}已恢复中断清理 {Number(memoryDiagnostics.memoryBackupTrashRecovery.restored || 0)}
-                {' · '}需人工检查 {Number(memoryDiagnostics.memoryBackupTrashRecovery.conflicts || 0)}
+                {' · '}本次启动发现冲突 {Number(memoryDiagnostics.memoryBackupTrashRecovery.conflicts || 0)}
+                {' · '}当前仍遗留 {Number(memoryDiagnostics.memoryBackupTrashConflicts?.total || 0)}
               </small>}
               {memoryDiagnostics.memoryRestoreRecovery && <small>
                 恢复事务启动检查 {Number(memoryDiagnostics.memoryRestoreRecovery.checked || 0)} 次
@@ -20048,6 +20171,89 @@ function AiAssistantPage() {
                     importedBackupStagingConfirmation !== '移到废纸篓'}
                   onClick={() => void discardImportedBackupStagingConflict()}>
                   {discardingImportedBackupStaging ? '正在安全移动…' : '确认移到废纸篓'}
+                </button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {memoryBackupTrashConflictDialog && (
+        <div className="assistant-modal-backdrop" role="presentation">
+          <div className="assistant-modal assistant-delete-modal" role="dialog" aria-modal="true"
+            aria-labelledby="memory-backup-trash-conflict-title">
+            <div className="assistant-modal-title"><div>
+              <h2 id="memory-backup-trash-conflict-title">
+                {memoryBackupTrashConflictDialog.action === 'restore'
+                  ? '恢复快照安全暂存' : '移走冲突暂存组'}
+              </h2>
+              <p>{memoryBackupTrashConflictDialog.action === 'restore'
+                ? '方向：安全暂存 → 原位置。只有原位置不存在任何同名目标时才允许执行，绝不覆盖。'
+                : '方向：保留原位置当前文件 → 将安全暂存组整体移到 macOS 废纸篓。'}</p>
+            </div><button aria-label="关闭快照安全暂存处理确认"
+              disabled={resolvingMemoryBackupTrashConflict}
+              onClick={closeMemoryBackupTrashConflictDialog}><X size={16} /></button></div>
+            {memoryBackupTrashConflictDialog.status === 'loading' &&
+              <div className="assistant-delete-status">
+                <RefreshCw size={16} /><span><strong>正在重新核验文件与方向…</strong>
+                  <small>逐文件计算内容摘要，且不会向界面返回文件名或路径。</small></span>
+              </div>}
+            {memoryBackupTrashConflictDialog.status === 'error' && <div className="assistant-error">
+              <strong>安全暂存处理失败</strong>
+              <span>{memoryBackupTrashConflictDialog.error || '未知错误'}</span>
+            </div>}
+            {(memoryBackupTrashConflictDialog.status === 'ready' ||
+              memoryBackupTrashConflictDialog.status === 'resolving') && <>
+              <div className="assistant-delete-preview">
+                <strong>{memoryBackupTrashConflictDialog.action === 'restore'
+                  ? '恢复方向已确认：暂存文件回到原位置'
+                  : '保留方向已确认：当前文件不动，暂存组进入废纸篓'}</strong>
+                <p>
+                  本次处理 {Number(memoryBackupTrashConflictDialog.preview.artifactCount || 0)} 个文件，
+                  共 {(Number(memoryBackupTrashConflictDialog.preview.bytes || 0) / 1024 / 1024).toFixed(1)} MB。
+                </p>
+                <p>
+                  同名目标 {Number(memoryBackupTrashConflictDialog.preview.targetConflictCount || 0)} 个；
+                  异常项目 {Number(memoryBackupTrashConflictDialog.preview.invalidArtifactCount || 0)} 个。
+                  预览后文件内容、布局或目标占用发生变化，服务端都会拒绝旧确认。
+                </p>
+              </div>
+              <label><span>输入“{memoryBackupTrashConflictDialog.action === 'restore'
+                ? '恢复原位置' : '移到废纸篓'}”确认</span><input autoFocus
+                value={memoryBackupTrashConflictConfirmation}
+                disabled={memoryBackupTrashConflictDialog.status === 'resolving'}
+                onChange={event => setMemoryBackupTrashConflictConfirmation(event.target.value)}
+                onKeyDown={event => {
+                  const expected = memoryBackupTrashConflictDialog.action === 'restore'
+                    ? '恢复原位置' : '移到废纸篓'
+                  if (event.key === 'Enter' && memoryBackupTrashConflictConfirmation === expected) {
+                    void resolveMemoryBackupTrashConflict()
+                  }
+                }}
+                placeholder={memoryBackupTrashConflictDialog.action === 'restore'
+                  ? '恢复原位置' : '移到废纸篓'} /></label>
+            </>}
+            <div className="assistant-modal-actions">
+              <button disabled={resolvingMemoryBackupTrashConflict}
+                onClick={closeMemoryBackupTrashConflictDialog}>取消</button>
+              {memoryBackupTrashConflictDialog.status === 'error' && <button
+                disabled={resolvingMemoryBackupTrashConflict}
+                onClick={() => void openMemoryBackupTrashConflictDialog(
+                  memoryBackupTrashConflictDialog.conflict,
+                  memoryBackupTrashConflictDialog.action
+                )}>重新核验</button>}
+              {(memoryBackupTrashConflictDialog.status === 'ready' ||
+                memoryBackupTrashConflictDialog.status === 'resolving') &&
+                <button className={memoryBackupTrashConflictDialog.action === 'discard'
+                  ? 'danger' : 'primary'}
+                  disabled={resolvingMemoryBackupTrashConflict ||
+                    memoryBackupTrashConflictConfirmation !== (
+                      memoryBackupTrashConflictDialog.action === 'restore'
+                        ? '恢复原位置' : '移到废纸篓')}
+                  onClick={() => void resolveMemoryBackupTrashConflict()}>
+                  {resolvingMemoryBackupTrashConflict
+                    ? '正在安全处理…'
+                    : memoryBackupTrashConflictDialog.action === 'restore'
+                      ? '确认恢复且不覆盖' : '确认保留当前文件'}
                 </button>}
             </div>
           </div>
