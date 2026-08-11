@@ -25343,6 +25343,53 @@ test('maintenance audit is privacy-minimal, idempotent, filterable, and revision
   }
 })
 
+test('maintenance audit indexes cover every filter and self-heal exact definition drift', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-maintenance-audit-indexes-'))
+  const databasePath = join(directory, 'memory.sqlite')
+  const key = randomBytes(32)
+  const first = new PersonalMemoryStore()
+  try {
+    first.initialize(databasePath, key)
+    const database = (first as any).db
+    const plans = [
+      database.prepare(`EXPLAIN QUERY PLAN SELECT id FROM memory_maintenance_audit
+        ORDER BY completed_at DESC,id DESC LIMIT 40`).all(),
+      database.prepare(`EXPLAIN QUERY PLAN SELECT id FROM memory_maintenance_audit
+        WHERE operation=? ORDER BY completed_at DESC,id DESC LIMIT 40`).all('bundle_import'),
+      database.prepare(`EXPLAIN QUERY PLAN SELECT id FROM memory_maintenance_audit
+        WHERE trigger_kind=? ORDER BY completed_at DESC,id DESC LIMIT 40`).all('recovery')
+    ].map(rows => JSON.stringify(rows))
+    assert.match(plans[0], /idx_memory_maintenance_audit_time/)
+    assert.match(plans[1], /idx_memory_maintenance_audit_operation_time/)
+    assert.match(plans[2], /idx_memory_maintenance_audit_trigger_time/)
+    assert.equal(first.getMemoryMaintenanceAuditIndexHealth().healthy, true)
+    database.exec(`
+      DROP INDEX idx_memory_maintenance_audit_trigger_time;
+      CREATE INDEX idx_memory_maintenance_audit_trigger_time
+        ON memory_maintenance_audit(trigger_kind,id)
+    `)
+    assert.equal(first.getMemoryMaintenanceAuditIndexHealth().healthy, false)
+    first.close()
+    const reopened = new PersonalMemoryStore()
+    try {
+      reopened.initialize(databasePath, key)
+      const health = reopened.getMemoryMaintenanceAuditIndexHealth()
+      assert.equal(health.healthy, true)
+      assert.equal(health.expectedIndexes, 3)
+      assert.equal(health.validIndexes, 3)
+      assert.equal(health.repairedIndexesThisStart, 1)
+      assert.ok(health.repairsTotal >= 1)
+      assert.equal(reopened.getDiagnostics().memoryMaintenanceAuditRevisionHealthy, true)
+    } finally {
+      reopened.close()
+    }
+  } finally {
+    first.close()
+    key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('personal memory migrates atomically to SQLCipher and keeps encrypted backups restorable', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-memory-cipher-test-'))
   const databasePath = join(directory, 'memory.sqlite')

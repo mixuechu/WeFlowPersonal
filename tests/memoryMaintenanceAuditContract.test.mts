@@ -44,6 +44,8 @@ test('maintenance audit delivery health and manual retry are visible end to end'
   assert.match(preload, /retryMemoryMaintenanceAuditDelivery/)
   assert.match(main, /ai-assistant:retryMemoryMaintenanceAuditDelivery/)
   assert.match(page, /SQLCipher revision 保护/)
+  assert.match(page, /筛选索引/)
+  assert.match(page, /索引本次\/累计自愈/)
   assert.match(page, /等待投递/)
   assert.match(page, /异常状态项隔离/)
   assert.match(page, /立即重试审计投递/)

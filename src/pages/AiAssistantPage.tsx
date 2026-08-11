@@ -18830,6 +18830,16 @@ function AiAssistantPage() {
               <div className="assistant-recovery-current">
                 <span>SQLCipher revision 保护 <b>{memoryDiagnostics.memoryMaintenanceAuditRevisionHealthy
                   ? '正常' : '需要检查'}</b></span>
+                <span>筛选索引 <b>{Number(
+                  memoryDiagnostics.memoryMaintenanceAuditRevision?.indexes?.validIndexes || 0
+                )} / {Number(
+                  memoryDiagnostics.memoryMaintenanceAuditRevision?.indexes?.expectedIndexes || 0
+                )}</b></span>
+                <span>索引本次/累计自愈 <b>{Number(
+                  memoryDiagnostics.memoryMaintenanceAuditRevision?.indexes?.repairedIndexesThisStart || 0
+                )} / {Number(
+                  memoryDiagnostics.memoryMaintenanceAuditRevision?.indexes?.repairsTotal || 0
+                )}</b></span>
                 <span>等待投递 <b>{Number(
                   memoryDiagnostics.memoryMaintenanceAuditDelivery?.pending || 0
                 )}</b></span>

@@ -1734,6 +1734,8 @@ export class PersonalMemoryStore {
         ON memory_maintenance_audit(completed_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_maintenance_audit_operation_time
         ON memory_maintenance_audit(operation,completed_at DESC,id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_maintenance_audit_trigger_time
+        ON memory_maintenance_audit(trigger_kind,completed_at DESC,id DESC);
 
       CREATE TABLE IF NOT EXISTS memory_change_log (
         id INTEGER PRIMARY KEY,
@@ -1975,6 +1977,7 @@ export class PersonalMemoryStore {
     this.ensureMemorySearchFeedbackArchiveRevisionTriggers()
     this.ensureMemoryDeletionAuditRevisionTriggers()
     this.ensureMemoryMaintenanceAuditRevisionTriggers()
+    this.ensureMemoryMaintenanceAuditIndexes()
     this.ensureMemoryEvidenceArchiveRevisionTriggers()
     this.ensureStructuredMemoryRevisionTriggers()
     this.backfillHumanReviewCalibrationHistory()
@@ -3848,6 +3851,111 @@ export class PersonalMemoryStore {
     })
   }
 
+  private memoryMaintenanceAuditIndexDefinitions(): Array<{ name: string; sql: string }> {
+    return [{
+      name: 'idx_memory_maintenance_audit_time',
+      sql: `CREATE INDEX idx_memory_maintenance_audit_time
+        ON memory_maintenance_audit(completed_at DESC,id DESC)`
+    }, {
+      name: 'idx_memory_maintenance_audit_operation_time',
+      sql: `CREATE INDEX idx_memory_maintenance_audit_operation_time
+        ON memory_maintenance_audit(operation,completed_at DESC,id DESC)`
+    }, {
+      name: 'idx_memory_maintenance_audit_trigger_time',
+      sql: `CREATE INDEX idx_memory_maintenance_audit_trigger_time
+        ON memory_maintenance_audit(trigger_kind,completed_at DESC,id DESC)`
+    }]
+  }
+
+  private inspectMemoryMaintenanceAuditIndexes(): any {
+    const definitions = this.memoryMaintenanceAuditIndexDefinitions()
+    if (!this.db) return {
+      version: 'memory-maintenance-audit-indexes-v1',
+      healthy: false,
+      expectedIndexes: definitions.length,
+      validIndexes: 0,
+      unhealthyIndexes: definitions.map(item => item.name)
+    }
+    const normalize = (value: unknown) => String(value || '').toLowerCase()
+      .replace(/;/g, '').replace(/\s+/g, ' ').trim()
+    const rows = this.db.prepare(`
+      SELECT name,sql FROM sqlite_master
+      WHERE type='index' AND name LIKE 'idx_memory_maintenance_audit_%'
+    `).all() as Array<{ name: string; sql: string }>
+    const installed = new Map(rows.map(row => [row.name, row.sql]))
+    const unhealthyIndexes = definitions.filter(definition =>
+      normalize(installed.get(definition.name)) !== normalize(definition.sql)
+    ).map(definition => definition.name)
+    const unexpectedIndexes = rows.map(row => row.name)
+      .filter(name => !definitions.some(definition => definition.name === name)).sort()
+    return {
+      version: 'memory-maintenance-audit-indexes-v1',
+      healthy: unhealthyIndexes.length === 0 && unexpectedIndexes.length === 0,
+      expectedIndexes: definitions.length,
+      validIndexes: definitions.length - unhealthyIndexes.length,
+      unhealthyIndexes,
+      unexpectedIndexes
+    }
+  }
+
+  private ensureMemoryMaintenanceAuditIndexes(): void {
+    if (!this.db) return
+    const before = this.inspectMemoryMaintenanceAuditIndexes()
+    const previousRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='memory_maintenance_audit_indexes_integrity'
+    `).get() as any
+    let previous: any = {}
+    try { previous = JSON.parse(String(previousRow?.value || '{}')) } catch {}
+    const definitions = this.memoryMaintenanceAuditIndexDefinitions()
+    const byName = new Map(definitions.map(definition => [definition.name, definition]))
+    if (!before.healthy) {
+      this.db.transaction(() => {
+        for (const name of [...before.unhealthyIndexes, ...before.unexpectedIndexes]) {
+          this.db!.exec(`DROP INDEX IF EXISTS "${String(name).replace(/"/g, '""')}"`)
+          const definition = byName.get(name)
+          if (definition) this.db!.exec(definition.sql)
+        }
+      })()
+    }
+    const after = this.inspectMemoryMaintenanceAuditIndexes()
+    const repairedIndexesThisStart =
+      before.unhealthyIndexes.length + before.unexpectedIndexes.length
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO schema_meta(key,value,updated_at)
+      VALUES('memory_maintenance_audit_indexes_integrity',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at
+    `).run(JSON.stringify({
+      ...after,
+      checkedAt: now,
+      repairedThisStart: repairedIndexesThisStart > 0,
+      repairedIndexesThisStart,
+      repairsTotal: Number(previous.repairsTotal || 0) +
+        (repairedIndexesThisStart > 0 ? 1 : 0)
+    }), now)
+  }
+
+  getMemoryMaintenanceAuditIndexHealth(): any {
+    const live = this.inspectMemoryMaintenanceAuditIndexes()
+    if (!this.db) return {
+      ...live, checkedAt: '', repairedThisStart: false,
+      repairedIndexesThisStart: 0, repairsTotal: 0
+    }
+    const row = this.db.prepare(`
+      SELECT value,updated_at FROM schema_meta
+      WHERE key='memory_maintenance_audit_indexes_integrity'
+    `).get() as any
+    let audit: any = {}
+    try { audit = JSON.parse(String(row?.value || '{}')) } catch {}
+    return {
+      ...live,
+      checkedAt: String(audit.checkedAt || row?.updated_at || ''),
+      repairedThisStart: Boolean(audit.repairedThisStart),
+      repairedIndexesThisStart: Number(audit.repairedIndexesThisStart || 0),
+      repairsTotal: Number(audit.repairsTotal || 0)
+    }
+  }
+
   getMemoryMaintenanceAuditRevision(): string {
     if (!this.db) return '0'
     return String((this.db.prepare(`
@@ -3856,7 +3964,7 @@ export class PersonalMemoryStore {
   }
 
   getMemoryMaintenanceAuditRevisionHealth(): any {
-    return this.getRevisionTriggerSetHealth({
+    const revision = this.getRevisionTriggerSetHealth({
       prefix: 'memory_maintenance_audit_revision',
       revisionKey: 'memory_maintenance_audit_revision',
       tables: ['memory_maintenance_audit'],
@@ -3865,6 +3973,8 @@ export class PersonalMemoryStore {
       nameFor: (_table, operation) =>
         `trg_memory_maintenance_audit_revision_${operation.toLowerCase()}`
     })
+    const indexes = this.getMemoryMaintenanceAuditIndexHealth()
+    return { ...revision, indexes, healthy: revision.healthy && indexes.healthy }
   }
 
   private ensureMemoryEvidenceArchiveRevisionTriggers(): void {
