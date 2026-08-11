@@ -110,6 +110,112 @@ export function mergeDailyBriefing(existing: any, incoming: any): any {
   }
 }
 
+function briefingArchiveRevision(entries: Array<[string, any]>): string {
+  const hash = createHash('sha256')
+  for (const [date, briefing] of entries) {
+    hash.update(JSON.stringify({
+      date,
+      generatedAt: String(briefing?.generatedAt || ''),
+      messageCount: boundedCount(briefing?.messageCount),
+      incrementCount: boundedCount(briefing?.incrementCount),
+      summary: String(briefing?.summary || '').slice(0, 900),
+      summaryVerified: briefing?.summaryVerified === true,
+      summaryEvidenceTotal: boundedCount(briefing?.summaryEvidenceTotal),
+      summaryEvidence: (Array.isArray(briefing?.summaryEvidence)
+        ? briefing.summaryEvidence : []).slice(0, 40).map((evidence: any) => ({
+        evidenceKey: String(evidence?.evidenceKey || '').slice(0, 1_100),
+        timestamp: Number.isFinite(Number(evidence?.timestamp)) ? Number(evidence.timestamp) : 0,
+        sender: String(evidence?.sender || '').slice(0, 200),
+        excerpt: String(evidence?.excerpt || '').slice(0, 500)
+      })),
+      highlights: Array.isArray(briefing?.highlights)
+        ? briefing.highlights.map(String).slice(0, 8)
+        : []
+    }))
+  }
+  return `briefing-archive-v1:${hash.digest('hex')}`
+}
+
+function projectBriefingEvidence(value: any): any | null {
+  if (!value || typeof value !== 'object') return null
+  const sourceId = String(value.sourceId || 'wechat').slice(0, 100)
+  const sessionId = String(value.sessionId || '').slice(0, 500)
+  const messageId = String(value.messageId || '').slice(0, 500)
+  const evidenceKey = String(value.evidenceKey || '').slice(0, 1_100)
+  if (!sessionId || !messageId || !evidenceKey) return null
+  return {
+    evidenceKey,
+    sourceId,
+    messageId,
+    sessionId,
+    sessionName: String(value.sessionName || '').slice(0, 500),
+    timestamp: Number.isFinite(Number(value.timestamp)) ? Number(value.timestamp) : 0,
+    sender: String(value.sender || '').slice(0, 200),
+    excerpt: String(value.excerpt || '').slice(0, 500)
+  }
+}
+
+export function buildBriefingArchivePage(
+  briefings: Record<string, any> | null | undefined,
+  options: { offset?: number; limit?: number; revision?: string } = {}
+): any {
+  const source = briefings && typeof briefings === 'object' ? briefings : {}
+  const entries = Object.entries(source)
+    .filter(([date]) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort(([left], [right]) => right.localeCompare(left))
+  const revision = briefingArchiveRevision(entries)
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+  const limit = Math.max(1, Math.min(14, Math.floor(Number(options.limit) || 7)))
+  if (options.revision && options.revision !== revision) {
+    return {
+      items: [], total: entries.length, offset, limit, hasMore: false,
+      nextOffset: offset, revision, stale: true
+    }
+  }
+  const items = entries.slice(offset, offset + limit).map(([date, briefing]) => {
+    const evidence = (Array.isArray(briefing?.summaryEvidence)
+      ? briefing.summaryEvidence : [])
+      .slice(0, 40)
+      .map(projectBriefingEvidence)
+      .filter(Boolean)
+    const evidenceTotal = Math.max(
+      evidence.length,
+      Math.min(1_000_000, boundedCount(briefing?.summaryEvidenceTotal))
+    )
+    return {
+      date,
+      headline: String(briefing?.headline || '').slice(0, 300),
+      summary: String(briefing?.summary || '').slice(0, 900),
+      summaryVerified: briefing?.summaryVerified === true && evidenceTotal > 0,
+      summaryEvidence: evidence,
+      summaryEvidenceTotal: evidenceTotal,
+      summaryEvidenceTruncated: evidenceTotal > evidence.length,
+      highlights: (Array.isArray(briefing?.highlights) ? briefing.highlights : [])
+        .map((value: any) => String(value || '').trim().slice(0, 300))
+        .filter(Boolean)
+        .slice(0, 8),
+      messageCount: boundedCount(briefing?.messageCount),
+      incrementCount: boundedCount(briefing?.incrementCount),
+      lastIncrementMessageCount: boundedCount(briefing?.lastIncrementMessageCount),
+      failedSessions: boundedCount(briefing?.failedSessions),
+      failedSessionsTotal: boundedCount(briefing?.failedSessionsTotal),
+      firstGeneratedAt: String(briefing?.firstGeneratedAt || '').slice(0, 100),
+      generatedAt: String(briefing?.generatedAt || '').slice(0, 100)
+    }
+  })
+  const nextOffset = offset + items.length
+  return {
+    items,
+    total: entries.length,
+    offset,
+    limit,
+    hasMore: nextOffset < entries.length,
+    nextOffset,
+    revision,
+    stale: false
+  }
+}
+
 export function buildWeeklyBriefing(
   briefings: Record<string, any>,
   tasks: any[],
@@ -165,3 +271,4 @@ export function buildWeeklyBriefing(
     summaries
   }
 }
+import { createHash } from 'crypto'

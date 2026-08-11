@@ -93,6 +93,7 @@ import {
 } from '../electron/services/identityDisambiguation.ts'
 import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
 import {
+  buildBriefingArchivePage,
   buildWeeklyBriefing,
   isQuietTime,
   mergeDailyBriefing
@@ -7323,6 +7324,63 @@ test('same-day briefing increments accumulate once with newest grounded content 
   assert.equal(legacyMerged.incrementCount, 2)
   assert.equal(legacyMerged.failedSessionsTotal, 3)
   assert.equal(legacyMerged.firstGeneratedAt, 'legacy')
+})
+
+test('briefing archive pages ninety-day state without exposing replay identities', () => {
+  const briefings = Object.fromEntries(Array.from({ length: 20 }, (_, index) => {
+    const day = String(index + 1).padStart(2, '0')
+    return [`2026-07-${day}`, {
+      headline: `简报 ${day}`,
+      summary: `摘要 ${day}`,
+      messageCount: index + 1,
+      incrementCount: 2,
+      recentIncrementIds: ['private-replay-id'],
+      incrementId: 'private-current-id',
+      summaryVerified: true,
+      summaryEvidenceTotal: 2,
+      summaryEvidence: [{
+        evidenceKey: `wechat:session:message-${day}`,
+        sourceId: 'wechat', sessionId: 'session', messageId: `message-${day}`,
+        sessionName: '测试群', sender: '成员', timestamp: 1,
+        excerpt: `原文 ${day}`
+      }, { evidenceKey: '', sessionId: 'invalid', messageId: 'invalid' }],
+      highlights: [`重点 ${day}`],
+      firstGeneratedAt: '2026-07-01T00:00:00.000Z',
+      generatedAt: `2026-07-${day}T01:00:00.000Z`
+    }]
+  }))
+  const first = buildBriefingArchivePage(briefings, { limit: 7 })
+  assert.equal(first.items.length, 7)
+  assert.equal(first.total, 20)
+  assert.equal(first.hasMore, true)
+  assert.equal(first.nextOffset, 7)
+  assert.equal(first.items[0].date, '2026-07-20')
+  assert.equal(first.items[0].summaryEvidence.length, 1)
+  assert.equal(first.items[0].summaryEvidenceTotal, 2)
+  assert.equal(first.items[0].summaryEvidenceTruncated, true)
+  assert.equal('recentIncrementIds' in first.items[0], false)
+  assert.equal('incrementId' in first.items[0], false)
+
+  const second = buildBriefingArchivePage(briefings, {
+    offset: first.nextOffset, limit: 99, revision: first.revision
+  })
+  assert.equal(second.items.length, 13)
+  assert.equal(second.limit, 14)
+  assert.equal(second.items[0].date, '2026-07-13')
+  assert.equal(second.hasMore, false)
+  const changed = { ...briefings, '2026-07-21': { summary: '新增一天' } }
+  const stale = buildBriefingArchivePage(changed, {
+    offset: 7, revision: first.revision
+  })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.items.length, 0)
+  assert.notEqual(stale.revision, first.revision)
+  const evidenceChanged = structuredClone(briefings)
+  evidenceChanged['2026-07-20'].summaryEvidence[0].excerpt =
+    '同数量下修复后的引用正文'
+  assert.equal(buildBriefingArchivePage(evidenceChanged, {
+    offset: 7, revision: first.revision
+  }).stale, true)
 })
 
 test('weekly briefing accepts authoritative task counts without scanning a task collection', () => {

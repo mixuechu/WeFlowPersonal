@@ -1657,6 +1657,20 @@ export interface ElectronAPI {
   aiAssistant: {
     status: () => Promise<any>
     dashboard: () => Promise<any>
+      getBriefingArchivePage: (options?: {
+        offset?: number
+        limit?: number
+        revision?: string
+      }) => Promise<{
+        items: any[]
+        total: number
+        offset: number
+        limit: number
+        hasMore: boolean
+        nextOffset: number
+        revision: string
+        stale: boolean
+      }>
       getGraphReviewPage: (options?: {
         status?: 'pending' | 'resolved' | 'all'
         kind?: string

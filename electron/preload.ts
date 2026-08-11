@@ -618,6 +618,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiAssistant: {
     status: () => ipcRenderer.invoke('ai-assistant:status'),
     dashboard: () => ipcRenderer.invoke('ai-assistant:dashboard'),
+    getBriefingArchivePage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getBriefingArchivePage', options),
     getGraphReviewPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphReviewPage', options),
     getGraphReviewEvidencePage: (reviewId: string, options?: any) =>
       ipcRenderer.invoke('ai-assistant:getGraphReviewEvidencePage', reviewId, options),

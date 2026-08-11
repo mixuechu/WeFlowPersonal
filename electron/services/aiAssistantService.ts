@@ -168,7 +168,12 @@ import {
   classifyTaskAssignment,
   evaluateTaskAssignmentPolicy
 } from './taskAssignmentPolicy'
-import { buildWeeklyBriefing, isQuietTime, mergeDailyBriefing } from './briefingIntelligence'
+import {
+  buildBriefingArchivePage,
+  buildWeeklyBriefing,
+  isQuietTime,
+  mergeDailyBriefing
+} from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
   buildStructuredExtractionEvidence,
@@ -6400,6 +6405,14 @@ export class AiAssistantService {
         inFlight: Boolean(this.notificationFlushPromise)
       }
     }
+  }
+
+  getBriefingArchivePage(options?: {
+    offset?: number
+    limit?: number
+    revision?: string
+  }): any {
+    return buildBriefingArchivePage(this.state.briefings, options || {})
   }
 
   getTaskWorkspace(taskId: string): any {

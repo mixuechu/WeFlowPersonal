@@ -4654,6 +4654,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle('ai-assistant:status', () => aiAssistantService.getStatus())
   ipcMain.handle('ai-assistant:dashboard', () => aiAssistantService.getDashboard())
+  ipcMain.handle('ai-assistant:getBriefingArchivePage', (_, options?: any) =>
+    aiAssistantService.getBriefingArchivePage(options))
   ipcMain.handle('ai-assistant:getGraphReviewPage', (_, options?: any) =>
     aiAssistantService.getGraphReviewPage(options))
   ipcMain.handle('ai-assistant:getGraphReviewEvidencePage', (_, reviewId: string, options?: any) =>

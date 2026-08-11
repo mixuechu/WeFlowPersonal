@@ -1068,7 +1068,14 @@ function AiAssistantPage() {
   const [entityAuditLoadingMore, setEntityAuditLoadingMore] =
     useState<Record<string, boolean>>({})
   const entityAuditGates = useRef(new KeyedLatestRequestGates())
-  const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week'>('latest')
+  const [briefingPeriod, setBriefingPeriod] = useState<'latest' | 'week' | 'archive'>('latest')
+  const [briefingArchive, setBriefingArchive] = useState<any>({
+    items: [], total: 0, hasMore: false, nextOffset: 0,
+    revision: '', status: 'idle', error: ''
+  })
+  const [briefingArchiveLoadingMore, setBriefingArchiveLoadingMore] = useState(false)
+  const [briefingArchiveRefreshKey, setBriefingArchiveRefreshKey] = useState(0)
+  const briefingArchiveGate = useRef(new LatestRequestGate())
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [projectDirectory, setProjectDirectory] = useState<any>({
     items: [], total: 0, hasMore: false, revision: '', loading: false
@@ -2205,6 +2212,57 @@ function AiAssistantPage() {
       if (dashboardLoadGate.current.isCurrent(request)) setDashboardRefreshing(false)
     }
   }, [])
+
+  useEffect(() => {
+    if (briefingPeriod !== 'archive') return
+    const request = briefingArchiveGate.current.begin()
+    setBriefingArchive((current: any) => ({ ...current, status: 'loading', error: '' }))
+    void window.electronAPI.aiAssistant.getBriefingArchivePage({ limit: 7 })
+      .then(page => {
+        if (!briefingArchiveGate.current.isCurrent(request)) return
+        setBriefingArchive({ ...page, status: 'ready', error: '' })
+      })
+      .catch(error => {
+        if (!briefingArchiveGate.current.isCurrent(request)) return
+        setBriefingArchive((current: any) => ({
+          ...current,
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error)
+        }))
+      })
+    return () => briefingArchiveGate.current.invalidate()
+  }, [briefingPeriod, briefingArchiveRefreshKey])
+
+  const loadMoreBriefingArchive = async () => {
+    if (briefingArchiveLoadingMore || !briefingArchive.hasMore) return
+    setBriefingArchiveLoadingMore(true)
+    try {
+      const page = await window.electronAPI.aiAssistant.getBriefingArchivePage({
+        offset: briefingArchive.nextOffset,
+        limit: 7,
+        revision: briefingArchive.revision
+      })
+      if (page.stale) {
+        setMessage('简报档案在浏览期间发生了变化，已从最新第一页重新加载。')
+        setBriefingArchiveRefreshKey(value => value + 1)
+        return
+      }
+      setBriefingArchive((current: any) => ({
+        ...page,
+        items: [...current.items, ...page.items],
+        status: 'ready',
+        error: ''
+      }))
+    } catch (error) {
+      setBriefingArchive((current: any) => ({
+        ...current,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error)
+      }))
+    } finally {
+      setBriefingArchiveLoadingMore(false)
+    }
+  }
 
   const refreshDashboardAfterCommittedAction = async (successMessage: string) => {
     const request = committedActionRefreshGate.current.begin()
@@ -11664,6 +11722,7 @@ function AiAssistantPage() {
             <div className="assistant-briefing-tabs">
               <button className={briefingPeriod === 'latest' ? 'active' : ''} onClick={() => setBriefingPeriod('latest')}>最新增量</button>
               <button className={briefingPeriod === 'week' ? 'active' : ''} onClick={() => setBriefingPeriod('week')}>本周汇总</button>
+              <button className={briefingPeriod === 'archive' ? 'active' : ''} onClick={() => setBriefingPeriod('archive')}>90 天档案</button>
             </div>
             {briefingPeriod === 'latest' ? <>
               <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
@@ -11690,7 +11749,7 @@ function AiAssistantPage() {
                   /></div>
                   : <small>该摘要可以作为历史阅读材料，但不会作为新的可信事实或问答证据。</small>}
               </details>}
-            </> : <>
+            </> : briefingPeriod === 'week' ? <>
               <h2>{weeklyBriefing?.daysWithUpdates || 0} 天有新增信息，{weeklyBriefing?.activeTaskCount || 0} 项仍在推进</h2>
               {(weeklyBriefing?.summaries || []).length ? <div className="assistant-weekly-summary-list">
                 {(weeklyBriefing.summaries || []).map((item: any) => <details key={item.date}>
@@ -11723,14 +11782,74 @@ function AiAssistantPage() {
                   ? ` · 当前预览 ${weeklyBriefing?.summaryEvidencePreviewCount || 0} 条`
                   : ''}
               </small>
+            </> : <>
+              <h2>每日简报档案</h2>
+              <p>按上海日期从新到旧读取最近 90 天派生简报；每次只加载 7 天，原始事实、事件、任务和消息仍由 SQLCipher 权威保存。</p>
+              {briefingArchive.error && <div className="assistant-error">
+                <strong>{briefingArchive.items.length ? '更早简报尚未读完' : '简报档案读取失败'}</strong>
+                <span>{briefingArchive.error}</span>
+                <button onClick={() => setBriefingArchiveRefreshKey(value => value + 1)}>重新读取第一页</button>
+              </div>}
+              {briefingArchive.status === 'loading' && !briefingArchive.items.length
+                ? <div className="assistant-empty">正在读取简报档案…</div>
+                : briefingArchive.items.length
+                  ? <div className="assistant-weekly-summary-list">
+                    {briefingArchive.items.map((item: any) => <details key={item.date}>
+                      <summary>
+                        <time>{item.date}</time>
+                        <strong title={item.headline || item.summary}>{item.headline || item.summary || '当日没有可展示摘要'}</strong>
+                        <em className={item.summaryVerified ? 'verified' : 'legacy'}>
+                          {item.messageCount} 条 · {item.incrementCount || 1} 次增量
+                        </em>
+                      </summary>
+                      {item.summary && <p>{item.summary}</p>}
+                      {!!item.highlights?.length && <ul>
+                        {item.highlights.map((text: string) => <li key={text}>{text}</li>)}
+                      </ul>}
+                      {!!item.summaryEvidence?.length && <div className="assistant-weekly-summary-evidence">
+                        <EvidenceRows
+                          evidence={item.summaryEvidence}
+                          total={item.summaryEvidenceTotal || item.summaryEvidence.length}
+                        />
+                      </div>}
+                      {item.summaryEvidenceTruncated && <small>
+                        当前展示 {item.summaryEvidence.length} / {item.summaryEvidenceTotal} 条摘要引用；完整原消息可在统一检索中按日期核验。
+                      </small>}
+                      {!item.summaryVerified && <small>该日摘要没有当前可验证的逐条引用，只作为历史阅读材料。</small>}
+                      <small>
+                        首次整理 {item.firstGeneratedAt ? new Date(item.firstGeneratedAt).toLocaleString('zh-CN') : '未知'} ·
+                        最近整理 {item.generatedAt ? new Date(item.generatedAt).toLocaleString('zh-CN') : '未知'}
+                      </small>
+                    </details>)}
+                  </div>
+                  : briefingArchive.status === 'ready'
+                    ? <div className="assistant-empty">最近 90 天还没有派生简报。</div>
+                    : null}
+              {briefingArchive.hasMore && <button
+                disabled={briefingArchiveLoadingMore}
+                onClick={() => void loadMoreBriefingArchive()}>
+                {briefingArchiveLoadingMore
+                  ? '正在加载…'
+                  : `加载更早简报（已显示 ${briefingArchive.items.length} / ${briefingArchive.total} 天）`}
+              </button>}
             </>}
           </div>
           <div className="assistant-stat">
-            <strong>{briefingPeriod === 'latest' ? briefing?.messageCount || 0 : weeklyBriefing?.messageCount || 0}</strong>
-            <span>{briefingPeriod === 'latest' ? '条今日累计新增消息' : '条本周新增消息'}</span>
+            <strong>{briefingPeriod === 'latest'
+              ? briefing?.messageCount || 0
+              : briefingPeriod === 'week'
+                ? weeklyBriefing?.messageCount || 0
+                : briefingArchive.total || 0}</strong>
+            <span>{briefingPeriod === 'latest'
+              ? '条今日累计新增消息'
+              : briefingPeriod === 'week'
+                ? '条本周新增消息'
+                : '天可审阅简报'}</span>
             <small>{briefingPeriod === 'latest'
               ? `${dashboard?.memoryStats?.claims || 0} 条事实 · ${dashboard?.memoryStats?.events || 0} 个事件 · ${dashboard?.memoryStats?.resources || 0} 个资源`
-              : `${weeklyBriefing?.highPriorityTaskCount || 0} 项高优先级 · ${weeklyBriefing?.waitingTaskCount || 0} 项等待中`}</small>
+              : briefingPeriod === 'week'
+                ? `${weeklyBriefing?.highPriorityTaskCount || 0} 项高优先级 · ${weeklyBriefing?.waitingTaskCount || 0} 项等待中`
+                : `已加载 ${briefingArchive.items.length} 天 · 服务端稳定分页`}</small>
           </div>
         </section>
 
