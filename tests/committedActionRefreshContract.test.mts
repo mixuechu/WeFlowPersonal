@@ -63,3 +63,39 @@ test('destructive committed actions cannot reopen as failures only because dashb
     assert.doesNotMatch(body, /await load\(\)/, name)
   }
 })
+
+test('routine edits and human review decisions preserve their committed result', () => {
+  const cases = [
+    ['updateReminderPreference', 'loadMoreTaskReminders'],
+    ['retryResourceEnrichment', 'resourceEnrichmentBatchInput'],
+    ['runResourceEnrichmentBatch', 'cancelResourceEnrichmentBatch'],
+    ['updateProjectMemoryStatus', 'focusProjectCandidateSection'],
+    ['saveTask', 'completeVisibleTasks'],
+    ['completeVisibleTasks', 'loadMoreActiveTasks'],
+    ['decideTaskReview', 'reviewMineTaskOwnership'],
+    ['reviewMineTaskOwnership', 'revertTaskReview'],
+    ['revertTaskReview', 'revertMerge'],
+    ['updateMemoryStatus', 'updateEntityDossierMemoryStatus'],
+    ['updateEntityDossierMemoryStatus', 'permanentlyDeleteMemoryItem'],
+    ['saveClaimCorrection', 'beginEventCorrection'],
+    ['saveEventCorrection', 'loadMoreEditingEventParticipants'],
+    ['rejectEntityRelation', 'restoreEntityRelation'],
+    ['restoreEntityRelation', 'openClaimCorrection'],
+    ['retryPreparedIngestion', 'loadCrossStoreRecoveryQueue'],
+    ['retryCrossStoreRecovery', 'openCrossStoreAbandonPreview'],
+    ['confirmCrossStoreAbandon', 'openTaskFeedbackDossier'],
+    ['decideReview', 'decideTaskReview'],
+    ['reviewMemoryCitation', 'openRelationCitationCorrection'],
+    ['saveRelationCitationCorrection', 'rejectEntityRelation']
+  ] as const
+  for (const [name, nextName] of cases) {
+    const body = functionBody(name, nextName)
+    assert.match(body, /refreshDashboardAfterCommittedAction\(/, name)
+  }
+})
+
+test('answer persistence cannot be reported as failed by follow-up hydration', () => {
+  const body = functionBody('askMemory', 'selectMemoryEntityScope')
+  assert.match(body, /getAssistantConversation\(answer\.conversationId\)[\s\S]*\.catch\(\(\) => null\)/)
+  assert.match(body, /await load\(\)\.catch\(\(\) => \{\}\)/)
+})

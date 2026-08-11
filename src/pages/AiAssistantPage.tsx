@@ -3897,15 +3897,16 @@ function AiAssistantPage() {
         expectedRevision: taskReminderPage.revision
       })
       if (!taskReminderMutationGates.current.isCurrent(key, request)) return
-      setMessage(action === 'helpful' ? '已记录：这条提醒有用。' : action === 'snooze' ? '已推迟 24 小时。' : '提醒偏好已更新。')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        action === 'helpful' ? '已记录：这条提醒有用。' : action === 'snooze' ? '已推迟 24 小时。' : '提醒偏好已更新。'
+      )
     } catch (error: any) {
       if (!taskReminderMutationGates.current.isCurrent(key, request)) return
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('提醒列表在展示后发生了变化') ||
           errorMessage.includes('这条提醒已变化或不再需要处理')) {
-        await load()
+        await load().catch(() => {})
       }
     } finally {
       if (taskReminderMutationGates.current.isCurrent(key, request)) {
@@ -4297,13 +4298,13 @@ function AiAssistantPage() {
         retryToken: enrichment.retryToken
       })
       const nextState = String(result?.item?.enrichment?.state || '')
-      setMessage(nextState === 'completed'
+      const successMessage = nextState === 'completed'
         ? '这条资源已经补全完成。'
         : nextState === 'terminal'
           ? '本次处理确认该资源无需再试，已保存具体原因。'
-          : '本次重试已经完成；资源仍需后续处理，新的退避状态已经保存。')
+          : '本次重试已经完成；资源仍需后续处理，新的退避状态已经保存。'
       setResourceRefreshKey(value => value + 1)
-      await load()
+      await refreshDashboardAfterCommittedAction(successMessage)
     } catch (error: any) {
       setMessage(error?.message || String(error))
       setResourceRefreshKey(value => value + 1)
@@ -4347,12 +4348,12 @@ function AiAssistantPage() {
         ...resourceEnrichmentBatchInput(),
         previewToken: resourceEnrichmentBatchPreview.previewToken
       })
-      setMessage(result.cancelled
+      const successMessage = result.cancelled
         ? `批量重试已停止：处理 ${result.processed}/${result.total} 条。`
-        : `批量重试完成：成功处理 ${result.succeeded} 条，跳过 ${result.skipped} 条，失败 ${result.failed} 条。`)
+        : `批量重试完成：成功处理 ${result.succeeded} 条，跳过 ${result.skipped} 条，失败 ${result.failed} 条。`
       setResourceEnrichmentBatchPreview(null)
       setResourceRefreshKey(value => value + 1)
-      await load()
+      await refreshDashboardAfterCommittedAction(successMessage)
     } catch (error: any) {
       setMessage(error?.message || String(error))
       setResourceEnrichmentBatchPreview(null)
@@ -5547,11 +5548,11 @@ function AiAssistantPage() {
     setIngestionRecoveryRetrying(true)
     try {
       const result = await window.electronAPI.aiAssistant.retryPreparedIngestion()
-      setMessage(`恢复重试完成：尝试 ${result.attempted} 批，成功 ${result.recovered} 批，` +
-        `失败 ${result.failed} 批，仍待处理 ${result.remaining} 批。`)
+      const successMessage = `恢复重试完成：尝试 ${result.attempted} 批，成功 ${result.recovered} 批，` +
+        `失败 ${result.failed} 批，仍待处理 ${result.remaining} 批。`
       await loadIngestionRecoveryQueue()
       await refreshMemoryDiagnostics().catch(() => {})
-      await load()
+      await refreshDashboardAfterCommittedAction(successMessage)
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
@@ -5671,11 +5672,11 @@ function AiAssistantPage() {
     setCrossStoreRecoveryRetrying(true)
     try {
       const result = await window.electronAPI.aiAssistant.retryCrossStoreRecovery()
-      setMessage(`写入恢复重试完成：核验 ${result.attempted} 组，完成 ${result.applied} 组，` +
-        `安全放弃 ${result.abandoned} 组，冲突 ${result.conflicts} 组，仍保留 ${result.remaining} 组。`)
+      const successMessage = `写入恢复重试完成：核验 ${result.attempted} 组，完成 ${result.applied} 组，` +
+        `安全放弃 ${result.abandoned} 组，冲突 ${result.conflicts} 组，仍保留 ${result.remaining} 组。`
       await loadCrossStoreRecoveryQueue()
       await refreshMemoryDiagnostics().catch(() => {})
-      await load()
+      await refreshDashboardAfterCommittedAction(successMessage)
     } catch (error: any) {
       setMessage(error?.message || String(error))
     } finally {
@@ -5736,9 +5737,10 @@ function AiAssistantPage() {
       if (!crossStoreAbandonGate.current.isCurrent(request)) return
       setCrossStoreAbandonDialog(null)
       setCrossStoreAbandonConfirmation('')
-      setMessage('已保留当前状态，并安全放弃这次无法自动收敛的旧中断写入。')
       await loadCrossStoreRecoveryQueue()
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '已保留当前状态，并安全放弃这次无法自动收敛的旧中断写入。'
+      )
     } catch (error: any) {
       if (!crossStoreAbandonGate.current.isCurrent(request)) return
       setCrossStoreAbandonDialog((current: any) => ({
@@ -6259,10 +6261,10 @@ function AiAssistantPage() {
         kind, id, nextStatus, String(expectedRevision || ''),
         nextStatus === 'rejected' ? selectedReviewReason('memory', `${kind}:${id}`) : undefined
       )
-      setMessage(nextStatus === 'confirmed'
+      const successMessage = nextStatus === 'confirmed'
         ? `${kind === 'claim' ? '项目事实' : '项目事件'}已确认并写入可信审计。`
-        : `${kind === 'claim' ? '项目事实' : '项目事件'}已标记为不准确。`)
-      await load()
+        : `${kind === 'claim' ? '项目事实' : '项目事件'}已标记为不准确。`
+      await refreshDashboardAfterCommittedAction(successMessage)
       refreshProjectStructuredMemory(kind)
       if (memoryItemAudits[key]) void loadMemoryItemAudit(kind, id)
     } catch (error: any) {
@@ -6779,11 +6781,11 @@ function AiAssistantPage() {
         status: editingTask.status
       }, editingTask.mutationToken)
       setEditingTask(null)
-      await load()
+      await refreshDashboardAfterCommittedAction('待办修改已保存。')
     } catch (error: any) {
       setEditingTask(null)
       setMessage(error?.message || String(error))
-      await load()
+      await load().catch(() => {})
       setTaskWorkspaceRefreshKey(value => value + 1)
     }
   }
@@ -6796,10 +6798,10 @@ function AiAssistantPage() {
         patch: { status: 'done', reason: 'bulk_complete_visible' },
         mutationToken: task.mutationToken
       })))
-      await load()
+      await refreshDashboardAfterCommittedAction(`已完成当前视图中的 ${targets.length} 项待办。`)
     } catch (error: any) {
       setMessage(error?.message || String(error))
-      await load()
+      await load().catch(() => {})
     }
   }
 
@@ -7198,7 +7200,9 @@ function AiAssistantPage() {
         delete next[id]
         return next
       })
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        decision === 'confirmed' ? '图谱审阅决定已确认并写入审计。' : '图谱候选已拒绝并写入审计。'
+      )
       if (completedBlockedIdentity && blockedReturnBeforeDecision &&
         !(blockedReturnBeforeDecision.kind === 'relation_review' &&
           blockedReturnBeforeDecision.reviewId === id)) {
@@ -7237,7 +7241,9 @@ function AiAssistantPage() {
         String(taskOwnershipReviews.revision || ''),
         decision === 'rejected' ? selectedReviewReason('task', id) : undefined
       )
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        decision === 'mine' ? '已确认：这是我的待办。' : '已确认：这不是我的待办。'
+      )
       setTaskOwnershipRefreshKey(value => value + 1)
       setTaskFeedbackRefreshKey(value => value + 1)
     } catch (error: any) {
@@ -7273,7 +7279,11 @@ function AiAssistantPage() {
       )
       setMineTaskAuditSelection(null)
       taskWorkspaceGate.current.invalidate()
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        decision === 'mine'
+          ? '已记录：这确实是我的待办。'
+          : '已从“我的待办”移除，并保存为可撤销的归属反馈。'
+      )
       setTaskWorksetRefreshKey(value => value + 1)
       setTaskCalendarRefreshKey(value => value + 1)
       setTaskArchiveRefreshKey(value => value + 1)
@@ -7281,17 +7291,15 @@ function AiAssistantPage() {
       setTaskFeedbackRefreshKey(value => value + 1)
       if (decision === 'rejected') {
         closeSearchTaskDossier()
-        setMessage('已从“我的待办”移除，并保存为可撤销的归属反馈。')
       } else {
         setTaskWorkspaceRefreshKey(value => value + 1)
-        setMessage('已记录：这确实是我的待办。')
       }
     } catch (error: any) {
       const errorMessage = error?.message || String(error)
       setMessage(errorMessage)
       if (errorMessage.includes('抽检样本在展示后已经变化')) {
         setMineTaskAuditSelection(null)
-        await load()
+        await load().catch(() => {})
       }
       if (errorMessage.includes('查看后已经被更新')) {
         setTaskWorkspaceRefreshKey(value => value + 1)
@@ -7314,7 +7322,7 @@ function AiAssistantPage() {
         taskFeedbackDossierGate.current.invalidate()
         setTaskFeedbackDossier(null)
       }
-      await load()
+      await refreshDashboardAfterCommittedAction('已撤销这次待办归属判断。')
       setTaskOwnershipRefreshKey(value => value + 1)
       setTaskFeedbackRefreshKey(value => value + 1)
     } catch (error: any) {
@@ -7604,7 +7612,11 @@ function AiAssistantPage() {
         String(expectedRevision || ''),
         nextStatus === 'rejected' ? selectedReviewReason('memory', `${kind}:${id}`) : undefined
       )
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        nextStatus === 'confirmed'
+          ? `${kind === 'claim' ? '事实' : '事件'}已确认并写入可信审计。`
+          : `${kind === 'claim' ? '事实' : '事件'}已标记为不准确。`
+      )
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
       if (memoryItemAudits[`${kind}:${id}`]) void loadMemoryItemAudit(kind, id)
@@ -7641,10 +7653,10 @@ function AiAssistantPage() {
         String(entityDossierPages[section]?.revision || ''),
         nextStatus === 'rejected' ? selectedReviewReason('memory', `${kind}:${id}`) : undefined
       )
-      setMessage(nextStatus === 'confirmed'
+      const successMessage = nextStatus === 'confirmed'
         ? `${kind === 'claim' ? '事实' : '事件'}已确认并写入可信审计。`
-        : `${kind === 'claim' ? '事实' : '事件'}已标记为不准确。`)
-      await load()
+        : `${kind === 'claim' ? '事实' : '事件'}已标记为不准确。`
+      await refreshDashboardAfterCommittedAction(successMessage)
       refreshEntityDossierSection(section)
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
@@ -7961,8 +7973,9 @@ function AiAssistantPage() {
         validTo: editingClaim.validTo
       }, String(editingClaim.expectedRevision || ''))
       setEditingClaim(null)
-      setMessage('事实纠正已确认并写入版本审计；后续重抽取只会追加证据。')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '事实纠正已确认并写入版本审计；后续重抽取只会追加证据。'
+      )
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
       if (memoryItemAudits[`claim:${correctedClaimId}`]) {
@@ -8044,8 +8057,9 @@ function AiAssistantPage() {
         entityDirectoryRevision: editingEvent.directoryRevision
       }, String(editingEvent.expectedRevision || ''))
       setEditingEvent(null)
-      setMessage('事件纠正已确认并写入版本审计；后续重抽取只会追加证据。')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '事件纠正已确认并写入版本审计；后续重抽取只会追加证据。'
+      )
       setClaimArchiveRefreshKey(value => value + 1)
       setEventTimelineRefreshKey(value => value + 1)
       if (memoryItemAudits[`event:${correctedEventId}`]) {
@@ -8141,11 +8155,13 @@ function AiAssistantPage() {
       if (!memoryConversationGate.current.isCurrent(request)) return
       setMemoryAnswer({ ...answer, question })
       setMemoryConversationId(answer.conversationId)
-      const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(answer.conversationId)
+      const conversation = await window.electronAPI.aiAssistant
+        .getAssistantConversation(answer.conversationId)
+        .catch(() => null)
       if (conversation?.stale) void openMemoryConversation(answer.conversationId)
       else setMemoryConversation(conversation)
       setMemoryQuestion('')
-      await load()
+      await load().catch(() => {})
     } catch (error: any) {
       if (memoryConversationGate.current.isCurrent(request)) {
         const errorMessage = error?.message || String(error)
@@ -9146,7 +9162,7 @@ function AiAssistantPage() {
       if (assistantMessageId && conversationId) {
         const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(conversationId, {
           anchorMessageId: assistantMessageId
-        })
+        }).catch(() => null)
         const answerMessage = refreshed?.messages?.find((item: any) => item.id === assistantMessageId)
         if (answerMessage) {
           setMemoryAnswer((current: any) => ({
@@ -9156,8 +9172,9 @@ function AiAssistantPage() {
           }))
         }
       }
-      setMessage(decision === 'confirmed' ? '已人工确认这条记忆' : '已标记为不准确')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        decision === 'confirmed' ? '已人工确认这条记忆' : '已标记为不准确'
+      )
     } catch (error: any) {
       const assistantMessageId = String(memoryAnswer?.assistantMessageId || '')
       const conversationId = String(memoryAnswer?.conversationId || memoryConversationId || '')
@@ -9322,8 +9339,9 @@ function AiAssistantPage() {
         refreshEntityDossierSection('relations')
         setReviewRefreshKey(value => value + 1)
         setGraphWorkspaceRefreshKey(value => value + 1)
-        setMessage('关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。')
-        await load()
+        await refreshDashboardAfterCommittedAction(
+          '关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。'
+        )
         return
       }
       if (dialog.origin === 'project_dossier') {
@@ -9331,8 +9349,9 @@ function AiAssistantPage() {
         setReviewRefreshKey(value => value + 1)
         setGraphWorkspaceRefreshKey(value => value + 1)
         setStructuredMemoryDossier(null)
-        setMessage('项目关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。')
-        await load()
+        await refreshDashboardAfterCommittedAction(
+          '项目关系已纠正并确认；旧方向、最终方向和完整原文均已写入审计。'
+        )
         return
       }
       const assistantMessageId = String(memoryAnswer?.assistantMessageId || '')
@@ -9341,7 +9360,7 @@ function AiAssistantPage() {
         const refreshed = await window.electronAPI.aiAssistant.getAssistantConversation(
           conversationId,
           { anchorMessageId: assistantMessageId }
-        )
+        ).catch(() => null)
         const answerMessage = refreshed?.messages?.find((item: any) =>
           item.id === assistantMessageId)
         if (answerMessage) {
@@ -9352,8 +9371,9 @@ function AiAssistantPage() {
           }))
         }
       }
-      setMessage('关系方向已纠正并写入审计；旧回答会按新的权威关系重新核验。')
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '关系方向已纠正并写入审计；旧回答会按新的权威关系重新核验。'
+      )
     } catch (error: any) {
       setRelationCitationCorrectionDialog((current: any) => ({
         ...current,
@@ -9374,11 +9394,12 @@ function AiAssistantPage() {
         relation.id,
         String(entityDossierPages.relations?.revision || '')
       )
-      setMessage('已将关系标记为不准确；它将退出可信图搜索和问答。')
       refreshEntityDossierSection('relations')
       setReviewRefreshKey(value => value + 1)
       setGraphWorkspaceRefreshKey(value => value + 1)
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '已将关系标记为不准确；它将退出可信图搜索和问答。'
+      )
     } catch (error: any) {
       setMessage(error?.message || String(error))
       refreshEntityDossierSection('relations')
@@ -9403,11 +9424,12 @@ function AiAssistantPage() {
         String(entityDossierPages.relations?.revision || '')
       )
       if (!restored) throw new Error('该关系已经变化或不存在，请刷新人物档案')
-      setMessage('关系已恢复并确认，重新进入可信图搜索和证据问答。')
       refreshEntityDossierSection('relations')
       setReviewRefreshKey(value => value + 1)
       setGraphWorkspaceRefreshKey(value => value + 1)
-      await load()
+      await refreshDashboardAfterCommittedAction(
+        '关系已恢复并确认，重新进入可信图搜索和证据问答。'
+      )
     } catch (error: any) {
       setMessage(error?.message || String(error))
       refreshEntityDossierSection('relations')
