@@ -14829,6 +14829,9 @@ function AiAssistantPage() {
             <small>当前画布 {graphEntities.length} / {Number(graphViewport.totalAvailable || 0)} 个相关节点
               · {graphRelations.length} / {Number(graphViewport.totalRelationsAvailable || 0)} 条相关边
               {graphViewport.truncated ? ` · 另有 ${graphViewport.truncated} 个节点未展开` : ''}
+              {graphViewport.truncatedRelations
+                ? ` · 稠密关系已按 SQLCipher 安全预算隐藏 ${graphViewport.truncatedRelations} 条边`
+                : ''}
             </small>
             {!!graphViewport.truncated && graphNodeLimit < 300 && <button
               onClick={() => setGraphNodeLimit(current => current < 120 ? 120 : current < 200 ? 200 : 300)}>
@@ -18237,6 +18240,9 @@ function AiAssistantPage() {
                 <span>共同实体 <b>{memoryDiagnostics.memorySearchScopePlanning.commonNeighborStrategy === 'sqlcipher_ranked_aggregate' ? 'SQLCipher 聚合' : '需要检查'}</b></span>
                 <span>共同实体预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.commonNeighborLimit || 0)}</b> 个</span>
                 <span>共同实体翻页 <b>{memoryDiagnostics.memorySearchScopePlanning.commonNeighborRevisionBound ? 'revision 保护' : '需要检查'}</b></span>
+                <span>图谱视口 <b>{memoryDiagnostics.memorySearchScopePlanning.graphViewportStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 多跳扩展' : '需要检查'}</b></span>
+                <span>视口实体 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.graphViewportIdentityMaterializations || 0)}</b> 份</span>
+                <span>画布关系预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.graphViewportRelationLimit || 0).toLocaleString()}</b> 条</span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

@@ -46,7 +46,7 @@ test('evidence Q&A reuses one SQLCipher scope across planning branches and relea
 })
 
 test('scope planning is honest and visible in complete diagnostics', () => {
-  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 8[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true[\s\S]*?scopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?scopedGraphRelationIdentityMaterializations: 0[\s\S]*?scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT[\s\S]*?scopedGraphPathBreadthFirst: true[\s\S]*?scopedGraphPathTruncationVisible: true[\s\S]*?unscopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?unscopedGraphAdjacencyMaterializations: 0[\s\S]*?commonNeighborStrategy: 'sqlcipher_ranked_aggregate'[\s\S]*?commonNeighborLimit: COMMON_GRAPH_NEIGHBOR_LIMIT[\s\S]*?commonNeighborEdgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE[\s\S]*?commonNeighborTotalVisible: true[\s\S]*?commonNeighborPagination: true[\s\S]*?commonNeighborRevisionBound: true[\s\S]*?commonNeighborContinuationRecoverable: true/)
+  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 9[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true[\s\S]*?scopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?scopedGraphRelationIdentityMaterializations: 0[\s\S]*?scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT[\s\S]*?scopedGraphPathBreadthFirst: true[\s\S]*?scopedGraphPathTruncationVisible: true[\s\S]*?unscopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?unscopedGraphAdjacencyMaterializations: 0[\s\S]*?commonNeighborStrategy: 'sqlcipher_ranked_aggregate'[\s\S]*?commonNeighborLimit: COMMON_GRAPH_NEIGHBOR_LIMIT[\s\S]*?commonNeighborEdgeLimitPerSide: COMMON_GRAPH_EDGE_LIMIT_PER_SIDE[\s\S]*?commonNeighborTotalVisible: true[\s\S]*?commonNeighborPagination: true[\s\S]*?commonNeighborRevisionBound: true[\s\S]*?commonNeighborContinuationRecoverable: true[\s\S]*?graphViewportStrategy: 'sqlcipher_recursive_cte'[\s\S]*?graphViewportIdentityMaterializations: 0[\s\S]*?graphViewportRelationLimit: GRAPH_VIEWPORT_RELATION_LIMIT[\s\S]*?graphViewportTruncationVisible: true/)
   assert.doesNotMatch(store, /replaceActiveSearchScope|CREATE TEMP TABLE IF NOT EXISTS active_memory_search_scope\s*\(/)
   assert.doesNotMatch(store, /type SearchDocumentScope\s*=\s*Set/)
   assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围[\s\S]*?旧共享范围[\s\S]*?已移除[\s\S]*?范围内图路径[\s\S]*?SQLCipher 最短路径[\s\S]*?关系 ID 集合[\s\S]*?图路径扩展预算[\s\S]*?预算截断[\s\S]*?明确提示/)
@@ -56,4 +56,23 @@ test('scope planning is honest and visible in complete diagnostics', () => {
   assert.match(pageSource, /loadMoreGraphCommonNeighbors[\s\S]*?expectedGraphRevision: graphCommonNeighbors\.graphRevision/)
   assert.match(pageSource, /graphPairQueryGate\.current\.begin\(\)[\s\S]*?graphPairQueryGate\.current\.isCurrent/)
   assert.match(pageSource, /加载更多（已加载[\s\S]*?graphCommonNeighbors\.total/)
+  assert.match(pageSource, /图谱视口 <b>[\s\S]*?SQLCipher 多跳扩展[\s\S]*?画布关系预算/)
+  assert.match(pageSource, /稠密关系已按 SQLCipher 安全预算隐藏/)
+})
+
+test('graph viewport selection and relation budgets stay in SQLCipher', () => {
+  const start = service.indexOf('  getGraphWorkspace(')
+  const end = service.indexOf('\n  getTrustedEntityDirectory(', start)
+  const workspace = service.slice(start, end)
+  assert.ok(start > 0 && end > start)
+  assert.match(workspace, /personalMemoryStore\.buildGraphViewport\(/)
+  assert.match(workspace, /selection: 'sqlcipher_recursive_cte'/)
+  assert.doesNotMatch(workspace, /buildGraphViewport\(this\.state\.graph/)
+  assert.doesNotMatch(workspace, /summary:\s*\{[\s\S]*?this\.state\.graph\.relations\.filter/)
+  assert.match(store, /buildGraphViewport\([\s\S]*?WITH RECURSIVE[\s\S]*?GRAPH_VIEWPORT_RELATION_LIMIT/)
+  const viewportStore = store.slice(store.indexOf('  buildGraphViewport('),
+    store.indexOf('\n  findCommonRelationNeighbors(', store.indexOf('  buildGraphViewport(')))
+  assert.match(viewportStore, /eligible_edges\(from_id,to_id\)/)
+  assert.match(viewportStore, /degree_rows\(id\)/)
+  assert.doesNotMatch(viewportStore, /relation\.subject_id=walk\.id OR relation\.object_id=walk\.id/)
 })

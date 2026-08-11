@@ -447,7 +447,7 @@ import {
   assertEntityRelationMutationRevision,
   entityRelationMutationRevision
 } from './entityRelationMutationPolicy'
-import { buildGraphViewport, type GraphViewportOptions } from '../../shared/graphViewport'
+import type { GraphViewportOptions } from '../../shared/graphViewport'
 import {
   buildGraphDashboardPayload,
   buildGraphReviewEntityPayload,
@@ -6793,7 +6793,7 @@ export class AiAssistantService {
         stale: true
       }
     }
-    const viewport = buildGraphViewport(this.state.graph.entities, this.state.graph.relations, {
+    const viewport = personalMemoryStore.buildGraphViewport({
       query: String(options?.query || '').trim(),
       relationType: String(options?.relationType || '').trim(),
       relationStatus: ['candidate', 'confirmed'].includes(String(options?.relationStatus || ''))
@@ -6941,27 +6941,28 @@ export class AiAssistantService {
         stale: true
       }
     }
+    const {
+      summary: viewportSummary,
+      predicates: viewportPredicates,
+      ...viewportPayload
+    } = viewport
     return {
       viewport: {
-        ...viewport,
+        ...viewportPayload,
         entities: viewport.entities.map(toGraphViewportNode),
         relations: viewport.relations.map(toGraphViewportEdge),
-        levels: Object.fromEntries(viewport.levels)
+        levels: viewport.levels
       },
-      summary: {
-        entities: this.state.graph.entities.filter(entity => entity.trustStatus !== 'rejected').length,
-        relations: this.state.graph.relations.filter(relation => relation.status !== 'rejected').length
-      },
-      predicates: [...new Set(this.state.graph.relations
-        .filter(relation => relation.status !== 'rejected')
-        .map(relation => relation.predicate)
-        .filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      summary: viewportSummary,
+      predicates: viewportPredicates,
       payloadPolicy: {
-        version: 'graph-viewport-v2',
+        version: 'graph-viewport-v3',
         nodeFields: 'drawing_only',
         edgeFields: 'drawing_only',
         focusProfile: focus ? 'loaded' : 'not_requested',
-        expansion: 'revision_bound_60_120_200_300'
+        expansion: 'revision_bound_60_120_200_300',
+        selection: 'sqlcipher_recursive_cte',
+        relationLimit: viewport.relationLimit
       },
       focus,
       revision: graphRevision,

@@ -590,6 +590,7 @@ const SCOPED_GRAPH_PATH_EXPANSION_LIMIT = 50_000
 const COMMON_GRAPH_NEIGHBOR_LIMIT = 100
 const COMMON_GRAPH_NEIGHBOR_DEFAULT_PAGE = 40
 const COMMON_GRAPH_EDGE_LIMIT_PER_SIDE = 4
+const GRAPH_VIEWPORT_RELATION_LIMIT = 1_200
 
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
@@ -7852,7 +7853,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 8,
+        version: 9,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7875,7 +7876,11 @@ export class PersonalMemoryStore {
         commonNeighborTotalVisible: true,
         commonNeighborPagination: true,
         commonNeighborRevisionBound: true,
-        commonNeighborContinuationRecoverable: true
+        commonNeighborContinuationRecoverable: true,
+        graphViewportStrategy: 'sqlcipher_recursive_cte',
+        graphViewportIdentityMaterializations: 0,
+        graphViewportRelationLimit: GRAPH_VIEWPORT_RELATION_LIMIT,
+        graphViewportTruncationVisible: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20856,6 +20861,222 @@ export class PersonalMemoryStore {
     })
     if (steps.some(step => !step)) return { found: false, entityIds: [], steps: [], ...budget }
     return { found: true, entityIds, steps, ...budget }
+  }
+
+  buildGraphViewport(options: {
+    query?: string
+    relationType?: string
+    relationStatus?: string
+    focusEntityId?: string
+    depth?: number
+    maxNodes?: number
+  } = {}): any {
+    const maxNodes = Math.max(10, Math.min(300, Math.floor(Number(options.maxNodes) || 60)))
+    const depth = Math.max(1, Math.min(3, Math.floor(Number(options.depth) || 1)))
+    const query = String(options.query || '').trim().toLocaleLowerCase('zh-CN').slice(0, 200)
+    const focusEntityId = String(options.focusEntityId || '').trim().slice(0, 512)
+    const relationType = String(options.relationType || '').trim().slice(0, 100)
+    const relationStatus = ['candidate', 'confirmed'].includes(String(options.relationStatus || ''))
+      ? String(options.relationStatus)
+      : ''
+    const focusExists = Boolean(this.db && focusEntityId && this.db.prepare(`
+      SELECT 1 FROM entities WHERE id=? AND deleted_at IS NULL AND trust_status!='rejected'
+    `).get(focusEntityId))
+    const mode: 'overview' | 'search' | 'focus' = focusExists
+      ? 'focus'
+      : query ? 'search' : 'overview'
+    const empty = {
+      entities: [], relations: [], levels: {}, mode,
+      totalAvailable: 0, truncated: 0,
+      totalRelationsAvailable: 0, truncatedRelations: 0,
+      matchingSeeds: 0, maxNodes,
+      relationLimit: GRAPH_VIEWPORT_RELATION_LIMIT,
+      summary: { entities: 0, relations: 0 },
+      predicates: []
+    }
+    if (!this.db) return empty
+    const relationConditions = [
+      `relation.status!='rejected'`,
+      `subject.deleted_at IS NULL AND subject.trust_status!='rejected'`,
+      `object.deleted_at IS NULL AND object.trust_status!='rejected'`
+    ]
+    const relationParameters: any[] = []
+    if (relationType) {
+      relationConditions.push('relation.predicate=?')
+      relationParameters.push(relationType)
+    }
+    if (relationStatus) {
+      relationConditions.push('relation.status=?')
+      relationParameters.push(relationStatus)
+    }
+    const eligibleRelations = `
+      SELECT relation.id,relation.subject_id,relation.predicate,relation.object_id,
+        relation.confidence,relation.status,relation.updated_at
+      FROM relations relation
+      JOIN entities subject ON subject.id=relation.subject_id
+      JOIN entities object ON object.id=relation.object_id
+      WHERE ${relationConditions.join(' AND ')}
+    `
+    const eligibleEntities = `
+      SELECT id,canonical_name,updated_at FROM entities
+      WHERE deleted_at IS NULL AND trust_status!='rejected'
+    `
+    let ctes = ''
+    const cteParameters: any[] = [...relationParameters]
+    if (mode === 'overview') {
+      ctes = `
+        eligible_entities AS (${eligibleEntities}),
+        eligible_relations AS (${eligibleRelations}),
+        relevant AS (SELECT id,0 AS level FROM eligible_entities),
+        degree_rows(id) AS (
+          SELECT subject_id FROM eligible_relations
+          UNION ALL
+          SELECT object_id FROM eligible_relations
+        ),
+        degrees AS (
+          SELECT entity.id,COUNT(degree_rows.id) AS degree
+          FROM eligible_entities entity
+          LEFT JOIN degree_rows ON degree_rows.id=entity.id
+          GROUP BY entity.id
+        ),
+        selected AS (
+          SELECT relevant.id,relevant.level
+          FROM relevant JOIN eligible_entities entity ON entity.id=relevant.id
+          JOIN degrees ON degrees.id=relevant.id
+          ORDER BY degrees.degree DESC,entity.updated_at DESC,
+            entity.canonical_name COLLATE NOCASE ASC,entity.id ASC
+          LIMIT ?
+        )
+      `
+      cteParameters.push(maxNodes)
+    } else {
+      const seedSql = mode === 'focus'
+        ? `SELECT id FROM eligible_entities WHERE id=?`
+        : `SELECT entity.id FROM eligible_entities entity
+          WHERE INSTR(LOWER(entity.canonical_name),?)>0
+            OR EXISTS(SELECT 1 FROM aliases alias
+              WHERE alias.entity_id=entity.id AND INSTR(LOWER(alias.value),?)>0)
+            OR EXISTS(SELECT 1 FROM identities identity
+              WHERE identity.entity_id=entity.id AND (
+                INSTR(LOWER(identity.account_id),?)>0 OR
+                INSTR(LOWER(identity.display_name),?)>0
+              ))
+          ORDER BY entity.id`
+      const seedParameters = mode === 'focus'
+        ? [focusEntityId]
+        : [query, query, query, query]
+      ctes = `
+        eligible_entities AS (${eligibleEntities}),
+        eligible_relations AS (${eligibleRelations}),
+        eligible_edges(from_id,to_id) AS (
+          SELECT subject_id,object_id FROM eligible_relations
+          UNION ALL
+          SELECT object_id,subject_id FROM eligible_relations
+        ),
+        seeds AS (${seedSql}),
+        walk(id,level) AS (
+          SELECT id,0 FROM seeds
+          UNION
+          SELECT edge.to_id,walk.level+1
+          FROM walk JOIN eligible_edges edge ON edge.from_id=walk.id
+          WHERE walk.level<?
+        ),
+        relevant AS (SELECT id,MIN(level) AS level FROM walk GROUP BY id),
+        selected AS (SELECT id,level FROM relevant ORDER BY level,id LIMIT ?)
+      `
+      cteParameters.push(...seedParameters, depth, maxNodes)
+    }
+    const rows = this.db.prepare(`
+      WITH RECURSIVE ${ctes}
+      SELECT selected.id,selected.level,
+        (SELECT COUNT(*) FROM relevant) AS total_available,
+        (SELECT COUNT(*) FROM eligible_relations relation
+          WHERE relation.subject_id IN (SELECT id FROM relevant)
+            AND relation.object_id IN (SELECT id FROM relevant)) AS total_relations,
+        ${mode === 'overview' ? '0' : '(SELECT COUNT(*) FROM seeds)'} AS matching_seeds
+      FROM (SELECT 1) singleton LEFT JOIN selected ON 1=1
+      ORDER BY selected.level,selected.id
+    `).all(...cteParameters) as any[]
+    const entityIds = rows.map(row => String(row.id || '')).filter(Boolean)
+    let entities: any[] = []
+    if (entityIds.length) {
+      const placeholders = entityIds.map(() => '?').join(',')
+      const entityRows = this.db.prepare(`
+        SELECT id,type,canonical_name,trust_status FROM entities
+        WHERE id IN (${placeholders})
+      `).all(...entityIds) as any[]
+      const byId = new Map(entityRows.map(row => [String(row.id), row]))
+      entities = entityIds.flatMap(id => {
+        const row = byId.get(id)
+        return row ? [{
+          id,
+          type: String(row.type || ''),
+          canonicalName: String(row.canonical_name || ''),
+          trustStatus: String(row.trust_status || 'legacy_unverified')
+        }] : []
+      })
+    }
+    const totalAvailable = Number(rows[0]?.total_available || 0)
+    const totalRelationsAvailable = Number(rows[0]?.total_relations || 0)
+    const levels = Object.fromEntries(rows.filter(row => row.id)
+      .map(row => [String(row.id), Number(row.level || 0)]))
+    let relations: any[] = []
+    if (entityIds.length) {
+      const placeholders = entityIds.map(() => '?').join(',')
+      relations = (this.db.prepare(`
+        SELECT relation.id,relation.subject_id,relation.predicate,relation.object_id,
+          relation.confidence,relation.status
+        FROM relations relation
+        JOIN entities subject ON subject.id=relation.subject_id
+        JOIN entities object ON object.id=relation.object_id
+        WHERE ${relationConditions.join(' AND ')}
+          AND relation.subject_id IN (${placeholders})
+          AND relation.object_id IN (${placeholders})
+        ORDER BY CASE WHEN relation.status='confirmed' THEN 0 ELSE 1 END,
+          relation.confidence DESC,relation.updated_at DESC,relation.id ASC
+        LIMIT ?
+      `).all(...relationParameters, ...entityIds, ...entityIds,
+        GRAPH_VIEWPORT_RELATION_LIMIT) as any[]).map(row => ({
+        id: String(row.id),
+        subjectId: String(row.subject_id),
+        predicate: String(row.predicate),
+        objectId: String(row.object_id),
+        confidence: Number(row.confidence || 0),
+        status: String(row.status || 'candidate')
+      }))
+    }
+    const summary = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM entities
+          WHERE deleted_at IS NULL AND trust_status!='rejected') AS entities,
+        (SELECT COUNT(*) FROM relations relation
+          JOIN entities subject ON subject.id=relation.subject_id
+          JOIN entities object ON object.id=relation.object_id
+          WHERE relation.status!='rejected'
+            AND subject.deleted_at IS NULL AND subject.trust_status!='rejected'
+            AND object.deleted_at IS NULL AND object.trust_status!='rejected') AS relations
+    `).get() as any
+    const predicates = (this.db.prepare(`
+      SELECT DISTINCT relation.predicate FROM relations relation
+      JOIN entities subject ON subject.id=relation.subject_id
+      JOIN entities object ON object.id=relation.object_id
+      WHERE relation.status!='rejected'
+        AND subject.deleted_at IS NULL AND subject.trust_status!='rejected'
+        AND object.deleted_at IS NULL AND object.trust_status!='rejected'
+        AND relation.predicate!=''
+      ORDER BY relation.predicate COLLATE NOCASE
+    `).all() as Array<{ predicate: string }>).map(row => String(row.predicate))
+    return {
+      entities, relations, levels, mode, totalAvailable,
+      truncated: Math.max(0, totalAvailable - entities.length),
+      totalRelationsAvailable,
+      truncatedRelations: Math.max(0, totalRelationsAvailable - relations.length),
+      matchingSeeds: Number(rows[0]?.matching_seeds || 0),
+      maxNodes,
+      relationLimit: GRAPH_VIEWPORT_RELATION_LIMIT,
+      summary: { entities: Number(summary?.entities || 0), relations: Number(summary?.relations || 0) },
+      predicates
+    }
   }
 
   findCommonRelationNeighbors(

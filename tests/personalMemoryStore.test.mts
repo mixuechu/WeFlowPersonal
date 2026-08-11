@@ -13646,6 +13646,74 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
     )
   }))
 
+test('graph viewport search, expansion and dense-edge budgets stay inside SQLCipher', () =>
+  withStore(store => {
+    const entity = (id: string, index: number, aliases: string[] = []) => ({
+      id,
+      type: 'person',
+      canonicalName: `人物 ${index}`,
+      summary: '',
+      confidence: 1,
+      trustStatus: 'confirmed',
+      aliases,
+      accountIds: [],
+      updatedAt: new Date(1_700_000_000_000 + index).toISOString()
+    })
+    const chainEntities = Array.from({ length: 80 }, (_, index) =>
+      entity(`viewport-chain-${index}`, index, index === 70 ? ['目标别名'] : []))
+    const denseEntities = Array.from({ length: 50 }, (_, index) =>
+      entity(`viewport-dense-${index}`, 100 + index))
+    const chainRelations = Array.from({ length: 79 }, (_, index) => ({
+      id: `viewport-chain-relation-${index}`,
+      subjectId: `viewport-chain-${index}`,
+      objectId: `viewport-chain-${index + 1}`,
+      predicate: '认识',
+      status: 'confirmed',
+      confidence: 0.9,
+      evidence: []
+    }))
+    const denseRelations = denseEntities.flatMap((left, leftIndex) =>
+      denseEntities.slice(leftIndex + 1).map((right, rightOffset) => ({
+        id: `viewport-dense-relation-${leftIndex}-${leftIndex + rightOffset + 1}`,
+        subjectId: left.id,
+        objectId: right.id,
+        predicate: '协作',
+        status: 'confirmed',
+        confidence: 0.8,
+        evidence: []
+      })))
+    store.syncGraph({
+      entities: [...chainEntities, ...denseEntities],
+      relations: [...chainRelations, ...denseRelations],
+      reviewQueue: []
+    } as any)
+
+    const search = store.buildGraphViewport({ query: '目标别名', depth: 2, maxNodes: 20 })
+    assert.equal(search.mode, 'search')
+    assert.equal(search.matchingSeeds, 1)
+    assert.equal(search.totalAvailable, 5)
+    assert.deepEqual(search.entities.map((item: any) => item.id).sort(), [
+      'viewport-chain-68', 'viewport-chain-69', 'viewport-chain-70',
+      'viewport-chain-71', 'viewport-chain-72'
+    ])
+    assert.equal(search.levels['viewport-chain-70'], 0)
+    assert.equal(search.totalRelationsAvailable, 4)
+    assert.equal(search.relations.length, 4)
+
+    const dense = store.buildGraphViewport({
+      focusEntityId: 'viewport-dense-0', depth: 1, maxNodes: 60
+    })
+    assert.equal(dense.mode, 'focus')
+    assert.equal(dense.totalAvailable, 50)
+    assert.equal(dense.entities.length, 50)
+    assert.equal(dense.totalRelationsAvailable, 1_225)
+    assert.equal(dense.relations.length, 1_200)
+    assert.equal(dense.relationLimit, 1_200)
+    assert.equal(dense.truncatedRelations, 25)
+    assert.deepEqual(dense.summary, { entities: 130, relations: 1_304 })
+    assert.deepEqual(dense.predicates, ['协作', '认识'])
+  }))
+
 test('common graph neighbors are ranked and bounded inside SQLCipher with honest totals', () =>
   withStore(store => {
     const endpoint = (id: string) => ({
