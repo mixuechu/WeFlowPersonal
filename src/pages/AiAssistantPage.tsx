@@ -18327,6 +18327,11 @@ function AiAssistantPage() {
                 <span>抽取关系预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.extractionContextRelationLimit || 0)} 条</b></span>
                 <span>全图内存副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.extractionContextFullGraphMaterializations || 0)} 份</b></span>
                 <span>抽取上下文一致性 <b>{memoryDiagnostics.memorySearchScopePlanning.extractionContextRevisionBound ? '实体＋关系 revision 保护' : '需要检查'}</b></span>
+                <span>人物档案身份 <b>{memoryDiagnostics.memorySearchScopePlanning.entityDossierIdentityLookup === 'sqlcipher_point_by_stable_id' ? 'SQLCipher 稳定 ID 点查' : '需要检查'}</b></span>
+                <span>人物身份预览 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityDossierIdentityPreviewLimit || 0)} 条 / 类</b></span>
+                <span>任务匹配身份 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.entityDossierTaskNameLimit || 0)} 个完整有界名称</b></span>
+                <span>可信项目档案 <b>{memoryDiagnostics.memorySearchScopePlanning.confirmedProjectDossierIdentityLookup === 'sqlcipher_point_by_stable_id' ? 'SQLCipher 稳定 ID 点查' : '需要检查'}</b></span>
+                <span>可信详情全图副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.confirmedDossierFullGraphMaterializations || 0)} 份</b></span>
                 <span>问答实体识别 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningStrategy === 'sqlcipher_reverse_term_match' ? 'SQLCipher 反向词匹配' : '需要检查'}</b></span>
                 <span>单轮规划预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningLimit || 0)} 个实体</b></span>
                 <span>超预算语义 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningTruncationSafe ? '显示总数且禁止单人自动绑定' : '需要检查'}</b></span>

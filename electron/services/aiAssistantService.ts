@@ -162,7 +162,7 @@ import {
   type ReminderPreferences,
   type TaskReminder
 } from './taskIntelligence'
-import { buildEntityInsights, entityTaskSearchNames } from './relationshipInsights'
+import { buildEntityInsights } from './relationshipInsights'
 import { boundEntityIdentityPresentation } from './entityIdentityPresentation'
 import { ReferenceArrayIndex } from './referenceArrayIndex.ts'
 import {
@@ -315,8 +315,7 @@ import {
 import {
   buildProjectInsight,
   paginateProjectRisks,
-  paginateProjectTasks,
-  projectTaskSearchNames
+  paginateProjectTasks
 } from './projectInsights'
 import { buildDashboardRevisions, buildGraphWorkspaceRevision } from './dashboardRevisions'
 import { attachLocalImageOcr, attachLocalVoiceTranscript, recoverMessageSemantics } from './messageSemanticRecovery'
@@ -6892,8 +6891,7 @@ export class AiAssistantService {
       maxNodes: Number(options?.maxNodes || 60)
     })
     const focusEntity = focusEntityId
-      ? this.state.graph.entities.find(entity =>
-        entity.id === focusEntityId && entity.trustStatus !== 'rejected') || null
+      ? personalMemoryStore.getGraphEntityById(focusEntityId, { trust: 'visible' })
       : null
     let focus: any = null
     if (focusEntity) {
@@ -6902,7 +6900,7 @@ export class AiAssistantService {
       const graphFocus = personalMemoryStore.getEntityGraphFocus(focusEntity.id, 200)
       const entityTaskRevision = this.getProjectDirectoryRevision()
       const relatedTasks = personalMemoryStore.listEntityRelatedTaskPage(
-        entityTaskSearchNames(focusEntity), { limit: 40 }
+        personalMemoryStore.listGraphEntityTaskSearchNames(focusEntity.id), { limit: 40 }
       )
       const currentTasksById = this.getTaskStateIndex()
       const candidateReviewCounts =
@@ -7126,8 +7124,7 @@ export class AiAssistantService {
 
   getEntityTaskPage(entityId: string, options: any = {}): any {
     const id = String(entityId || '').trim()
-    const entity = this.state.graph.entities.find(candidate =>
-      candidate.id === id && candidate.trustStatus !== 'rejected')
+    const entity = personalMemoryStore.getGraphEntityById(id, { trust: 'visible' })
     if (!entity) throw new Error('人物或实体不存在')
     const revision = this.getProjectDirectoryRevision()
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
@@ -7135,7 +7132,7 @@ export class AiAssistantService {
       return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
     }
     const page = personalMemoryStore.listEntityRelatedTaskPage(
-      entityTaskSearchNames(entity), {
+      personalMemoryStore.listGraphEntityTaskSearchNames(id), {
         limit: Number(options?.limit || 40),
         offset
       }
@@ -7169,8 +7166,7 @@ export class AiAssistantService {
 
   getEntityAuditPage(entityId: string, options: any = {}): any {
     const id = String(entityId || '').trim()
-    const entity = this.state.graph.entities.find(candidate =>
-      candidate.id === id && candidate.trustStatus !== 'rejected')
+    const entity = personalMemoryStore.getGraphEntityById(id, { trust: 'visible' })
     if (!entity) throw new Error('人物或实体不存在')
     const kinds = new Set([
       'relation_history',
@@ -7224,8 +7220,9 @@ export class AiAssistantService {
   getProjectWorkspace(projectId: string): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
-    const projectEntity = this.state.graph.entities.find(entity =>
-      entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
+    const projectEntity = personalMemoryStore.getGraphEntityById(id, {
+      trust: 'confirmed', type: 'project'
+    })
     const memoryFeed = projectEntity
       ? personalMemoryStore.getEntityMemory(id, 1, true)
       : { claims: [], events: [] }
@@ -7233,7 +7230,7 @@ export class AiAssistantService {
       ? []
       : this.state.graph.relations
     const project = buildProjectInsight({
-      entities: this.state.graph.entities,
+      entities: projectEntity ? [projectEntity] : this.state.graph.entities,
       relations: boundedProjectRelations,
       claims: projectEntity ? [] : memoryFeed.claims,
       events: projectEntity ? [] : memoryFeed.events,
@@ -7265,7 +7262,8 @@ export class AiAssistantService {
       ? Number(reviewCounts.total || 0)
       : loadedMemoryReviewCount
     const taskRevision = this.getProjectDirectoryRevision()
-    const projectNames = projectEntity ? projectTaskSearchNames(projectEntity) : []
+    const projectNames = projectEntity
+      ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true }) : []
     const taskPage: any = projectEntity
       ? {
           ...personalMemoryStore.listProjectTaskPage(projectNames, { limit: 40 }),
@@ -7378,8 +7376,9 @@ export class AiAssistantService {
   getProjectMemberPage(projectId: string, options: any = {}): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
-    const projectEntity = this.state.graph.entities.find(entity =>
-      entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
+    const projectEntity = personalMemoryStore.getGraphEntityById(id, {
+      trust: 'confirmed', type: 'project'
+    })
     if (!projectEntity) throw new Error('项目不存在或已经不在当前可信视图中')
     return personalMemoryStore.listProjectMemberPage({
       projectId: id,
@@ -7394,14 +7393,15 @@ export class AiAssistantService {
     if (!id) throw new Error('请选择项目')
     const revision = this.getProjectDirectoryRevision()
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
-    const projectEntity = this.state.graph.entities.find(entity =>
-      entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
+    const projectEntity = personalMemoryStore.getGraphEntityById(id, {
+      trust: 'confirmed', type: 'project'
+    })
     if (projectEntity) {
       if (offset > 0 && String(options?.revision || '').trim() !== revision) {
         return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
       }
       const page = personalMemoryStore.listProjectTaskPage(
-        projectTaskSearchNames(projectEntity), {
+        personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true }), {
           limit: Number(options?.limit || 40),
           offset
         }
@@ -7468,14 +7468,15 @@ export class AiAssistantService {
     const projectRevision = this.getProjectDirectoryRevision()
     const revision = `${projectRevision}:day=${shanghaiDate()}`
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
-    const projectEntity = this.state.graph.entities.find(entity =>
-      entity.id === id && entity.type === 'project' && isTrustedEntity(entity))
+    const projectEntity = personalMemoryStore.getGraphEntityById(id, {
+      trust: 'confirmed', type: 'project'
+    })
     if (projectEntity) {
       if (offset > 0 && String(options?.revision || '').trim() !== revision) {
         return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
       }
       const page = personalMemoryStore.listProjectRiskPage(
-        projectTaskSearchNames(projectEntity), shanghaiDate(), {
+        personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true }), shanghaiDate(), {
           limit: Number(options?.limit || 40),
           offset
         }
@@ -7552,8 +7553,7 @@ export class AiAssistantService {
 
   getEntityRelationPage(options: any = {}): any {
     const entityId = String(options?.entityId || '').trim()
-    const entity = this.state.graph.entities.find(candidate =>
-      candidate.id === entityId && candidate.trustStatus !== 'rejected')
+    const entity = personalMemoryStore.getGraphEntityById(entityId, { trust: 'visible' })
     if (!entity) {
       return {
         items: [],
@@ -7595,8 +7595,7 @@ export class AiAssistantService {
 
   getEntityIdentityAnchorPage(options: any = {}): any {
     const entityId = String(options?.entityId || '').trim()
-    const entity = this.state.graph.entities.find(candidate =>
-      candidate.id === entityId && candidate.trustStatus !== 'rejected')
+    const entity = personalMemoryStore.getGraphEntityById(entityId, { trust: 'visible' })
     if (!entity) {
       return {
         items: [], total: 0, unfilteredTotal: 0, hasMore: false,
@@ -7622,8 +7621,7 @@ export class AiAssistantService {
 
   getEntityEvidencePage(options: any = {}): any {
     const entityId = String(options?.entityId || '').trim()
-    const entity = this.state.graph.entities.find(candidate =>
-      candidate.id === entityId && candidate.trustStatus !== 'rejected')
+    const entity = personalMemoryStore.getGraphEntityById(entityId, { trust: 'visible' })
     if (!entity) {
       return {
         items: [],

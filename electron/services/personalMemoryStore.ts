@@ -4800,6 +4800,86 @@ export class PersonalMemoryStore {
     return { entities, revision, stale: false, reason: 'ok' }
   }
 
+  getGraphEntityById(entityIdInput: string, options: {
+    trust?: 'visible' | 'confirmed' | 'any'
+    type?: string
+  } = {}): any | null {
+    if (!this.db) return null
+    const entityId = String(entityIdInput || '').trim()
+    if (!entityId) return null
+    const trust = options.trust === 'confirmed' || options.trust === 'any'
+      ? options.trust : 'visible'
+    const type = String(options.type || '').trim()
+    const row = this.db.prepare(`
+      SELECT id,type,canonical_name,summary,summary_status,confidence,trust_status,
+        created_at,updated_at
+      FROM entities
+      WHERE id=? AND deleted_at IS NULL
+        ${trust === 'confirmed' ? `AND trust_status='confirmed'`
+          : trust === 'visible' ? `AND trust_status!='rejected'` : ''}
+        ${type ? 'AND type=?' : ''}
+    `).get(...(type ? [entityId, type] : [entityId])) as any
+    if (!row) return null
+    const aliases = (this.db.prepare(`
+      SELECT value FROM aliases WHERE entity_id=? ORDER BY id LIMIT 8
+    `).all(entityId) as any[]).map(item => String(item.value || ''))
+    const identities = this.db.prepare(`
+      SELECT platform,account_id,display_name FROM identities
+      WHERE entity_id=? ORDER BY id LIMIT 16
+    `).all(entityId) as any[]
+    const accountIds = identities
+      .filter(identity => String(identity.platform || '').toLowerCase() === 'wechat')
+      .slice(0, 8).map(identity => String(identity.account_id || ''))
+    const externalIdentities = identities
+      .filter(identity => String(identity.platform || '').toLowerCase() !== 'wechat')
+      .slice(0, 8).map(identity => ({
+        platform: String(identity.platform || ''),
+        accountId: String(identity.account_id || ''),
+        displayName: String(identity.display_name || '')
+      }))
+    return {
+      id: String(row.id), type: String(row.type || 'unknown'),
+      canonicalName: String(row.canonical_name || ''),
+      summary: String(row.summary || ''), summaryStatus: String(row.summary_status || 'empty'),
+      confidence: Number(row.confidence || 0), trustStatus: String(row.trust_status || 'candidate'),
+      aliases, accountIds, externalIdentities,
+      createdAt: String(row.created_at || ''), updatedAt: String(row.updated_at || '')
+    }
+  }
+
+  listGraphEntityTaskSearchNames(entityIdInput: string, options: {
+    projectOnly?: boolean
+    limit?: number
+  } = {}): string[] {
+    if (!this.db) return []
+    const entityId = String(entityIdInput || '').trim()
+    if (!entityId) return []
+    const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 100)))
+    const normalize = (expression: string) =>
+      `LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${expression},''),' ',''),CHAR(9),''),CHAR(10),''),CHAR(13),''))`
+    const identityTerms = options.projectOnly ? '' : `
+      UNION ALL SELECT identity.account_id,2,identity.id FROM identities identity
+        WHERE identity.entity_id=?
+      UNION ALL SELECT identity.display_name,3,identity.id FROM identities identity
+        WHERE identity.entity_id=?`
+    const parameters = options.projectOnly
+      ? [entityId, entityId, limit]
+      : [entityId, entityId, entityId, entityId, limit]
+    return (this.db.prepare(`
+      WITH raw(value,kind,ordinal) AS (
+        SELECT canonical_name,0,0 FROM entities
+          WHERE id=? AND deleted_at IS NULL AND trust_status!='rejected'
+        UNION ALL SELECT alias.value,1,alias.id FROM aliases alias WHERE alias.entity_id=?
+        ${identityTerms}
+      ), normalized AS (
+        SELECT ${normalize('value')} AS value,MIN(kind) AS kind,MIN(ordinal) AS ordinal
+        FROM raw WHERE trim(value)!='' GROUP BY ${normalize('value')}
+      )
+      SELECT value FROM normalized WHERE value!=''
+      ORDER BY kind,ordinal,value LIMIT ?
+    `).all(...parameters) as any[]).map(row => String(row.value || ''))
+  }
+
   listTrustedEntitiesMentionedInText(textInput: string, limitInput = 100): {
     items: any[]
     total: number
@@ -8461,7 +8541,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 14,
+        version: 15,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -8509,6 +8589,11 @@ export class PersonalMemoryStore {
         extractionContextAliasesPerEntity: 8,
         extractionContextRevisionBound: true,
         extractionContextFullGraphMaterializations: 0,
+        entityDossierIdentityLookup: 'sqlcipher_point_by_stable_id',
+        entityDossierIdentityPreviewLimit: 8,
+        entityDossierTaskNameLimit: 100,
+        confirmedProjectDossierIdentityLookup: 'sqlcipher_point_by_stable_id',
+        confirmedDossierFullGraphMaterializations: 0,
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,

@@ -31,6 +31,24 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   assert.match(extractionSource, /personalMemoryStore\.selectTrustedExtractionContext\(/)
   assert.doesNotMatch(extractionSource, /this\.state\.graph\.(?:entities|relations)\.(?:find|filter|map)/)
   for (const [startMarker, endMarker] of [
+    ['  getGraphWorkspace(', '\n  getTrustedEntityDirectory('],
+    ['  getEntityTaskPage(', '\n  getMemoryItemAuditPage('],
+    ['  getEntityRelationPage(', '\n  getClaimArchive(']
+  ]) {
+    const start = serviceSource.indexOf(startMarker)
+    const end = serviceSource.indexOf(endMarker, start)
+    assert.ok(start > 0 && end > start, startMarker)
+    const source = serviceSource.slice(start, end)
+    assert.match(source, /personalMemoryStore\.getGraphEntityById\(/, startMarker)
+    assert.doesNotMatch(source, /this\.state\.graph\.entities\.(?:find|filter|map)/, startMarker)
+  }
+  const projectStart = serviceSource.indexOf('  getProjectWorkspace(')
+  const projectEnd = serviceSource.indexOf('\n  getEventTimeline(', projectStart)
+  const projectSource = serviceSource.slice(projectStart, projectEnd)
+  assert.match(projectSource, /personalMemoryStore\.getGraphEntityById\(/)
+  assert.match(projectSource, /entities: projectEntity \? \[projectEntity\] : this\.state\.graph\.entities/)
+  assert.match(projectSource, /personalMemoryStore\.listGraphEntityTaskSearchNames\(/)
+  for (const [startMarker, endMarker] of [
     ['  async searchMemoryHybrid(', '\n  async searchMemoryWithTrustedScope('],
     ['  async updateMemorySearchFeedback(', '\n  getMemorySearchFeedbackArchive(']
   ]) {
@@ -101,6 +119,15 @@ test('SQLCipher trusted entity directory searches and paginates without material
       }],
       reviewQueue: []
     } as any)
+    const database = (store as any).db
+    const insertAlias = database.prepare(`
+      INSERT INTO aliases(entity_id,value,normalized_value,alias_type,confidence)
+      VALUES(?,?,?,?,?)
+    `)
+    for (let index = 0; index < 120; index += 1) {
+      const value = `额外名-${String(index).padStart(3, '0')}`
+      insertAlias.run('trusted-123', value, value.toLowerCase(), 'name', 1)
+    }
 
     const first = store.listTrustedEntityDirectoryPage({ limit: 100 })
     assert.equal(first.total, 1_204)
@@ -157,6 +184,22 @@ test('SQLCipher trusted entity directory searches and paginates without material
     assert.equal(extraction.entities.some(entity => entity.id === 'trusted-1001'), false)
     assert.equal(extraction.entities.some(entity => entity.id === 'trusted-1002'), false)
 
+    const pointEntity = store.getGraphEntityById('trusted-123', { trust: 'visible' })
+    assert.equal(pointEntity.id, 'trusted-123')
+    assert.equal(pointEntity.aliases.length, 8)
+    assert.equal(store.getGraphEntityById('trusted-123', {
+      trust: 'confirmed', type: 'project'
+    }), null)
+    assert.equal(store.getGraphEntityById('trusted-1204', { trust: 'visible' })?.trustStatus, 'candidate')
+    assert.equal(store.getGraphEntityById('trusted-1204', { trust: 'confirmed' }), null)
+    const taskNames = store.listGraphEntityTaskSearchNames('trusted-123')
+    assert.equal(taskNames.length, 100)
+    assert.equal(taskNames[0], '实体0123')
+    assert.ok(taskNames.includes('别名-123'))
+    const projectNames = store.listGraphEntityTaskSearchNames('trusted-123', { projectOnly: true })
+    assert.equal(projectNames.length, 100)
+    assert.equal(projectNames.some(name => name.startsWith('wxid-')), false)
+
     const originalGraphRevision = store.getGraphReviewRevision.bind(store)
     let graphRevisionReads = 0
     ;(store as any).getGraphReviewRevision = () =>
@@ -179,7 +222,6 @@ test('SQLCipher trusted entity directory searches and paginates without material
     assert.equal(partial.reason, 'entity_untrusted')
     assert.deepEqual(partial.entities.map(entity => entity.id), ['trusted-1'])
 
-    const database = (store as any).db
     database.prepare(`
       INSERT INTO aliases(entity_id,value,normalized_value,alias_type,confidence)
       VALUES(?,?,?,?,?)
