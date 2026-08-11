@@ -24056,6 +24056,41 @@ test('task ownership feedback persists evidence-scoped decisions and suppression
   })
 }))
 
+test('task review revert eligibility and history existence come from SQLCipher task ids', () => withStore(store => {
+  const currentTask = {
+    id: 'review-current-task', title: '仍然存在的任务', detail: '', owner: '', project: '',
+    priority: 'medium', status: 'todo', classification: 'mine', evidence: []
+  }
+  store.syncTasks([currentTask])
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'current-without-snapshot', taskId: currentTask.id,
+    decision: 'mine', title: currentTask.title, source: '测试', evidence: [], task: {}
+  })
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'missing-with-snapshot', taskId: 'missing-task',
+    decision: 'rejected', title: '已删除但有快照', source: '测试', evidence: [],
+    task: { id: 'missing-task', title: '已删除但有快照' }
+  })
+  store.recordTaskReviewDecision({
+    evidenceFingerprint: 'missing-without-snapshot', taskId: 'missing-empty-task',
+    decision: 'mine', title: '已删除且无快照', source: '测试', evidence: [], task: {}
+  })
+
+  const page = store.listTaskReviewDecisionPage({ limit: 20 })
+  const byFingerprint = new Map(page.items.map(item => [item.evidence_fingerprint, item]))
+  assert.equal(byFingerprint.get('current-without-snapshot')?.can_restore_snapshot, false)
+  assert.equal(byFingerprint.get('current-without-snapshot')?.canRevert, true)
+  assert.equal(byFingerprint.get('missing-with-snapshot')?.canRevert, true)
+  assert.equal(byFingerprint.get('missing-without-snapshot')?.canRevert, false)
+  assert.equal('current_task_exists' in byFingerprint.get('current-without-snapshot'), false)
+  assert.equal(store.getTaskReviewDecisionDossier('current-without-snapshot')?.canRevert, true)
+  assert.equal(store.getTaskReviewDecisionDossier('missing-with-snapshot')?.canRevert, true)
+  assert.equal(store.getTaskReviewDecisionDossier('missing-without-snapshot')?.canRevert, false)
+  assert.equal(store.listTaskHistoryPage({
+    taskId: 'missing-task', requireCurrentTask: true
+  }).total, 0)
+}))
+
 test('task review audit archive paginates decisions without exposing evidence or snapshots', () => withStore(store => {
   for (let index = 0; index < 2_500; index += 1) {
     const fingerprint = `audit-fingerprint-${String(index).padStart(4, '0')}`

@@ -8606,6 +8606,10 @@ export class PersonalMemoryStore {
         taskDependencyCandidateFullTaskMaterializations: 0,
         taskDependencyCandidateOrdinaryLimit: 50,
         taskDependencySelectedPreserved: true,
+        taskPointReadAuthority: 'sqlcipher_stable_id',
+        taskHistoryFullTaskMaterializations: 0,
+        taskReviewRevertEligibility: 'sqlcipher_snapshot_or_current_task',
+        taskReviewFullTaskMaterializations: 0,
         questionEntityPlanningStrategy: 'sqlcipher_reverse_term_match',
         questionEntityPlanningLimit: 100,
         questionEntityPlanningTotalVisible: true,
@@ -19368,6 +19372,7 @@ export class PersonalMemoryStore {
 
   listTaskHistoryPage(options: {
     taskId: string
+    requireCurrentTask?: boolean
     limit?: number
     offset?: number
     revision?: string
@@ -19376,6 +19381,10 @@ export class PersonalMemoryStore {
     const revision = this.getTaskArchiveRevision()
     const taskId = String(options.taskId || '').trim()
     if (!taskId) return { items: [], total: 0, hasMore: false, revision, stale: false }
+    if (options.requireCurrentTask &&
+        !this.db.prepare('SELECT 1 FROM task_directory WHERE id=?').get(taskId)) {
+      return { items: [], total: 0, hasMore: false, revision, stale: false }
+    }
     const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options.offset) || 0)))
     const expectedRevision = String(options.revision || '').trim()
     if (offset > 0 && expectedRevision !== revision) {
@@ -19730,7 +19739,9 @@ export class PersonalMemoryStore {
     const rows = this.db.prepare(`
       SELECT evidence_fingerprint,task_id,decision,title,source,suppression_count,
         reconciliation_count,last_suppressed_at,last_reconciled_at,revoked_at,
-        created_at,updated_at,task_json,evidence_json,reason_code
+        created_at,updated_at,task_json,evidence_json,reason_code,
+        EXISTS(SELECT 1 FROM task_directory task WHERE task.id=task_review_decisions.task_id)
+          AS current_task_exists
       FROM task_review_decisions
       ${where}
       ORDER BY updated_at DESC,evidence_fingerprint ASC
@@ -19746,11 +19757,16 @@ export class PersonalMemoryStore {
     const items = rows.map(row => {
       let task: any = {}
       task = hydrateTaskReviewSnapshot(row.task_json, row.evidence_json)
-      const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
+      const {
+        task_json: _taskJson, evidence_json: _evidenceJson,
+        current_task_exists: currentTaskExists, ...safeRow
+      } = row
+      const canRestoreSnapshot = Boolean(task?.id && task?.title)
       return {
         ...safeRow,
         active: !row.revoked_at,
-        can_restore_snapshot: Boolean(task?.id && task?.title)
+        can_restore_snapshot: canRestoreSnapshot,
+        canRevert: Boolean(!row.revoked_at && (canRestoreSnapshot || currentTaskExists))
       }
     })
     const completedRevision = this.getTaskOwnershipReviewRevision()
@@ -19805,7 +19821,10 @@ export class PersonalMemoryStore {
       }
     }
     const row = this.db.prepare(`
-      SELECT * FROM task_review_decisions WHERE evidence_fingerprint=?
+      SELECT decision.*,
+        EXISTS(SELECT 1 FROM task_directory task WHERE task.id=decision.task_id)
+          AS current_task_exists
+      FROM task_review_decisions decision WHERE decision.evidence_fingerprint=?
     `).get(evidenceFingerprint) as any
     if (!row) return null
     let evidence: any[] = []
@@ -19821,7 +19840,10 @@ export class PersonalMemoryStore {
       ORDER BY created_at DESC,id DESC
       LIMIT ? OFFSET ?
     `).all(evidenceFingerprint, historyLimit, historyOffset) as any[]
-    const { task_json: _taskJson, evidence_json: _evidenceJson, ...safeRow } = row
+    const {
+      task_json: _taskJson, evidence_json: _evidenceJson,
+      current_task_exists: currentTaskExists, ...safeRow
+    } = row
     const history = historyRows.map(item => {
       let snapshot: any = {}
       try { snapshot = JSON.parse(String(item.task_json || '{}')) } catch {}
@@ -19854,6 +19876,9 @@ export class PersonalMemoryStore {
       ...safeRow,
       active: !row.revoked_at,
       can_restore_snapshot: Boolean(task?.id && task?.title),
+      canRevert: Boolean(!row.revoked_at && (
+        Boolean(task?.id && task?.title) || currentTaskExists
+      )),
       evidence: evidence.slice(-20),
       evidenceTotal: evidence.length,
       history,

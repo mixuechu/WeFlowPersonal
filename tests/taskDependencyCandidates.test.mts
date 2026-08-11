@@ -22,6 +22,23 @@ test('production dependency search delegates to SQLCipher without scanning runti
   assert.match(storeMethod, /is_selected=1 OR item_rank<=\?/)
 })
 
+test('task history and review revert reads use SQLCipher stable ids', () => {
+  const historyMethod = serviceSource.slice(
+    serviceSource.indexOf('  getTaskHistoryPage('),
+    serviceSource.indexOf('\n  getTaskDependencyCandidates(', serviceSource.indexOf('  getTaskHistoryPage('))
+  )
+  const reviewStart = serviceSource.indexOf('  getTaskReviewDecisionPage(')
+  const reviewMethods = serviceSource.slice(
+    reviewStart, serviceSource.indexOf('\n  getMemoryDeletionAuditPage(', reviewStart)
+  )
+  assert.doesNotMatch(historyMethod, /this\.state\.tasks/)
+  assert.match(historyMethod, /personalMemoryStore\.listTaskHistoryPage\(/)
+  assert.match(historyMethod, /requireCurrentTask: true/)
+  assert.doesNotMatch(reviewMethods, /this\.state\.tasks/)
+  assert.match(storeSource, /EXISTS\(SELECT 1 FROM task_directory task WHERE task\.id=task_review_decisions\.task_id\)/)
+  assert.match(storeSource, /EXISTS\(SELECT 1 FROM task_directory task WHERE task\.id=decision\.task_id\)/)
+})
+
 test('task dependency search covers the authoritative collection and preserves selected tasks', () => {
   const tasks = Array.from({ length: 2_000 }, (_, index) => ({
     id: `dependency-task-${String(index).padStart(4, '0')}`,

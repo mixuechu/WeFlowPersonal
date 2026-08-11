@@ -18341,6 +18341,10 @@ function AiAssistantPage() {
                 <span>任务依赖搜索 <b>{memoryDiagnostics.memorySearchScopePlanning.taskDependencyCandidateStrategy === 'sqlcipher_ranked_selected_plus_matches' ? 'SQLCipher 全目录排序' : '需要检查'}</b></span>
                 <span>依赖搜索全任务副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.taskDependencyCandidateFullTaskMaterializations || 0)} 份</b></span>
                 <span>已选依赖 <b>{memoryDiagnostics.memorySearchScopePlanning.taskDependencySelectedPreserved ? '始终保留' : '需要检查'}</b></span>
+                <span>单任务读取 <b>{memoryDiagnostics.memorySearchScopePlanning.taskPointReadAuthority === 'sqlcipher_stable_id' ? 'SQLCipher 稳定 ID' : '需要检查'}</b></span>
+                <span>历史读取全任务副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.taskHistoryFullTaskMaterializations || 0)} 份</b></span>
+                <span>归属审阅撤销资格 <b>{memoryDiagnostics.memorySearchScopePlanning.taskReviewRevertEligibility === 'sqlcipher_snapshot_or_current_task' ? '快照或当前任务' : '需要检查'}</b></span>
+                <span>归属审阅全任务副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.taskReviewFullTaskMaterializations || 0)} 份</b></span>
                 <span>问答实体识别 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningStrategy === 'sqlcipher_reverse_term_match' ? 'SQLCipher 反向词匹配' : '需要检查'}</b></span>
                 <span>单轮规划预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningLimit || 0)} 个实体</b></span>
                 <span>超预算语义 <b>{memoryDiagnostics.memorySearchScopePlanning.questionEntityPlanningTruncationSafe ? '显示总数且禁止单人自动绑定' : '需要检查'}</b></span>

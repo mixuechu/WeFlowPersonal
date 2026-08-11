@@ -6477,17 +6477,9 @@ export class AiAssistantService {
 
   getTaskHistoryPage(taskId: string, options: any = {}): any {
     const id = String(taskId || '').trim()
-    if (!this.state.tasks.some(task => task.id === id)) {
-      return {
-        items: [],
-        total: 0,
-        hasMore: false,
-        revision: personalMemoryStore.getTaskArchiveRevision(),
-        stale: false
-      }
-    }
     return personalMemoryStore.listTaskHistoryPage({
       taskId: id,
+      requireCurrentTask: true,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
@@ -6610,29 +6602,7 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
     })
-    if (page.stale) return page
-    const items = page.items.map(item => ({
-      ...item,
-      canRevert: Boolean(item.active && (
-        item.can_restore_snapshot || this.state.tasks.some(task => task.id === item.task_id)
-      ))
-    }))
-    const completedRevision = personalMemoryStore.getTaskOwnershipReviewRevision()
-    if (completedRevision !== page.revision) {
-      return {
-        ...page,
-        items: [],
-        total: 0,
-        hasMore: false,
-        counts: { active: 0, revoked: 0, all: 0 },
-        revision: completedRevision,
-        stale: true
-      }
-    }
-    return {
-      ...page,
-      items
-    }
+    return page
   }
 
   getTaskReviewDecisionDossier(evidenceFingerprint: string, options: any = {}): any {
@@ -6644,28 +6614,7 @@ export class AiAssistantService {
         revision: String(options?.revision || '')
       }
     )
-    if (!dossier) return null
-    if (dossier.stale) return dossier
-    const result = {
-      ...dossier,
-      canRevert: Boolean(dossier.active && (
-        dossier.can_restore_snapshot || this.state.tasks.some(task => task.id === dossier.task_id)
-      ))
-    }
-    const completedRevision = personalMemoryStore.getTaskOwnershipReviewRevision()
-    if (completedRevision !== dossier.revision) {
-      return {
-        ...dossier,
-        evidence: [],
-        evidenceTotal: 0,
-        history: [],
-        historyTotal: 0,
-        historyHasMore: false,
-        revision: completedRevision,
-        stale: true
-      }
-    }
-    return result
+    return dossier
   }
 
   getMemoryDeletionAuditPage(options: any = {}): any {

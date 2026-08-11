@@ -67,6 +67,8 @@ test('scope planning is honest and visible in complete diagnostics', () => {
   assert.match(pageSource, /图谱候选水合[\s\S]*?SQLCipher 当前页批量[\s\S]*?候选审阅全图副本[\s\S]*?graphReviewFullGraphMaterializations[\s\S]*?同名实体预览[\s\S]*?graphReviewSameNamePreviewLimit/)
   assert.match(store, /taskDependencyCandidateStrategy: 'sqlcipher_ranked_selected_plus_matches'[\s\S]*?taskDependencyCandidateFullTaskMaterializations: 0[\s\S]*?taskDependencyCandidateOrdinaryLimit: 50[\s\S]*?taskDependencySelectedPreserved: true/)
   assert.match(pageSource, /任务依赖搜索[\s\S]*?SQLCipher 全目录排序[\s\S]*?依赖搜索全任务副本[\s\S]*?taskDependencyCandidateFullTaskMaterializations[\s\S]*?已选依赖[\s\S]*?始终保留/)
+  assert.match(store, /taskPointReadAuthority: 'sqlcipher_stable_id'[\s\S]*?taskHistoryFullTaskMaterializations: 0[\s\S]*?taskReviewRevertEligibility: 'sqlcipher_snapshot_or_current_task'[\s\S]*?taskReviewFullTaskMaterializations: 0/)
+  assert.match(pageSource, /单任务读取[\s\S]*?SQLCipher 稳定 ID[\s\S]*?历史读取全任务副本[\s\S]*?taskHistoryFullTaskMaterializations[\s\S]*?归属审阅撤销资格[\s\S]*?快照或当前任务[\s\S]*?归属审阅全任务副本[\s\S]*?taskReviewFullTaskMaterializations/)
   assert.match(pageSource, /问答实体识别[\s\S]*?SQLCipher 反向词匹配[\s\S]*?单轮规划预算[\s\S]*?questionEntityPlanningLimit[\s\S]*?超预算语义[\s\S]*?显示总数且禁止单人自动绑定/)
   assert.match(pageSource, /稠密关系已按 SQLCipher 安全预算隐藏/)
 })
