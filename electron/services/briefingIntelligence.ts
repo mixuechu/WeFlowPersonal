@@ -3,6 +3,113 @@ export function isQuietTime(time: string, start: string, end: string): boolean {
   return start < end ? time >= start && time < end : time >= start || time < end
 }
 
+function briefingEvidenceIdentity(value: any): string {
+  const explicit = String(value?.evidenceKey || '').trim()
+  if (explicit) return explicit
+  const sourceId = String(value?.sourceId || '').trim()
+  const sessionId = String(value?.sessionId || '').trim()
+  const messageId = String(value?.messageId || '').trim()
+  return sourceId && sessionId && messageId ? `${sourceId}:${sessionId}:${messageId}` : ''
+}
+
+function boundedCount(value: unknown): number {
+  const number = Number(value)
+  return Number.isFinite(number)
+    ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(number)))
+    : 0
+}
+
+export function mergeDailyBriefing(existing: any, incoming: any): any {
+  const current = existing && typeof existing === 'object' ? existing : null
+  const incrementId = String(incoming?.incrementId || '').trim()
+  const recentIncrementIds = Array.isArray(current?.recentIncrementIds)
+    ? current.recentIncrementIds.map(String).filter(Boolean).slice(-31)
+    : []
+  if (incrementId && recentIncrementIds.includes(incrementId)) return current
+  const messageCount = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    boundedCount(current?.messageCount) + boundedCount(incoming?.messageCount)
+  )
+  const incomingSummary = String(incoming?.summary || '').replace(/\s+/g, ' ').trim()
+  const existingSummary = String(current?.summary || '').replace(/\s+/g, ' ').trim()
+  const summary = [incomingSummary, existingSummary].filter(Boolean).join(' ').slice(0, 900)
+  const rawEvidence = [
+    ...(Array.isArray(incoming?.summaryEvidence) ? incoming.summaryEvidence : []),
+    ...(Array.isArray(current?.summaryEvidence) ? current.summaryEvidence : [])
+  ]
+  const summaryEvidenceByIdentity = new Map<string, any>()
+  for (const item of rawEvidence) {
+    const identity = briefingEvidenceIdentity(item)
+    if (identity && !summaryEvidenceByIdentity.has(identity)) {
+      summaryEvidenceByIdentity.set(identity, item)
+    }
+  }
+  const summaryEvidence = [...summaryEvidenceByIdentity.values()]
+  const retainedCurrentEvidence = new Set((Array.isArray(current?.summaryEvidence)
+    ? current.summaryEvidence : []).map(briefingEvidenceIdentity).filter(Boolean))
+  const newEvidenceCount = new Set((Array.isArray(incoming?.summaryEvidence)
+    ? incoming.summaryEvidence : []).map(briefingEvidenceIdentity).filter(Boolean))
+  for (const identity of retainedCurrentEvidence) newEvidenceCount.delete(identity)
+  const summaryEvidenceTotal = Math.min(
+    1_000_000,
+    Math.max(boundedCount(current?.summaryEvidenceTotal), retainedCurrentEvidence.size) +
+      newEvidenceCount.size
+  )
+  const rawHighlights = [
+    ...(Array.isArray(incoming?.highlightItems) ? incoming.highlightItems : []),
+    ...(Array.isArray(current?.highlightItems) ? current.highlightItems : [])
+  ]
+  const highlightsByText = new Map<string, any>()
+  for (const item of rawHighlights) {
+    const text = String(item?.text || '').trim()
+    if (text && !highlightsByText.has(text)) highlightsByText.set(text, item)
+  }
+  const highlightItems = [...highlightsByText.values()].slice(0, 8)
+  const rejectedSummaryCount = boundedCount(current?.evidencePolicy?.rejectedSummaryCount) +
+    boundedCount(incoming?.evidencePolicy?.rejectedSummaryCount)
+  const rejectedHighlightCount = boundedCount(current?.evidencePolicy?.rejectedHighlightCount) +
+    boundedCount(incoming?.evidencePolicy?.rejectedHighlightCount)
+  const currentIncrementCount = current
+    ? Math.max(1, boundedCount(current?.incrementCount))
+    : 0
+  const currentFailedSessionsTotal = Math.max(
+    boundedCount(current?.failedSessionsTotal),
+    boundedCount(current?.failedSessions)
+  )
+  return {
+    ...current,
+    ...incoming,
+    version: 'daily-briefing-v2',
+    headline: `今日已整理 ${messageCount} 条新增消息`,
+    summary,
+    summaryEvidence,
+    summaryEvidenceTotal,
+    summaryEvidenceTruncated: summaryEvidenceTotal > summaryEvidence.length,
+    summaryVerified: Boolean(summary && summaryEvidenceTotal > 0),
+    highlightItems,
+    highlights: highlightItems.map((item: any) => String(item.text || '')).filter(Boolean),
+    evidencePolicy: {
+      version: 'briefing-evidence-v1',
+      rejectedSummaryCount: Math.min(Number.MAX_SAFE_INTEGER, rejectedSummaryCount),
+      rejectedHighlightCount: Math.min(Number.MAX_SAFE_INTEGER, rejectedHighlightCount)
+    },
+    messageCount,
+    lastIncrementMessageCount: boundedCount(incoming?.messageCount),
+    incrementCount: Math.min(Number.MAX_SAFE_INTEGER, currentIncrementCount + 1),
+    failedSessions: boundedCount(incoming?.failedSessions),
+    failedSessionsTotal: Math.min(
+      Number.MAX_SAFE_INTEGER,
+      currentFailedSessionsTotal + boundedCount(incoming?.failedSessions)
+    ),
+    firstGeneratedAt: String(current?.firstGeneratedAt || current?.generatedAt ||
+      incoming?.generatedAt || ''),
+    generatedAt: String(incoming?.generatedAt || current?.generatedAt || ''),
+    recentIncrementIds: incrementId
+      ? [...recentIncrementIds, incrementId].slice(-32)
+      : recentIncrementIds
+  }
+}
+
 export function buildWeeklyBriefing(
   briefings: Record<string, any>,
   tasks: any[],

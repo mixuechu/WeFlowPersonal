@@ -14,6 +14,9 @@ test('latest briefing summary and highlights use the shared evidence navigation 
   assert.match(page, /summaryEvidenceRowsOmitted \|\| 0/)
   assert.match(page, /briefing\.summaryEvidenceTotal \|\| briefing\.summaryEvidence\?\.length/)
   assert.match(page, /item\.evidenceTruncated/)
+  assert.match(page, /briefing\.incrementCount/)
+  assert.match(page, /briefing\.lastIncrementMessageCount/)
+  assert.match(page, /条今日累计新增消息/)
 })
 
 test('shared evidence rows fail closed for non-WeChat and malformed message identities', () => {

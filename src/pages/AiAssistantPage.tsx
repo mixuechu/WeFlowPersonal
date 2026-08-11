@@ -11668,6 +11668,11 @@ function AiAssistantPage() {
             {briefingPeriod === 'latest' ? <>
               <h2>{briefing?.headline || '等待第一次增量整理'}</h2>
               <p>{briefing?.summary || '服务会在启动时自动补齐，也会在每天设定时间整理新增消息。'}</p>
+              {!!briefing?.incrementCount && <small>
+                今日已合并 {Number(briefing.incrementCount).toLocaleString()} 次增量；
+                最近一次新增 {Number(briefing.lastIncrementMessageCount || 0).toLocaleString()} 条，
+                同一批消息重放不会重复累计。
+              </small>}
               <small>
                 派生简报只保留最近 {dashboard?.briefingStorage?.retentionDays || 90} 天；
                 每日摘要最多内嵌 {dashboard?.briefingStorage?.summaryEvidenceLimit || 40} 条去重引用，
@@ -11722,7 +11727,7 @@ function AiAssistantPage() {
           </div>
           <div className="assistant-stat">
             <strong>{briefingPeriod === 'latest' ? briefing?.messageCount || 0 : weeklyBriefing?.messageCount || 0}</strong>
-            <span>{briefingPeriod === 'latest' ? '条本次新增消息' : '条本周新增消息'}</span>
+            <span>{briefingPeriod === 'latest' ? '条今日累计新增消息' : '条本周新增消息'}</span>
             <small>{briefingPeriod === 'latest'
               ? `${dashboard?.memoryStats?.claims || 0} 条事实 · ${dashboard?.memoryStats?.events || 0} 个事件 · ${dashboard?.memoryStats?.resources || 0} 个资源`
               : `${weeklyBriefing?.highPriorityTaskCount || 0} 项高优先级 · ${weeklyBriefing?.waitingTaskCount || 0} 项等待中`}</small>

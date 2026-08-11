@@ -92,7 +92,11 @@ import {
   isNegativeDecisionCurrent
 } from '../electron/services/identityDisambiguation.ts'
 import { editDistance, entityPinyinTerms, fuzzyEntityScore, pinyinEntityScore } from '../electron/services/fuzzyEntitySearch.ts'
-import { buildWeeklyBriefing, isQuietTime } from '../electron/services/briefingIntelligence.ts'
+import {
+  buildWeeklyBriefing,
+  isQuietTime,
+  mergeDailyBriefing
+} from '../electron/services/briefingIntelligence.ts'
 import { groundBriefingDigest } from '../electron/services/briefingEvidencePolicy.ts'
 import {
   buildStructuredExtractionEvidence,
@@ -7263,6 +7267,62 @@ test('weekly briefing aggregates Shanghai dates and quiet hours cross midnight',
   assert.equal(briefing.highPriorityTaskCount, 1)
   assert.deepEqual(briefing.highlights, ['完成演示', '客户反馈'])
   assert.equal(briefing.summaries[0].verified, false)
+})
+
+test('same-day briefing increments accumulate once with newest grounded content first', () => {
+  const evidence = (id: string) => ({
+    evidenceKey: `wechat:session:${id}`,
+    sourceId: 'wechat', sessionId: 'session', messageId: id, excerpt: `原文 ${id}`
+  })
+  const first = mergeDailyBriefing(null, {
+    date: '2026-08-12', summary: '上午完成需求确认。',
+    summaryEvidence: [evidence('one'), evidence('shared')],
+    highlightItems: [{ text: '共同重点', evidence: [evidence('shared')] },
+      { text: '上午重点', evidence: [evidence('one')] }],
+    evidencePolicy: { rejectedSummaryCount: 1, rejectedHighlightCount: 2 },
+    messageCount: 5, failedSessions: 1,
+    generatedAt: '2026-08-12T02:00:00.000Z', incrementId: 'increment-one'
+  })
+  const second = mergeDailyBriefing(first, {
+    date: '2026-08-12', summary: '下午确认交付时间。',
+    summaryEvidence: [evidence('shared'), evidence('two')],
+    highlightItems: [{ text: '共同重点', evidence: [evidence('two')] },
+      { text: '下午重点', evidence: [evidence('two')] }],
+    evidencePolicy: { rejectedSummaryCount: 3, rejectedHighlightCount: 4 },
+    messageCount: 7, failedSessions: 2,
+    generatedAt: '2026-08-12T08:00:00.000Z', incrementId: 'increment-two'
+  })
+  assert.equal(second.headline, '今日已整理 12 条新增消息')
+  assert.equal(second.messageCount, 12)
+  assert.equal(second.lastIncrementMessageCount, 7)
+  assert.equal(second.incrementCount, 2)
+  assert.equal(second.summary, '下午确认交付时间。 上午完成需求确认。')
+  assert.deepEqual(second.summaryEvidence.map((item: any) => item.messageId),
+    ['shared', 'two', 'one'])
+  assert.equal(second.summaryEvidenceTotal, 3)
+  assert.deepEqual(second.highlights, ['共同重点', '下午重点', '上午重点'])
+  assert.equal(second.highlightItems[0].evidence[0].messageId, 'two')
+  assert.equal(second.evidencePolicy.rejectedSummaryCount, 4)
+  assert.equal(second.evidencePolicy.rejectedHighlightCount, 6)
+  assert.equal(second.failedSessions, 2)
+  assert.equal(second.failedSessionsTotal, 3)
+  assert.equal(second.firstGeneratedAt, '2026-08-12T02:00:00.000Z')
+  assert.equal(second.generatedAt, '2026-08-12T08:00:00.000Z')
+  assert.deepEqual(second.recentIncrementIds, ['increment-one', 'increment-two'])
+  assert.equal(mergeDailyBriefing(second, {
+    messageCount: 7, incrementId: 'increment-two'
+  }), second)
+
+  const legacyMerged = mergeDailyBriefing({
+    messageCount: 4, failedSessions: 2, generatedAt: 'legacy', summary: '旧摘要',
+    summaryEvidence: [evidence('legacy')]
+  }, {
+    messageCount: 1, failedSessions: 1, generatedAt: 'new', summary: '新摘要',
+    summaryEvidence: [evidence('new')], incrementId: 'new-increment'
+  })
+  assert.equal(legacyMerged.incrementCount, 2)
+  assert.equal(legacyMerged.failedSessionsTotal, 3)
+  assert.equal(legacyMerged.firstGeneratedAt, 'legacy')
 })
 
 test('weekly briefing accepts authoritative task counts without scanning a task collection', () => {

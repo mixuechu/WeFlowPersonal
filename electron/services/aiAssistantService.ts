@@ -168,7 +168,7 @@ import {
   classifyTaskAssignment,
   evaluateTaskAssignmentPolicy
 } from './taskAssignmentPolicy'
-import { buildWeeklyBriefing, isQuietTime } from './briefingIntelligence'
+import { buildWeeklyBriefing, isQuietTime, mergeDailyBriefing } from './briefingIntelligence'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
   buildStructuredExtractionEvidence,
@@ -5341,14 +5341,14 @@ export class AiAssistantService {
       this.runContextualIdentityScan(createdAt)
       this.runScheduledIdentityScan(createdAt)
       if (fresh.length > 0) {
-        this.state.briefings[today] = {
+        const incrementId = crypto.createHash('sha256')
+          .update(fresh.map(messageKey).sort().join('\n'))
+          .digest('hex')
+        this.state.briefings[today] = mergeDailyBriefing(this.state.briefings[today], {
           date: today,
-          headline: `已整理 ${fresh.length} 条新增消息`,
           summary: summaries.join(' ').slice(0, 900),
           summaryEvidence,
-          summaryVerified: summaries.length > 0,
           highlightItems: [...new Map(highlightItems.map(item => [item.text, item])).values()].slice(0, 8),
-          highlights: [...new Set(highlightItems.map(item => item.text))].slice(0, 8),
           evidencePolicy: {
             version: 'briefing-evidence-v1',
             rejectedSummaryCount,
@@ -5356,8 +5356,9 @@ export class AiAssistantService {
           },
           messageCount: fresh.length,
           failedSessions: collected.failed.length,
-          generatedAt: createdAt
-        }
+          generatedAt: createdAt,
+          incrementId
+        })
       }
       this.state.cursor.recentMessageIds = [...new Set([...this.state.cursor.recentMessageIds, ...successfulMessageKeys])].slice(-20_000)
       const cursorProgress = planSessionCursorProgress({
