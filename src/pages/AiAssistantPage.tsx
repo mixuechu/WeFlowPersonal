@@ -14870,6 +14870,7 @@ function AiAssistantPage() {
                 <button onClick={() => setSelectedEntityId(entity.id)}>{entity.canonicalName}</button>
                 {graphPath.steps[index] && <i>{graphPath.steps[index].forward ? graphPath.steps[index].predicate : `被${graphPath.steps[index].predicate}`} →</i>}
               </span>)}</div>
+              <small>SQLCipher 已检查 {Number(graphPath.explored || 0).toLocaleString()} 个有界路径状态，找到 {graphPath.steps.length} 跳最短路径。</small>
               {!!graphPath.steps?.length && <details className="assistant-path-evidence">
                 <summary>核验这条路径的原文证据</summary>
                 {graphPath.steps.map((step: any, index: number) => <section key={step.relationId}>
@@ -14881,7 +14882,9 @@ function AiAssistantPage() {
                     )} />
                 </section>)}
               </details>}
-            </> : <p>在 6 层关系内没有找到路径。候选关系被保留，已拒绝关系不会参与计算。</p>}
+            </> : <p>{graphPath.truncated
+              ? `已检查 ${Number(graphPath.explored || 0).toLocaleString()} 个路径状态并达到 ${Number(graphPath.expansionBudget || 0).toLocaleString()} 的安全预算，当前不能证明 6 层内不存在连接。请缩小图谱或检索范围后重试。`
+              : `SQLCipher 已检查 ${Number(graphPath.explored || 0).toLocaleString()} 个有界路径状态，在 6 层关系内没有找到路径。候选和已拒绝关系不会参与计算。`}</p>}
           </div>}
           {graphCommonNeighbors && <div className="assistant-common-neighbors">
             <div className="assistant-section-heading"><div><span className="assistant-eyebrow">COMMON CONNECTIONS</span><h3>共同联系人与实体</h3></div><span className="assistant-count">{graphCommonNeighbors.common.length} 个</span></div>
@@ -18162,7 +18165,9 @@ function AiAssistantPage() {
                 <span>请求结束 <b>{memoryDiagnostics.memorySearchScopePlanning.releasedAfterRequest ? '自动释放' : '需要检查'}</b></span>
                 <span>旧共享范围 <b>{memoryDiagnostics.memorySearchScopePlanning.legacySharedScopeRemoved ? '已移除' : '需要检查'}</b></span>
                 <span>范围内图路径 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 最短路径' : '需要检查'}</b></span>
+                <span>全图路径 <b>{memoryDiagnostics.memorySearchScopePlanning.unscopedGraphPathStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 有界路径' : '需要检查'}</b></span>
                 <span>关系 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphRelationIdentityMaterializations || 0)}</b> 份</span>
+                <span>全图邻接副本 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.unscopedGraphAdjacencyMaterializations || 0)}</b> 份</span>
                 <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
                 <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>

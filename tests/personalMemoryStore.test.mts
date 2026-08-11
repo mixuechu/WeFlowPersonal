@@ -13563,11 +13563,21 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
       }]
     })
     store.syncGraph({
-      entities,
+      entities: [...entities, {
+        id: 'path-untrusted',
+        type: 'person',
+        canonicalName: 'path-untrusted',
+        summary: '',
+        confidence: 0.5,
+        trustStatus: 'candidate',
+        aliases: [],
+        accountIds: []
+      }],
       relations: [
         relation('path-wechat-direct', 'path-left', 'path-right', 'wechat', '微信直连'),
         relation('path-calendar-left', 'path-left', 'path-calendar-bridge', 'calendar', '日历左边'),
-        relation('path-calendar-right', 'path-calendar-bridge', 'path-right', 'calendar', '日历右边')
+        relation('path-calendar-right', 'path-calendar-bridge', 'path-right', 'calendar', '日历右边'),
+        relation('path-untrusted-edge', 'path-left', 'path-untrusted', 'wechat', '未确认端点')
       ],
       reviewQueue: []
     } as any)
@@ -13579,12 +13589,22 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
       sourceIds: ['calendar'],
       documentTypes: ['relation']
     })!
+    const unscoped = store.findRelationPath(null, 'path-left', 'path-right', 6)
+    assert.deepEqual(unscoped.steps.map(step => [step.relationId, step.forward]), [
+      ['path-wechat-direct', true]
+    ])
     assert.deepEqual(
-      store.findRelationPathInScope(wechatScope, 'path-left', 'path-right', 6)
+      store.findRelationPath(null, 'path-right', 'path-left', 6)
+        .steps.map(step => [step.relationId, step.forward]),
+      [['path-wechat-direct', false]]
+    )
+    assert.equal(store.findRelationPath(null, 'path-left', 'path-untrusted', 6).found, false)
+    assert.deepEqual(
+      store.findRelationPath(wechatScope, 'path-left', 'path-right', 6)
         .steps.map(step => step.relationId),
       ['path-wechat-direct']
     )
-    const calendarPath = store.findRelationPathInScope(
+    const calendarPath = store.findRelationPath(
       calendarScope,
       'path-left',
       'path-right',
@@ -13600,10 +13620,10 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
       [['path-calendar-left', true], ['path-calendar-right', true]]
     )
     assert.equal(
-      store.findRelationPathInScope(calendarScope, 'path-left', 'path-right', 1).found,
+      store.findRelationPath(calendarScope, 'path-left', 'path-right', 1).found,
       false
     )
-    const truncated = store.findRelationPathInScope(
+    const truncated = store.findRelationPath(
       calendarScope,
       'path-left',
       'path-right',
@@ -13621,7 +13641,7 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
     store.releaseSearchDocumentScope(wechatScope)
     store.releaseSearchDocumentScope(calendarScope)
     assert.throws(
-      () => store.findRelationPathInScope(calendarScope, 'path-left', 'path-right', 6),
+      () => store.findRelationPath(calendarScope, 'path-left', 'path-right', 6),
       /检索范围已经释放/
     )
   }))

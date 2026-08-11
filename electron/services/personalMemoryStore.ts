@@ -7849,7 +7849,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 5,
+        version: 6,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7863,7 +7863,9 @@ export class PersonalMemoryStore {
         scopedGraphRelationIdentityMaterializations: 0,
         scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT,
         scopedGraphPathBreadthFirst: true,
-        scopedGraphPathTruncationVisible: true
+        scopedGraphPathTruncationVisible: true,
+        unscopedGraphPathStrategy: 'sqlcipher_recursive_cte',
+        unscopedGraphAdjacencyMaterializations: 0
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20740,8 +20742,8 @@ export class PersonalMemoryStore {
     return Boolean(this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(documentId))
   }
 
-  findRelationPathInScope(
-    scope: SearchDocumentScopeHandle,
+  findRelationPath(
+    scope: SearchDocumentScopeHandle | null,
     fromId: string,
     toId: string,
     maxDepth = 5,

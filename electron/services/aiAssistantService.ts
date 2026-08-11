@@ -310,7 +310,7 @@ import {
   type NotificationOutbox
 } from './notificationOutbox'
 import { commitAssistantState } from './assistantStateCommitPolicy'
-import { findCommonGraphNeighbors, findScopedGraphPath } from './graphCommonNeighbors'
+import { findCommonGraphNeighbors } from './graphCommonNeighbors'
 import {
   boundedEvidencePayload,
   GRAPH_QUERY_EVIDENCE_LIMIT,
@@ -12011,23 +12011,16 @@ export class AiAssistantService {
     }
     const trustedEntities = this.state.graph.entities.filter(isTrustedEntity)
     const entityMap = new Map(trustedEntities.map(entity => [entity.id, entity]))
-    const scopedPath = relationScope
-      ? personalMemoryStore.findRelationPathInScope(relationScope, fromId, toId, maxDepth)
-      : null
-    const path = scopedPath
-      ? {
-          ...scopedPath,
-          found: scopedPath.found,
-          entities: scopedPath.entityIds.map(id => entityMap.get(id)).filter(Boolean),
-          steps: scopedPath.steps
-        }
-      : findScopedGraphPath(
-          fromId,
-          toId,
-          trustedEntities,
-          this.state.graph.relations,
-          maxDepth
-        )
+    const authorityPath = personalMemoryStore.findRelationPath(
+      relationScope,
+      fromId,
+      toId,
+      maxDepth
+    )
+    const path = {
+      ...authorityPath,
+      entities: authorityPath.entityIds.map(id => entityMap.get(id)).filter(Boolean)
+    }
     if (!path?.found || !Array.isArray(path.steps) || !path.steps.length) return path
     const hotsets = personalMemoryStore.getRelationEvidenceHotset(
       path.steps.map((step: any) => step.relationId),
