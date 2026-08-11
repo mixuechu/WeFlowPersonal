@@ -586,6 +586,7 @@ export type SearchDocumentScopeHandle = Readonly<{
 }>
 
 type SearchDocumentScope = SearchDocumentScopeHandle
+const SCOPED_GRAPH_PATH_EXPANSION_LIMIT = 50_000
 
 export class PersonalMemoryStore {
   private db: Database.Database | null = null
@@ -7848,7 +7849,7 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 4,
+        version: 5,
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -7859,7 +7860,10 @@ export class PersonalMemoryStore {
         handleOnlyScopeApi: true,
         legacySharedScopeRemoved: true,
         scopedGraphPathStrategy: 'sqlcipher_recursive_cte',
-        scopedGraphRelationIdentityMaterializations: 0
+        scopedGraphRelationIdentityMaterializations: 0,
+        scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT,
+        scopedGraphPathBreadthFirst: true,
+        scopedGraphPathTruncationVisible: true
       },
       memorySearchRevision,
       memorySearchFeedbackArchiveRevision,
@@ -20740,10 +20744,23 @@ export class PersonalMemoryStore {
     scope: SearchDocumentScopeHandle,
     fromId: string,
     toId: string,
-    maxDepth = 5
-  ): { found: boolean; entityIds: string[]; steps: any[] } {
-    if (!this.db || !fromId || !toId) return { found: false, entityIds: [], steps: [] }
-    if (fromId === toId) return { found: true, entityIds: [fromId], steps: [] }
+    maxDepth = 5,
+    expansionBudget = SCOPED_GRAPH_PATH_EXPANSION_LIMIT
+  ): {
+    found: boolean
+    entityIds: string[]
+    steps: any[]
+    explored: number
+    expansionBudget: number
+    truncated: boolean
+  } {
+    const safeBudget = Math.max(1, Math.min(
+      SCOPED_GRAPH_PATH_EXPANSION_LIMIT,
+      Math.floor(Number(expansionBudget) || SCOPED_GRAPH_PATH_EXPANSION_LIMIT)
+    ))
+    const empty = { explored: 0, expansionBudget: safeBudget, truncated: false }
+    if (!this.db || !fromId || !toId) return { found: false, entityIds: [], steps: [], ...empty }
+    if (fromId === toId) return { found: true, entityIds: [fromId], steps: [], ...empty }
     const scopeJoin = this.searchDocumentScopeJoin(scope, `('relation:' || relation.id)`)
     const safeDepth = Math.max(1, Math.min(8, Number(maxDepth) || 5))
     const row = this.db.prepare(`
@@ -20777,17 +20794,35 @@ export class PersonalMemoryStore {
           AND NOT EXISTS (
             SELECT 1 FROM json_each(walk.entity_path) visited WHERE visited.value=edge.to_id
           )
+        ORDER BY 2 ASC,1 ASC
+        LIMIT ?
+      ), target AS (
+        SELECT entity_path,relation_path,direction_path
+        FROM walk WHERE current_id=? AND depth>0
+        ORDER BY depth ASC,relation_path ASC LIMIT 1
       )
-      SELECT entity_path,relation_path,direction_path
-      FROM walk WHERE current_id=? AND depth>0
-      ORDER BY depth ASC,relation_path ASC LIMIT 1
-    `).get(fromId, fromId, safeDepth, toId) as any
-    if (!row) return { found: false, entityIds: [], steps: [] }
+      SELECT target.entity_path,target.relation_path,target.direction_path,
+        (SELECT COUNT(*) FROM walk) AS explored
+      FROM (SELECT 1) singleton LEFT JOIN target ON 1=1
+    `).get(
+      fromId,
+      fromId,
+      safeDepth,
+      safeBudget,
+      toId
+    ) as any
+    const explored = Number(row?.explored || 0)
+    const budget = {
+      explored,
+      expansionBudget: safeBudget,
+      truncated: explored >= safeBudget
+    }
+    if (!row?.relation_path) return { found: false, entityIds: [], steps: [], ...budget }
     const entityIds = JSON.parse(String(row.entity_path || '[]')) as string[]
     const relationIds = JSON.parse(String(row.relation_path || '[]')) as string[]
     const directions = JSON.parse(String(row.direction_path || '[]')) as number[]
     if (!relationIds.length || entityIds.length !== relationIds.length + 1) {
-      return { found: false, entityIds: [], steps: [] }
+      return { found: false, entityIds: [], steps: [], ...budget }
     }
     const placeholders = relationIds.map(() => '?').join(',')
     const relations = this.db.prepare(`
@@ -20807,8 +20842,8 @@ export class PersonalMemoryStore {
         confidence: relation.confidence
       }
     })
-    if (steps.some(step => !step)) return { found: false, entityIds: [], steps: [] }
-    return { found: true, entityIds, steps }
+    if (steps.some(step => !step)) return { found: false, entityIds: [], steps: [], ...budget }
+    return { found: true, entityIds, steps, ...budget }
   }
 
   private searchDocumentScopeJoin(scope: SearchDocumentScope | null, expression: string): string {

@@ -34,6 +34,8 @@ test('evidence Q&A reuses one SQLCipher scope across planning branches and relea
   assert.ok((question.match(/\{ allowedIds: plannedScope \}/g) || []).length >= 2)
   assert.match(question, /findGraphPath\([\s\S]*?plannedScope/)
   assert.match(store, /findRelationPathInScope\([\s\S]*?WITH RECURSIVE eligible_edges/)
+  assert.match(store, /SCOPED_GRAPH_PATH_EXPANSION_LIMIT = 50_000[\s\S]*?ORDER BY 2 ASC,1 ASC[\s\S]*?LIMIT \?/)
+  assert.match(question, /达到安全预算，当前不能证明范围内不存在连接/)
   assert.doesNotMatch(question, /new Set\(scopedRelationIds\)|listSearchDocumentSourceIdsInScope/)
   assert.ok(
     question.indexOf('releaseSearchDocumentScope(plannedScope)')
@@ -42,8 +44,8 @@ test('evidence Q&A reuses one SQLCipher scope across planning branches and relea
 })
 
 test('scope planning is honest and visible in complete diagnostics', () => {
-  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 4[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true[\s\S]*?scopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?scopedGraphRelationIdentityMaterializations: 0/)
+  assert.match(store, /memorySearchScopePlanning:\s*\{[\s\S]*?version: 5[\s\S]*?facetStrategy: 'sqlcipher_direct_count'[\s\S]*?facetIdentityMaterializations: 0[\s\S]*?primaryScopeStrategy: 'sqlcipher_isolated_temp_table'[\s\S]*?primaryIdentityMaterializations: 0[\s\S]*?hybridScopeReused: true[\s\S]*?releasedAfterRequest: true[\s\S]*?handleOnlyScopeApi: true[\s\S]*?legacySharedScopeRemoved: true[\s\S]*?scopedGraphPathStrategy: 'sqlcipher_recursive_cte'[\s\S]*?scopedGraphRelationIdentityMaterializations: 0[\s\S]*?scopedGraphPathExpansionBudget: SCOPED_GRAPH_PATH_EXPANSION_LIMIT[\s\S]*?scopedGraphPathBreadthFirst: true[\s\S]*?scopedGraphPathTruncationVisible: true/)
   assert.doesNotMatch(store, /replaceActiveSearchScope|CREATE TEMP TABLE IF NOT EXISTS active_memory_search_scope\s*\(/)
   assert.doesNotMatch(store, /type SearchDocumentScope\s*=\s*Set/)
-  assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围[\s\S]*?旧共享范围[\s\S]*?已移除[\s\S]*?范围内图路径[\s\S]*?SQLCipher 最短路径[\s\S]*?关系 ID 集合/)
+  assert.match(pageSource, /检索范围执行策略[\s\S]*?SQLCipher 直接计数[\s\S]*?主检索范围 <b>SQLCipher 临时范围[\s\S]*?旧共享范围[\s\S]*?已移除[\s\S]*?范围内图路径[\s\S]*?SQLCipher 最短路径[\s\S]*?关系 ID 集合[\s\S]*?图路径扩展预算[\s\S]*?预算截断[\s\S]*?明确提示/)
 })

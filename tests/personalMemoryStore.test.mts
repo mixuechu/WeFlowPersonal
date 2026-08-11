@@ -13603,6 +13603,21 @@ test('scoped graph paths stay inside SQLCipher without materializing every relat
       store.findRelationPathInScope(calendarScope, 'path-left', 'path-right', 1).found,
       false
     )
+    const truncated = store.findRelationPathInScope(
+      calendarScope,
+      'path-left',
+      'path-right',
+      6,
+      2
+    )
+    assert.deepEqual(truncated, {
+      found: false,
+      entityIds: [],
+      steps: [],
+      explored: 2,
+      expansionBudget: 2,
+      truncated: true
+    })
     store.releaseSearchDocumentScope(wechatScope)
     store.releaseSearchDocumentScope(calendarScope)
     assert.throws(

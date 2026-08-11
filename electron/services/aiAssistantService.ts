@@ -12016,6 +12016,7 @@ export class AiAssistantService {
       : null
     const path = scopedPath
       ? {
+          ...scopedPath,
           found: scopedPath.found,
           entities: scopedPath.entityIds.map(id => entityMap.get(id)).filter(Boolean),
           steps: scopedPath.steps
@@ -12209,9 +12210,11 @@ export class AiAssistantService {
         )) mergedResults.set(result.id, result)
         plan.explanation.push(`图路径：${plannedGraphPath.steps.length} 跳`)
       } else {
-        plan.explanation.push(plannedScope === null
-          ? '图路径：未找到已知连接'
-          : '图路径：当前检索范围内未找到已知连接')
+        plan.explanation.push(plannedGraphPath?.truncated
+          ? `图路径：已检查 ${Number(plannedGraphPath.explored || 0)} 个有界状态，达到安全预算，当前不能证明范围内不存在连接`
+          : plannedScope === null
+            ? '图路径：未找到已知连接'
+            : '图路径：当前检索范围内未找到已知连接')
       }
     }
     for (const plannedQuery of plan.queries.slice(0, 6)) {
@@ -12475,7 +12478,10 @@ export class AiAssistantService {
         graphPath: plannedGraphPath ? {
           found: plannedGraphPath.found,
           entities: plannedGraphPath.entities?.map((entity: any) => entity?.canonicalName).filter(Boolean),
-          steps: plannedGraphPath.steps?.map((step: any) => ({ predicate: step.predicate, forward: step.forward }))
+          steps: plannedGraphPath.steps?.map((step: any) => ({ predicate: step.predicate, forward: step.forward })),
+          explored: Number(plannedGraphPath.explored || 0),
+          expansionBudget: Number(plannedGraphPath.expansionBudget || 0),
+          truncated: Boolean(plannedGraphPath.truncated)
         } : null
       }
     }

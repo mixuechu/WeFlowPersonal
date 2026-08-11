@@ -18163,6 +18163,8 @@ function AiAssistantPage() {
                 <span>旧共享范围 <b>{memoryDiagnostics.memorySearchScopePlanning.legacySharedScopeRemoved ? '已移除' : '需要检查'}</b></span>
                 <span>范围内图路径 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathStrategy === 'sqlcipher_recursive_cte' ? 'SQLCipher 最短路径' : '需要检查'}</b></span>
                 <span>关系 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphRelationIdentityMaterializations || 0)}</b> 份</span>
+                <span>图路径扩展预算 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathExpansionBudget || 0).toLocaleString()}</b> 状态</span>
+                <span>预算截断 <b>{memoryDiagnostics.memorySearchScopePlanning.scopedGraphPathTruncationVisible ? '明确提示' : '需要检查'}</b></span>
               </div>
             </div>}
             {memoryDiagnostics.memorySearchRevision?.version && <div className={`assistant-recovery-audit ${memoryDiagnostics.memorySearchRevisionHealthy ? 'healthy' : 'unhealthy'}`}>
