@@ -40,6 +40,9 @@ test('config batch commit persists all assistant settings in one store replaceme
     keyFileRegular: true,
     keyFileSymlink: false,
     keyLengthValid: true,
+    backupAvailable: true,
+    recoveredThisStart: false,
+    recoveryError: '',
     localEncryptedValues: 1,
     legacySafeValues: 0
   })

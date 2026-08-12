@@ -19058,6 +19058,9 @@ function AiAssistantPage() {
                   {Number(memoryDiagnostics.privacy.localSecretStorage?.legacySafeValues || 0)
                     ? ` · ${Number(memoryDiagnostics.privacy.localSecretStorage.legacySafeValues).toLocaleString()} 项旧格式待迁移`
                     : ' · 无旧钥匙串格式'}</span>
+                <span>主密钥恢复副本：{memoryDiagnostics.privacy.localSecretStorage?.backupAvailable
+                  ? `已验证${memoryDiagnostics.privacy.localSecretStorage?.recoveredThisStart ? '（本次启动已恢复主文件）' : ''}`
+                  : '不可用'}</span>
                 <span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span>
                 <span>个人记忆库：{memoryDiagnostics.privacy.databaseEncryption?.enabled &&
                   memoryDiagnostics.privacy.databaseEncryption?.cipher === 'sqlcipher' &&
@@ -19101,6 +19104,9 @@ function AiAssistantPage() {
                 Number(memoryDiagnostics.privacy.localSecretStorage?.legacySafeValues || 0) > 0) &&
                 <small className="assistant-diagnostics-error">
                   本机主密钥未通过普通文件、32 字节长度、目录 700、文件 600 或旧格式迁移门禁；系统不会在该状态下覆盖已加密个人记忆。
+                  {memoryDiagnostics.privacy.localSecretStorage?.recoveryError
+                    ? ` ${memoryDiagnostics.privacy.localSecretStorage.recoveryError}。`
+                    : ''}
                 </small>}
             </div>}
             {memoryDiagnostics.conversationSourceMutationCommits && <div className={`assistant-recovery-audit ${Number(memoryDiagnostics.conversationSourceMutationCommits.prepared || 0) ? 'warning' : 'healthy'}`}>

@@ -9,7 +9,7 @@ test('normal sensitive configuration uses a local AES-256-GCM envelope instead o
   assert.match(config, /createCipheriv\('aes-256-gcm', this\.localSecretKey, nonce\)/)
   assert.match(config, /createDecipheriv\('aes-256-gcm', this\.localSecretKey/)
   assert.match(config, /writeFileSync\(keyPath, crypto\.randomBytes\(32\), \{ flag: 'wx', mode: 0o600 \}\)/)
-  assert.match(config, /chmodSync\(keyPath, 0o600\)/)
+  assert.match(config, /chmodSync\(path, 0o600\)/)
 })
 
 test('Safe Storage remains read-only compatibility for legacy safe-prefixed values', () => {

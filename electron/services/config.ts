@@ -1,5 +1,5 @@
 ﻿import { join } from 'path'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs'
 import crypto from 'crypto'
 import Store from 'electron-store'
 import { expandHomePath } from '../utils/pathUtils.ts'
@@ -210,6 +210,7 @@ export class ConfigService {
   // 账号目录缓存
   private accountDirCache: Map<string, string> = new Map()
   private localSecretKey: Buffer | null = null
+  private localSecretRecovery = { backupAvailable: false, recoveredThisStart: false, error: '' }
 
   static getInstance(): ConfigService {
     if (!ConfigService.instance) {
@@ -427,6 +428,9 @@ export class ConfigService {
     keyFileRegular: boolean
     keyFileSymlink: boolean
     keyLengthValid: boolean
+    backupAvailable: boolean
+    recoveredThisStart: boolean
+    recoveryError: string
     localEncryptedValues: number
     legacySafeValues: number
   } {
@@ -475,6 +479,9 @@ export class ConfigService {
       keyFileRegular,
       keyFileSymlink,
       keyLengthValid,
+      backupAvailable: this.localSecretRecovery.backupAvailable,
+      recoveredThisStart: this.localSecretRecovery.recoveredThisStart,
+      recoveryError: this.localSecretRecovery.error,
       localEncryptedValues: candidates.filter(value =>
         typeof value === 'string' && value.startsWith(LOCAL_PREFIX)).length,
       legacySafeValues: candidates.filter(value =>
@@ -654,33 +661,78 @@ export class ConfigService {
   }
 
   private loadOrCreateLocalSecretKey(): Buffer | null {
-    const { directory, keyPath } = this.getLocalSecretPaths()
+    const { directory, keyPath, backupPath } = this.getLocalSecretPaths()
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
       const directoryInfo = lstatSync(directory)
       if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return null
       chmodSync(directory, 0o700)
-      if (!existsSync(keyPath)) {
+      const readValidKey = (path: string): Buffer | null => {
+        if (!existsSync(path)) return null
+        const info = lstatSync(path)
+        if (!info.isFile() || info.isSymbolicLink() || info.size !== 32) return null
+        chmodSync(path, 0o600)
+        const value = readFileSync(path)
+        return value.length === 32 ? value : null
+      }
+      let key = readValidKey(keyPath)
+      const backup = readValidKey(backupPath)
+      if (!key && !existsSync(keyPath) && backup) {
+        const temporaryPath = `${keyPath}.recovering-${process.pid}`
+        writeFileSync(temporaryPath, backup, { flag: 'wx', mode: 0o600 })
+        renameSync(temporaryPath, keyPath)
+        key = readValidKey(keyPath)
+        this.localSecretRecovery.recoveredThisStart = Boolean(key)
+      }
+      if (!key && existsSync(keyPath)) {
+        this.localSecretRecovery.error = '本机主密钥文件损坏或类型异常，已保留现场'
+        return null
+      }
+      if (!key && this.hasPersistedLocalCiphertext()) {
+        this.localSecretRecovery.error = '已存在本机加密配置，但主密钥及恢复副本均缺失'
+        return null
+      }
+      if (!key) {
         try {
           writeFileSync(keyPath, crypto.randomBytes(32), { flag: 'wx', mode: 0o600 })
         } catch (error: any) {
           if (error?.code !== 'EEXIST') throw error
         }
+        key = readValidKey(keyPath)
       }
-      const info = lstatSync(keyPath)
-      if (!info.isFile() || info.isSymbolicLink()) return null
-      chmodSync(keyPath, 0o600)
-      const key = readFileSync(keyPath)
-      return key.length === 32 ? key : null
+      if (!key) return null
+      if (!backup) {
+        const temporaryBackup = `${backupPath}.writing-${process.pid}`
+        writeFileSync(temporaryBackup, key, { flag: 'wx', mode: 0o600 })
+        renameSync(temporaryBackup, backupPath)
+      } else if (!crypto.timingSafeEqual(key, backup)) {
+        this.localSecretRecovery.error = '本机主密钥与恢复副本不一致，已保留两份现场'
+        return null
+      }
+      this.localSecretRecovery.backupAvailable = Boolean(readValidKey(backupPath))
+      return key
     } catch (error) {
       console.error('ConfigService: 本机密钥文件初始化失败', error)
       return null
     }
   }
 
-  private getLocalSecretPaths(): { directory: string; keyPath: string } {
+  private hasPersistedLocalCiphertext(): boolean {
+    const contains = (value: unknown): boolean => {
+      if (typeof value === 'string') return value.startsWith(LOCAL_PREFIX)
+      if (!value || typeof value !== 'object') return false
+      return Object.values(value as Record<string, unknown>).some(contains)
+    }
+    try { return contains(this.store.store) } catch { return true }
+  }
+
+  private getLocalSecretPaths(): { directory: string; keyPath: string; backupPath: string } {
     const directory = join(this.getUserDataPath(), 'secrets')
-    return { directory, keyPath: join(directory, 'local-master-key.bin') }
+    return {
+      directory,
+      keyPath: join(directory, 'local-master-key.bin'),
+      backupPath: join(directory, 'local-master-key.recovery.bin')
+    }
   }
 
   private migrateLegacySafeStorageValues(): void {
