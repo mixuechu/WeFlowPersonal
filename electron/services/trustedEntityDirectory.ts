@@ -7,10 +7,22 @@ export interface TrustedEntityDirectoryOptions {
   offset?: number
   limit?: number
   expectedRevision?: string
+  directoryScopeToken?: string
 }
 
 const normalize = (value: unknown): string =>
   String(value || '').trim().toLocaleLowerCase('zh-CN')
+
+export function buildTrustedEntityDirectoryScopeToken(
+  options: Pick<TrustedEntityDirectoryOptions, 'query' | 'type'> = {}
+): string {
+  const type = normalize(options.type)
+  return crypto.createHash('sha256').update(JSON.stringify([
+    'trusted-entity-directory-scope-v1',
+    normalize(options.query),
+    type === 'all' ? '' : type
+  ])).digest('hex')
+}
 
 const compact = (values: unknown, limit: number): string[] =>
   [...new Set((Array.isArray(values) ? values : [])

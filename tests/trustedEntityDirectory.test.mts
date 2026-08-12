@@ -2,9 +2,25 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildTrustedEntityDirectory,
+  buildTrustedEntityDirectoryScopeToken,
   resolveTrustedEntityPairSelection,
   resolveTrustedEntitySelection
 } from '../electron/services/trustedEntityDirectory.ts'
+
+test('trusted entity directory scope token binds normalized query and effective type', () => {
+  assert.equal(
+    buildTrustedEntityDirectoryScopeToken({ query: '  李石头 ', type: ' ALL ' }),
+    buildTrustedEntityDirectoryScopeToken({ query: '李石头' })
+  )
+  assert.notEqual(
+    buildTrustedEntityDirectoryScopeToken({ query: '李石头', type: 'person' }),
+    buildTrustedEntityDirectoryScopeToken({ query: '李石头', type: 'organization' })
+  )
+  assert.notEqual(
+    buildTrustedEntityDirectoryScopeToken({ query: '李石头', type: 'person' }),
+    buildTrustedEntityDirectoryScopeToken({ query: '李石', type: 'person' })
+  )
+})
 
 const confirmedEntities = Array.from({ length: 5_005 }, (_, index) => ({
   id: `entity-${index}`,

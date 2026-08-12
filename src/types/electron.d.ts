@@ -2006,6 +2006,7 @@ export interface ElectronAPI {
         offset?: number
         limit?: number
         expectedRevision?: string
+        directoryScopeToken?: string
       }) => Promise<{
         items: any[]
         total: number
@@ -2015,6 +2016,8 @@ export interface ElectronAPI {
         limit: number
         revision: string
         stale: boolean
+        directoryScopeToken?: string
+        directoryScopeStale?: boolean
         counts: Record<string, number>
       }>
       previewRevertMerge: (id: number, expectedRevision?: string) => Promise<any>

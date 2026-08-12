@@ -84,6 +84,8 @@ test('all trusted directory reads and selection gates use SQLCipher authority', 
   const pickerEnd = pageSource.indexOf('\nfunction EventParticipantEditor(', pickerStart)
   const picker = pageSource.slice(pickerStart, pickerEnd)
   assert.match(picker, /offset: nextOffset[\s\S]*?expectedRevision: revision/)
+  assert.match(picker, /expectedRevision: revision,[\s\S]*?directoryScopeToken/)
+  assert.match(picker, /result\.directoryScopeStale[\s\S]*?setRefreshKey/)
   assert.match(picker, /setNextOffset\(Number\(result\.nextOffset/)
   assert.match(picker, /加载更多（已加载 \{options\.length\} \/ \{total\}）/)
 })

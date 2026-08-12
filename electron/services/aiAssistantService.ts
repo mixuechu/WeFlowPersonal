@@ -209,6 +209,7 @@ import {
 } from './entityTrustPolicy'
 import { planEntityMerge } from './entityMergeDirection'
 import {
+  buildTrustedEntityDirectoryScopeToken,
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
 import { resolveOwnerEntityBinding } from './ownerEntityBindingPolicy.ts'
@@ -7043,7 +7044,20 @@ export class AiAssistantService {
   }
 
   getTrustedEntityDirectory(options: TrustedEntityDirectoryOptions = {}): any {
-    return personalMemoryStore.listTrustedEntityDirectoryPage(options)
+    const directoryScopeToken = buildTrustedEntityDirectoryScopeToken(options)
+    const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
+    if (offset > 0 && String(options.directoryScopeToken || '').trim() !== directoryScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset, offset,
+        limit: Math.min(100, Math.max(1, Math.floor(Number(options.limit) || 20))),
+        revision: personalMemoryStore.getTrustedEntityDirectoryRevision(),
+        stale: true, directoryScopeStale: true, directoryScopeToken, counts: {}
+      }
+    }
+    return {
+      ...personalMemoryStore.listTrustedEntityDirectoryPage(options),
+      directoryScopeToken
+    }
   }
 
   private resolveTrustedEntitySelection(input: {

@@ -86,3 +86,14 @@ test('inline graph-review evidence carries the archive scope token across pages'
   assert.match(method, /if \(page\.evidenceScopeStale\)[\s\S]*?loadReviewEvidence\(reviewId, false\)/)
   assert.match(method, /审阅原文或候选状态已有变化[\s\S]*?setReviewRefreshKey/)
 })
+
+test('trusted entity directory continuation binds the original lookup scope', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const types = read('src/types/electron.d.ts')
+  assert.match(service, /const directoryScopeToken = buildTrustedEntityDirectoryScopeToken\(options\)/)
+  assert.match(service, /offset > 0 && String\([^)]*directoryScopeToken/)
+  assert.match(service, /directoryScopeStale: true, directoryScopeToken/)
+  assert.match(page, /expectedRevision: revision,[\s\S]*?directoryScopeToken/)
+  assert.match(types, /directoryScopeStale\?: boolean/)
+})

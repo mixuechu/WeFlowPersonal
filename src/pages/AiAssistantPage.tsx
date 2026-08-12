@@ -766,6 +766,8 @@ function TrustedEntityPicker({
   const [nextOffset, setNextOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [revision, setRevision] = useState('')
+  const [directoryScopeToken, setDirectoryScopeToken] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const requestGate = useRef(new LatestRequestGate())
@@ -789,6 +791,7 @@ function TrustedEntityPicker({
         setOptions(result.items)
         setTotal(result.total)
         setRevision(result.revision)
+        setDirectoryScopeToken(result.directoryScopeToken || '')
         setNextOffset(Number(result.nextOffset ?? result.items.length))
         setHasMore(Boolean(result.hasMore))
       }).catch(error => {
@@ -796,6 +799,7 @@ function TrustedEntityPicker({
         setOptions([])
         setTotal(0)
         setRevision('')
+        setDirectoryScopeToken('')
         setNextOffset(0)
         setHasMore(false)
         onError?.(error?.message || String(error))
@@ -804,7 +808,7 @@ function TrustedEntityPicker({
       })
     }, 220)
     return () => window.clearTimeout(timer)
-  }, [open, query, onError, type])
+  }, [open, query, onError, type, refreshKey])
 
   const loadMore = () => {
     if (loading || !hasMore || !revision) return
@@ -815,7 +819,8 @@ function TrustedEntityPicker({
       type,
       limit: 20,
       offset: nextOffset,
-      expectedRevision: revision
+      expectedRevision: revision,
+      directoryScopeToken
     }).then(result => {
       if (!requestGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -824,13 +829,20 @@ function TrustedEntityPicker({
         setNextOffset(0)
         setHasMore(false)
         setRevision(result.revision)
-        onError?.('可信实体目录在浏览期间发生了变化，请重新搜索')
+        setDirectoryScopeToken(result.directoryScopeToken || '')
+        if (result.directoryScopeStale) {
+          onError?.('实体搜索范围在翻页期间发生变化，已从最新第一页重新加载')
+          setRefreshKey(value => value + 1)
+        } else {
+          onError?.('可信实体目录在浏览期间发生了变化，请重新搜索')
+        }
         return
       }
       setOptions(current => [...current, ...result.items])
       setTotal(result.total)
       setNextOffset(Number(result.nextOffset ?? nextOffset + result.items.length))
       setHasMore(Boolean(result.hasMore))
+      setDirectoryScopeToken(result.directoryScopeToken || directoryScopeToken)
     }).catch(error => {
       if (requestGate.current.isCurrent(request)) onError?.(error?.message || String(error))
     }).finally(() => {
