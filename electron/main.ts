@@ -1371,10 +1371,10 @@ function createAgreementWindow() {
  * 创建 Splash 启动窗口
  * 使用纯 HTML 页面，不依赖 React，确保极速显示
  */
-function createSplashWindow(): BrowserWindow {
+function createSplashWindow(options: { themeId?: string; themeMode?: string } = {}): BrowserWindow {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
-  const splashThemeId = configService?.get('themeId') || 'cloud-dancer'
-  const splashThemeMode = configService?.get('theme') || 'system'
+  const splashThemeId = options.themeId || configService?.get('themeId') || 'cloud-dancer'
+  const splashThemeMode = options.themeMode || configService?.get('theme') || 'system'
   const iconPath = isDev
     ? join(__dirname, '../public/icon.ico')
     : (process.platform === 'darwin' 
@@ -5036,7 +5036,22 @@ function checkForUpdatesOnStartup() {
 
 app.whenReady().then(async () => {
   installRendererPermissionPolicy()
-  // 先初始化配置，以便在启动早期判定是否需要静默启动
+
+  // Safe Storage 在 macOS 钥匙串锁定时会同步等待系统授权。必须先给系统
+  // 一个已显示的前台窗口，否则启动会停在 starting 且授权框可能没有可见锚点。
+  createSplashWindow({ themeId: 'cloud-dancer', themeMode: 'system' })
+  if (splashWindow) {
+    await new Promise<void>((resolve) => {
+      if (splashWindow!.webContents.isLoading()) {
+        splashWindow!.webContents.once('did-finish-load', () => resolve())
+      } else {
+        resolve()
+      }
+    })
+  }
+  updateSplashProgress(5, '正在访问本机安全存储，如系统询问请完成钥匙串授权...')
+
+  // Splash 已可见后再初始化可能触发钥匙串访问的配置。
   configService = new ConfigService()
   const localCacheEncryptionKey = configService.initializeLocalCacheEncryption()
   chatService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
@@ -5047,21 +5062,9 @@ app.whenReady().then(async () => {
   const startInBackground = onboardingDone && isSilentStartupEnabled()
   shouldShowMain = onboardingDone
 
-  if (!startInBackground) {
-    // 非静默模式下显示 Splash，提供启动反馈（主题/版本号通过 URL 参数传入）
-    createSplashWindow()
-
-    // 等待 Splash 页面加载完成，确保后续 executeJavaScript 推送的进度可靠送达
-    if (splashWindow) {
-      await new Promise<void>((resolve) => {
-        if (splashWindow!.webContents.isLoading()) {
-          splashWindow!.webContents.once('did-finish-load', () => resolve())
-        } else {
-          resolve()
-        }
-      })
-    }
-  }
+  // 静默启动仍先以 Splash 作为钥匙串授权锚点；配置成功读取后立即隐藏，
+  // 后续保持原有托盘启动语义。
+  if (startInBackground) closeSplash()
 
   const withTimeout = <T>(task: () => Promise<T>, timeoutMs: number): Promise<{ timedOut: boolean; value?: T; error?: string }> => {
     return new Promise((resolve) => {
