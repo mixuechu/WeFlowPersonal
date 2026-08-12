@@ -1682,6 +1682,7 @@ export interface ElectronAPI {
         offset?: number
         limit?: number
         revision?: string
+        reviewScopeToken?: string
       }) => Promise<{
         items: any[]
         offset: number
@@ -1691,6 +1692,8 @@ export interface ElectronAPI {
         counts: { pending: number; resolved: number; all: number }
         revision: string
         stale: boolean
+        reviewScopeToken?: string
+        reviewScopeStale?: boolean
       }>
       getGraphReviewEvidencePage: (reviewId: string, options?: {
         offset?: number

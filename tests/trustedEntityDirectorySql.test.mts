@@ -97,7 +97,7 @@ test('graph review pages hydrate current-page entities and relations inside SQLC
     storeSource.indexOf('  listReviewLedgerPage('),
     storeSource.indexOf('\n  listGraphReviewEvidencePage(', storeSource.indexOf('  listReviewLedgerPage('))
   )
-  assert.match(method, /return page/)
+  assert.match(method, /return \{ \.\.\.page, reviewScopeToken: reviewScope\.token \}/)
   assert.doesNotMatch(method, /this\.state\.graph\.(entities|relations)/)
   assert.match(storeMethod, /FROM relations/)
   assert.match(storeMethod, /FROM relation_corrections/)

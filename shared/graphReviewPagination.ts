@@ -14,6 +14,7 @@ export type GraphReviewPageOptions = {
   offset?: number
   limit?: number
   revision?: string
+  reviewScopeToken?: string
 }
 
 export function graphReviewCalibrationOutcome(review: any): ReviewCalibrationOutcomeFilter | null {

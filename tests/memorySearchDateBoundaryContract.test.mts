@@ -64,3 +64,15 @@ test('memory and graph-review evidence continuations bind every archive filter',
   assert.match(page, /page\.evidenceScopeStale[\s\S]*?避免混合两组证据/)
   assert.match(types, /evidenceScopeStale\?: boolean/)
 })
+
+test('graph review directory continuation binds the complete candidate scope', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const types = read('src/types/electron.d.ts')
+  assert.match(service, /const reviewScope = buildGraphReviewPageScopeToken\(options \|\| \{\}\)/)
+  assert.match(service, /offset > 0 && String\([^)]*reviewScopeToken/)
+  assert.match(service, /reviewScopeStale: true,[\s\S]*?reviewScopeToken/)
+  assert.match(page, /reviewScopeToken: reviewPage\.reviewScopeToken/)
+  assert.match(page, /page\.reviewScopeStale[\s\S]*?避免混合不同候选队列/)
+  assert.match(types, /reviewScopeStale\?: boolean/)
+})

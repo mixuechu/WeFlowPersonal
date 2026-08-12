@@ -91,6 +91,7 @@ import {
 } from './memorySearchFilters'
 import { runWithMemoryScopeRevalidation } from './memoryScopeRevalidation.ts'
 import { buildMemoryEvidenceArchiveScopeToken } from './memoryEvidenceArchiveScope.ts'
+import { buildGraphReviewPageScopeToken } from './graphReviewPageScope.ts'
 import {
   applyMemorySearchFeedback,
   buildMemorySearchFeedbackContext,
@@ -6781,23 +6782,29 @@ export class AiAssistantService {
   }
 
   getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {
-    const status = options?.status === 'resolved' || options?.status === 'all'
-      ? options.status
-      : 'pending'
+    const reviewScope = buildGraphReviewPageScopeToken(options || {})
+    const offset = Math.max(0, Math.min(100_000, Math.floor(Number(options?.offset) || 0)))
+    if (offset > 0 && String(options?.reviewScopeToken || '').trim() !== reviewScope.token) {
+      return {
+        items: [], offset, limit: Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40))),
+        total: 0, hasMore: false, counts: { pending: 0, resolved: 0, all: 0 },
+        revision: '', stale: true, reviewScopeStale: true,
+        reviewScopeToken: reviewScope.token
+      }
+    }
     const page = personalMemoryStore.listReviewLedgerPage({
-      status,
-      kind: String(options?.kind || '').trim(),
-      query: String(options?.query || '').trim(),
-      reviewId: String(options?.reviewId || '').trim(),
-      entityId: String(options?.entityId || '').trim(),
-      calibrationOutcome: ['exact', 'corrected', 'rejected'].includes(String(options?.calibrationOutcome || ''))
-        ? options?.calibrationOutcome : '',
-      reasonCode: String(options?.reasonCode || '') as ReviewReasonCode | '',
-      offset: options?.offset,
+      status: reviewScope.scope.status,
+      kind: reviewScope.scope.kind,
+      query: reviewScope.scope.query,
+      reviewId: reviewScope.scope.reviewId,
+      entityId: reviewScope.scope.entityId,
+      calibrationOutcome: reviewScope.scope.calibrationOutcome,
+      reasonCode: reviewScope.scope.reasonCode as ReviewReasonCode | '',
+      offset,
       limit: options?.limit,
       revision: String(options?.revision || '')
     })
-    return page
+    return { ...page, reviewScopeToken: reviewScope.token }
   }
 
   getGraphReviewEvidencePage(reviewId: string, options?: any): any {

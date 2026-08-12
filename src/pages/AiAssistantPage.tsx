@@ -1611,6 +1611,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: { pending: number; resolved: number; all: number }
     revision?: string
+    reviewScopeToken?: string
     stale?: boolean
     status: 'idle' | 'loading' | 'ready' | 'error'
     error?: string
@@ -8178,11 +8179,14 @@ function AiAssistantPage() {
         reasonCode: reviewReasonFilter || undefined,
         offset: reviewPage.items.length,
         limit: 40,
-        revision: reviewPage.revision
+        revision: reviewPage.revision,
+        reviewScopeToken: reviewPage.reviewScopeToken
       })
       if (!reviewPageGate.current.isCurrent(request)) return
       if (page.stale) {
-        setMessage('审阅队列在加载期间已有变化，已自动从第一页刷新')
+        setMessage(page.reviewScopeStale
+          ? '审阅筛选范围在翻页期间发生变化，已从第一页刷新，避免混合不同候选队列。'
+          : '审阅队列在加载期间已有变化，已自动从第一页刷新')
         setReviewRefreshKey(value => value + 1)
         return
       }
