@@ -39,3 +39,15 @@ test('invalid date ranges stop search and memory Q&A before retrieval', () => {
   assert.match(page, /if \(page\.dateScopeInvalid\)[\s\S]*?开始日期不能晚于结束日期/)
   assert.match(types, /dateScopeInvalidReason\?: 'invalid_from' \| 'invalid_to' \| 'reversed'/)
 })
+
+test('memory search continuation binds the original query and complete scope', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const types = read('src/types/electron.d.ts')
+  assert.match(service, /const pageScopeToken = buildMemorySearchPageScopeToken\(text, scopedOptions, searchMode\)/)
+  assert.match(service, /if \(offset > 0 && expectedPageScopeToken !== pageScopeToken\)/)
+  assert.match(service, /pageScopeStale: true, pageScopeToken/)
+  assert.match(page, /pageScopeToken: memorySearchState\.pageScopeToken/)
+  assert.match(page, /page\.pageScopeStale[\s\S]*?避免混合两次查询/)
+  assert.match(types, /pageScopeStale\?: boolean/)
+})

@@ -12,6 +12,8 @@ export type MemorySearchFeedbackContext = {
   scopeFingerprint: string
 }
 
+export type MemorySearchPageMode = 'hybrid' | 'lexical_archive'
+
 function normalizedList(values: unknown): string[] {
   return [...new Set((Array.isArray(values) ? values : [])
     .map(value => String(value || '').trim().toLowerCase())
@@ -49,6 +51,23 @@ export function buildMemorySearchFeedbackContext(
     scopeJson,
     scopeFingerprint: crypto.createHash('sha256').update(scopeJson).digest('hex')
   }
+}
+
+export function buildMemorySearchPageScopeToken(
+  query: string,
+  options: MemorySearchOptions = {},
+  mode: MemorySearchPageMode = 'hybrid'
+): string {
+  const context = buildMemorySearchFeedbackContext(query, options)
+  const exactQueryFingerprint = crypto.createHash('sha256')
+    .update(String(query || '').trim())
+    .digest('hex')
+  return crypto.createHash('sha256').update(JSON.stringify([
+    'memory-search-page-scope-v1',
+    exactQueryFingerprint,
+    context.scopeFingerprint,
+    mode
+  ])).digest('hex')
 }
 
 export function applyMemorySearchFeedback(

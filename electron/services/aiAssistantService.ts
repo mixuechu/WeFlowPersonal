@@ -93,6 +93,7 @@ import { runWithMemoryScopeRevalidation } from './memoryScopeRevalidation.ts'
 import {
   applyMemorySearchFeedback,
   buildMemorySearchFeedbackContext,
+  buildMemorySearchPageScopeToken,
   MEMORY_SEARCH_FEEDBACK_VERSION,
   type MemorySearchFeedbackAction
 } from './memorySearchFeedback.ts'
@@ -11583,6 +11584,7 @@ export class AiAssistantService {
       revision?: string
       mode?: 'hybrid' | 'lexical_archive'
       retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
+      pageScopeToken?: string
     } = {}
   ): Promise<any> {
     const rawOffset = Number(pagination.offset)
@@ -11647,6 +11649,15 @@ export class AiAssistantService {
         ...(selectedEntity.externalIdentities || []).flatMap(identity => [identity.accountId, identity.displayName])
       ]
     } : options
+    const pageScopeToken = buildMemorySearchPageScopeToken(text, scopedOptions, searchMode)
+    const expectedPageScopeToken = String(pagination.pageScopeToken || '').trim()
+    if (offset > 0 && expectedPageScopeToken !== pageScopeToken) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: null, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: true, pageScopeStale: true, pageScopeToken
+      }
+    }
     const allowedIds = personalMemoryStore.createSearchDocumentScope(scopedOptions)
     try {
     const sourceFacetOptions = {
@@ -11924,6 +11935,7 @@ export class AiAssistantService {
       feedback,
       feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
       revision,
+      pageScopeToken,
       stale: false,
       entityScopeStale: false,
       sessionScopeStale: false,

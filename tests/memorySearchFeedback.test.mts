@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   applyMemorySearchFeedback,
-  buildMemorySearchFeedbackContext
+  buildMemorySearchFeedbackContext,
+  buildMemorySearchPageScopeToken
 } from '../electron/services/memorySearchFeedback.ts'
 
 test('search feedback context is stable but isolated by retrieval scope', () => {
@@ -63,6 +64,35 @@ test('search feedback context is stable but isolated by retrieval scope', () => 
   })
   assert.notEqual(first.scopeFingerprint, multiSourceOnly.scopeFingerprint)
   assert.notEqual(directOnly.scopeFingerprint, multiSourceOnly.scopeFingerprint)
+})
+
+test('search page scope tokens bind query, normalized filters and paging mode', () => {
+  const first = buildMemorySearchPageScopeToken(' 项目进度 ', {
+    sourceIds: ['wechat', 'documents'],
+    documentTypes: ['event', 'task']
+  }, 'hybrid')
+  const equivalent = buildMemorySearchPageScopeToken('项目进度', {
+    sourceIds: ['documents', 'wechat', 'wechat'],
+    documentTypes: ['task', 'event']
+  }, 'hybrid')
+  assert.equal(first, equivalent)
+  assert.notEqual(first, buildMemorySearchPageScopeToken('项目风险', {
+    sourceIds: ['wechat', 'documents'],
+    documentTypes: ['event', 'task']
+  }, 'hybrid'))
+  const longPrefix = '项目'.repeat(600)
+  assert.notEqual(
+    buildMemorySearchPageScopeToken(`${longPrefix}甲`, {}, 'hybrid'),
+    buildMemorySearchPageScopeToken(`${longPrefix}乙`, {}, 'hybrid')
+  )
+  assert.notEqual(first, buildMemorySearchPageScopeToken('项目进度', {
+    sourceIds: ['wechat'],
+    documentTypes: ['event', 'task']
+  }, 'hybrid'))
+  assert.notEqual(first, buildMemorySearchPageScopeToken('项目进度', {
+    sourceIds: ['wechat', 'documents'],
+    documentTypes: ['event', 'task']
+  }, 'lexical_archive'))
 })
 
 test('search feedback conservatively reranks without deleting any result', () => {

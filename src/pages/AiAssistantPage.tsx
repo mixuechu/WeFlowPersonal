@@ -1282,6 +1282,7 @@ function AiAssistantPage() {
     truncated?: boolean
     scopeCandidates?: number | null
     revision?: string
+    pageScopeToken?: string
     nextOffset?: number
     searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
     retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
@@ -3260,6 +3261,7 @@ function AiAssistantPage() {
           truncated: page.truncated,
           scopeCandidates: page.scopeCandidates,
           revision: page.revision,
+          pageScopeToken: page.pageScopeToken,
           searchMode: page.searchMode,
           retrievalMode: page.retrievalMode,
           lexicalSearchMode: page.lexicalSearchMode,
@@ -8856,7 +8858,8 @@ function AiAssistantPage() {
           limit: 40,
           revision: memorySearchState.revision,
           mode: query ? memorySearchMode : 'hybrid',
-          retrievalMode: memorySearchState.retrievalMode
+          retrievalMode: memorySearchState.retrievalMode,
+          pageScopeToken: memorySearchState.pageScopeToken
         }
       )
       if (!memorySearchGate.current.isCurrent(request)) return
@@ -8874,7 +8877,9 @@ function AiAssistantPage() {
         return
       }
       if (page.stale) {
-        setMessage('检索索引在翻页期间发生变化，已从第一页重新生成结果，避免遗漏或重复。')
+        setMessage(page.pageScopeStale
+          ? '检索关键词或筛选范围在翻页期间发生变化，已从第一页重新生成结果，避免混合两次查询。'
+          : '检索索引在翻页期间发生变化，已从第一页重新生成结果，避免遗漏或重复。')
         setMemorySearchRefreshKey(value => value + 1)
         return
       }
@@ -8892,6 +8897,7 @@ function AiAssistantPage() {
         truncated: page.truncated,
         scopeCandidates: page.scopeCandidates,
         revision: page.revision,
+        pageScopeToken: page.pageScopeToken,
         searchMode: page.searchMode,
         retrievalMode: page.retrievalMode,
         lexicalSearchMode: page.lexicalSearchMode,

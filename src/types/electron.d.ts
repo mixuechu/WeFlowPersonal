@@ -2138,6 +2138,7 @@ export interface ElectronAPI {
         revision?: string
         mode?: 'hybrid' | 'lexical_archive'
         retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
+        pageScopeToken?: string
       }) => Promise<{
         results: any[]
         offset: number
@@ -2171,7 +2172,9 @@ export interface ElectronAPI {
         reviewPresetCountsBasis?: 'lexical_archive' | 'scope_browse'
         scopeCandidates: number | null
         revision: string
+        pageScopeToken?: string
         stale: boolean
+        pageScopeStale?: boolean
         dateScopeInvalid?: boolean
         dateScopeInvalidReason?: 'invalid_from' | 'invalid_to' | 'reversed'
         entityScopeStale?: boolean
