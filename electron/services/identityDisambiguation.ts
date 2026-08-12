@@ -47,6 +47,20 @@ export const MAX_GRAPH_IDENTITY_SUGGESTIONS = 2_000
 export const FULL_IDENTITY_SCAN_PAGE_SIZE = 10_000
 const IDENTITY_SCAN_CURSOR_MAX_CHARS = 2_048
 
+export function identityNameScanIdleStatus(input: {
+  pending: boolean
+  maintenance: boolean
+  syncing: boolean
+  vectorIndexing: boolean
+  searchRepairing: boolean
+  resourceEnriching: boolean
+  taskAuditing: boolean
+}): 'no_pending_scan' | 'busy' | 'due' {
+  if (!input.pending) return 'no_pending_scan'
+  return input.maintenance || input.syncing || input.vectorIndexing || input.searchRepairing ||
+    input.resourceEnriching || input.taskAuditing ? 'busy' : 'due'
+}
+
 function boundedCount(value: unknown): number {
   const number = Number(value)
   return Number.isFinite(number)
@@ -87,6 +101,8 @@ export function normalizePersistedIdentityScanState(
   normalized.decisionLookupAt = validIsoOrNull(value.decisionLookupAt)
   normalized.vectorContinuationAt = validIsoOrNull(value.vectorContinuationAt)
   normalized.vectorContinuationError = String(value.vectorContinuationError || '').slice(0, 500) || null
+  normalized.fullScanContinuationAt = validIsoOrNull(value.fullScanContinuationAt)
+  normalized.fullScanContinuationError = String(value.fullScanContinuationError || '').slice(0, 500) || null
   normalized.fullScanCursor = continuationValid ? cursor : null
   normalized.fullScanSnapshotFingerprint = continuationValid ? fingerprint : null
   normalized.fullScanProcessedPairs = continuationValid
@@ -406,6 +422,8 @@ export function projectIdentityScanDiagnostics(
     fullLargestNameBucket: Number(scan.fullLargestNameBucket || 0),
     fullTruncated: Boolean(scan.fullTruncated),
     fullScanProcessedPairs: Number(scan.fullScanProcessedPairs || 0),
+    fullScanContinuationAt: scan.fullScanContinuationAt || null,
+    fullScanContinuationError: scan.fullScanContinuationError || null,
     decisionLookupPairs: Number(scan.decisionLookupPairs || 0),
     decisionLookupQueries: Number(scan.decisionLookupQueries || 0),
     decisionLookupDurationMs: Number(scan.decisionLookupDurationMs || 0),

@@ -433,6 +433,7 @@ import {
   assertIdentityCandidateVersionsCurrent,
   getFullIdentityScanSchedule,
   identityCandidateVersionsCurrent,
+  identityNameScanIdleStatus,
   identityPairKey,
   listIndexedIdentityCandidates,
   normalizePersistedIdentityScanState,
@@ -693,6 +694,8 @@ type AssistantState = {
       fullScanCursor: string | null
       fullScanSnapshotFingerprint: string | null
       fullScanProcessedPairs: number
+      fullScanContinuationAt: string | null
+      fullScanContinuationError: string | null
       decisionLookupPairs: number
       decisionLookupQueries: number
       decisionLookupDurationMs: number
@@ -782,6 +785,7 @@ const EMPTY_STATE: AssistantState = {
     ruleRetiredCandidates: 0,
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
     fullScanCursor: null, fullScanSnapshotFingerprint: null, fullScanProcessedPairs: 0,
+    fullScanContinuationAt: null, fullScanContinuationError: null,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
     decisionLookupAt: null,
     vectorEligible: 0, vectorPendingBefore: 0, vectorProbes: 0,
@@ -4211,6 +4215,41 @@ export class AiAssistantService {
         ? 'identity_vector_scan_advanced'
         : 'identity_vector_scan_completed'
       : 'identity_vector_scan_failed'
+  }
+
+  private continueFullIdentityScanWhileIdle(now: Date): string | null {
+    const admission = identityNameScanIdleStatus({
+      pending: Boolean(this.state.graph.identityScan.fullScanCursor),
+      maintenance: Boolean(this.memoryMaintenanceLease),
+      syncing: Boolean(this.activeSync),
+      vectorIndexing: Boolean(this.vectorIndexPromise),
+      searchRepairing: Boolean(this.memorySearchRepairPromise),
+      resourceEnriching: Boolean(this.resourceEnrichmentPromise),
+      taskAuditing: Boolean(this.taskLifecycleAuditPromise)
+    })
+    if (admission === 'no_pending_scan') return null
+    if (admission === 'busy') return 'identity_name_scan_busy'
+    const graphBefore = structuredClone(this.state.graph)
+    const observedAt = now.toISOString()
+    try {
+      this.runScheduledIdentityScan(observedAt)
+      this.state.graph.identityScan.fullScanContinuationAt = observedAt
+      this.state.graph.identityScan.fullScanContinuationError = null
+      this.saveState(true)
+      return this.state.graph.identityScan.fullScanCursor
+        ? 'identity_name_scan_advanced'
+        : 'identity_name_scan_completed'
+    } catch (error) {
+      const sqlCommitId = personalMemoryStore.getGraphCommitId()
+      const sqlSnapshot = personalMemoryStore.loadGraphSnapshot()
+      this.state.graph = recoverGraphStateFromSql(graphBefore, sqlSnapshot, sqlCommitId)
+      this.state.graph.identityScan = {
+        ...graphBefore.identityScan,
+        fullScanContinuationAt: observedAt,
+        fullScanContinuationError: sanitizeDiagnosticText(error)
+      }
+      return 'identity_name_scan_failed'
+    }
   }
 
   private async syncLocalDocuments(): Promise<{ indexed: number; error?: string }> {
@@ -13723,6 +13762,8 @@ export class AiAssistantService {
           return 'search_maintenance_failed'
         }
       }
+      const identityNameScanOutcome = this.continueFullIdentityScanWhileIdle(now)
+      if (identityNameScanOutcome) return identityNameScanOutcome
       const resourceContentBudgetOutcome = this.continueLegacyResourceContentBudgetMigration()
       if (resourceContentBudgetOutcome) return resourceContentBudgetOutcome
       const resourceEnrichmentOutcome = this.continueIdleResourceEnrichment(now)
