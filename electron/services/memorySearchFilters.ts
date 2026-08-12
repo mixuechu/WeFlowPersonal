@@ -1,3 +1,5 @@
+import { parseShanghaiDateBoundary } from '../../shared/shanghaiDateBoundary.ts'
+
 export type MemorySearchOptions = {
   entityId?: string
   entitySelectionRevision?: string
@@ -55,16 +57,6 @@ function isRejectedExtractedMemory(item: any): boolean {
     String(item?.metadata?.status || '') === 'rejected'
 }
 
-function dateBoundary(value: string | undefined, endOfDay = false): number | null {
-  const text = String(value || '').trim()
-  if (!text) return null
-  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
-    ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
-    : text
-  const timestamp = Date.parse(normalized)
-  return Number.isFinite(timestamp) ? timestamp : null
-}
-
 function itemTimestamps(item: any): number[] {
   const values: number[] = []
   for (const evidence of item.evidence || []) {
@@ -96,8 +88,11 @@ export function filterMemorySearchResults(
   const sources = new Set((options.sourceIds || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const relationTypes = new Set((options.relationTypes || []).map(value => value.trim().toLowerCase()).filter(Boolean))
   const entityTerms = (options.entityTerms || []).map(value => value.trim().toLowerCase()).filter(Boolean)
-  const from = dateBoundary(options.from)
-  const to = dateBoundary(options.to, true)
+  const fromBoundary = parseShanghaiDateBoundary(options.from)
+  const toBoundary = parseShanghaiDateBoundary(options.to, true)
+  if (fromBoundary.state === 'invalid' || toBoundary.state === 'invalid') return []
+  const from = fromBoundary.milliseconds
+  const to = toBoundary.milliseconds
   return items.filter(item => {
     // Rejected extractions remain in the encrypted audit/history tables but
     // must not re-enter ordinary retrieval or downstream model context.

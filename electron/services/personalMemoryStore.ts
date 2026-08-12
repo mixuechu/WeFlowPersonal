@@ -20,6 +20,7 @@ import {
   type VectorQueryHealth
 } from './vectorIndexingPolicy.ts'
 import { MEMORY_CARD_EVIDENCE_LIMIT } from '../../shared/evidencePayload.ts'
+import { parseShanghaiDateBoundary } from '../../shared/shanghaiDateBoundary.ts'
 import { GRAPH_RELATION_EVIDENCE_HOT_LIMIT } from './graphEvidenceHotset.ts'
 import {
   IDENTITY_MERGE_SNAPSHOT_VERSION,
@@ -171,17 +172,13 @@ function searchEvidenceScopeSql(
     clauses.push(`${alias}.session_id IN (${sessions.map(() => '?').join(',')})`)
     parameters.push(...sessions)
   }
-  const boundary = (value: string | undefined, endOfDay: boolean): number | null => {
-    const text = String(value || '').trim()
-    if (!text) return null
-    const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
-      ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
-      : text
-    const timestamp = Date.parse(normalized)
-    return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null
+  const fromBoundary = parseShanghaiDateBoundary(options.from)
+  const toBoundary = parseShanghaiDateBoundary(options.to, true)
+  if (fromBoundary.state === 'invalid' || toBoundary.state === 'invalid') {
+    clauses.push('0=1')
   }
-  const from = boundary(options.from, false)
-  const to = boundary(options.to, true)
+  const from = fromBoundary.seconds
+  const to = toBoundary.seconds
   if (from !== null) {
     clauses.push(`${alias}.timestamp>=?`)
     parameters.push(from)
@@ -23148,17 +23145,12 @@ export class PersonalMemoryStore {
       parameters.push(options.entityId, options.entityId, options.entityId, options.entityId, options.entityId)
       for (const term of terms) parameters.push(`%${term}%`, `%${term}%`)
     }
-    const parseBoundary = (value: string | undefined, endOfDay: boolean): number | null => {
-      const text = String(value || '').trim()
-      if (!text) return null
-      const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
-        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
-        : text
-      const timestamp = Date.parse(normalized)
-      return Number.isFinite(timestamp) ? Math.floor(timestamp / 1000) : null
-    }
-    const from = parseBoundary(options.from, false)
-    const to = parseBoundary(options.to, true)
+    const fromBoundary = parseShanghaiDateBoundary(options.from)
+    const toBoundary = parseShanghaiDateBoundary(options.to, true)
+    const invalidDateScope = fromBoundary.state === 'invalid' || toBoundary.state === 'invalid'
+    if (invalidDateScope) conditions.push('0=1')
+    const from = fromBoundary.seconds
+    const to = toBoundary.seconds
     const hasEvidenceScope = sourceIds.length > 0 || sessions.length > 0
     const hasDateScope = from !== null || to !== null
     if (hasEvidenceScope || hasDateScope) {
@@ -24322,16 +24314,13 @@ export class PersonalMemoryStore {
       )`)
       parameters.push(`%${query}%`, `%${query}%`, `%${query}%`)
     }
-    const normalizeBoundary = (value: string | undefined, endOfDay: boolean): string | null => {
-      const text = String(value || '').trim()
-      if (!text) return null
-      const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(text)
-        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
-        : text)
-      return Number.isFinite(date.getTime()) ? date.toISOString() : null
+    const fromBoundary = parseShanghaiDateBoundary(options.from)
+    const toBoundary = parseShanghaiDateBoundary(options.to, true)
+    if (fromBoundary.state === 'invalid' || toBoundary.state === 'invalid') {
+      conditions.push('0=1')
     }
-    const from = normalizeBoundary(options.from, false)
-    const to = normalizeBoundary(options.to, true)
+    const from = fromBoundary.iso
+    const to = toBoundary.iso
     if (from) {
       conditions.push('feedback.created_at>=?')
       parameters.push(from)
@@ -24343,7 +24332,8 @@ export class PersonalMemoryStore {
     return {
       where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '',
       parameters,
-      hasExplicitFilter: Boolean(id || action || query || from || to)
+      hasExplicitFilter: Boolean(id || action || query ||
+        fromBoundary.state !== 'empty' || toBoundary.state !== 'empty')
     }
   }
 
@@ -24560,17 +24550,13 @@ export class PersonalMemoryStore {
       )
       evidenceScopeParameters.push(...scopedSessions)
     }
-    const scopeBoundary = (value: string | undefined, endOfDay: boolean): number | null => {
-      const text = String(value || '').trim()
-      if (!text) return null
-      const normalizedBoundary = /^\d{4}-\d{2}-\d{2}$/.test(text)
-        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
-        : text
-      const milliseconds = Date.parse(normalizedBoundary)
-      return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null
+    const evidenceFromBoundary = parseShanghaiDateBoundary(evidenceScope.from)
+    const evidenceToBoundary = parseShanghaiDateBoundary(evidenceScope.to, true)
+    if (evidenceFromBoundary.state === 'invalid' || evidenceToBoundary.state === 'invalid') {
+      evidenceScopeConditions.push('0=1')
     }
-    const evidenceFrom = scopeBoundary(evidenceScope.from, false)
-    const evidenceTo = scopeBoundary(evidenceScope.to, true)
+    const evidenceFrom = evidenceFromBoundary.seconds
+    const evidenceTo = evidenceToBoundary.seconds
     if (evidenceFrom !== null) {
       evidenceScopeConditions.push('ee.timestamp>=?')
       evidenceScopeParameters.push(evidenceFrom)
@@ -26018,17 +26004,17 @@ export class PersonalMemoryStore {
       .map(value => String(value).trim().toLowerCase()).filter(Boolean))]
     const sessions = [...new Set([scope.sessionId, scope.sessionName]
       .map(value => String(value || '').trim()).filter(Boolean))]
-    const dateBoundary = (value: string | undefined, endOfDay: boolean): number | null => {
-      const text = String(value || '').trim()
-      if (!text) return null
-      const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text)
-        ? `${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`
-        : text
-      const milliseconds = Date.parse(normalized)
-      return Number.isFinite(milliseconds) ? Math.floor(milliseconds / 1000) : null
+    const fromBoundary = parseShanghaiDateBoundary(scope.from)
+    const toBoundary = parseShanghaiDateBoundary(scope.to, true)
+    if (fromBoundary.state === 'invalid' || toBoundary.state === 'invalid') {
+      return {
+        evidence: [], evidenceTotal: 0, evidenceSourceIds: [],
+        evidenceSourceIdsComplete: true, evidenceTimeScopeMode: 'evidence_time',
+        evidenceScopeRestricted: true
+      }
     }
-    const from = dateBoundary(scope.from, false)
-    const to = dateBoundary(scope.to, true)
+    const from = fromBoundary.seconds
+    const to = toBoundary.seconds
     const documentId = `${documentType}:${sourceId}`
     let metadata: any = {}
     try {

@@ -1,3 +1,6 @@
+import { createHash } from 'crypto'
+import { parseShanghaiDateBoundary } from '../../shared/shanghaiDateBoundary.ts'
+
 export function isQuietTime(time: string, start: string, end: string): boolean {
   if (!/^\d{2}:\d{2}$/.test(time) || !/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || start === end) return false
   return start < end ? time >= start && time < end : time >= start || time < end
@@ -22,13 +25,7 @@ function boundedCount(value: unknown): number {
 function validBriefingDate(value: unknown): string {
   const normalized = String(value || '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return ''
-  const [year, month, day] = normalized.split('-').map(Number)
-  const date = new Date(Date.UTC(year, month - 1, day))
-  return date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-    ? normalized
-    : ''
+  return parseShanghaiDateBoundary(normalized).state === 'valid' ? normalized : ''
 }
 
 export function mergeDailyBriefing(existing: any, incoming: any): any {
@@ -348,4 +345,3 @@ export function buildWeeklyBriefing(
     summaries
   }
 }
-import { createHash } from 'crypto'

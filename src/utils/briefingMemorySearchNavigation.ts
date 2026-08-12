@@ -1,3 +1,5 @@
+import { parseShanghaiDateBoundary } from '../../shared/shanghaiDateBoundary.ts'
+
 export interface BriefingMemorySearchPlan {
   query: ''
   mode: 'hybrid'
@@ -25,13 +27,7 @@ export function buildBriefingMemorySearchPlan(
 ): BriefingMemorySearchPlan | null {
   const normalized = String(date || '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null
-  const [year, month, day] = normalized.split('-').map(Number)
-  const value = new Date(Date.UTC(year, month - 1, day))
-  if (
-    value.getUTCFullYear() !== year ||
-    value.getUTCMonth() !== month - 1 ||
-    value.getUTCDate() !== day
-  ) return null
+  if (parseShanghaiDateBoundary(normalized).state !== 'valid') return null
   return {
     query: '',
     mode: 'hybrid',

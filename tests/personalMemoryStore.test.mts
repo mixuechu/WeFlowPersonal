@@ -584,6 +584,9 @@ test('search feedback archive paginates all history with stable action and text 
   assert.equal(exact.total, 1)
   assert.equal(exact.items[0].queryText, '历史查询 2499')
   assert.deepEqual(exact.items[0].scope.documentTypes, ['entity'])
+  assert.equal(store.getMemorySearchFeedbackArchive({
+    from: '2026-02-30', to: '2026-02-30'
+  }).total, 0)
   const addedContext = buildMemorySearchFeedbackContext('新反馈', {})
   store.recordMemorySearchFeedback({
     queryFingerprint: addedContext.queryFingerprint,
@@ -637,6 +640,11 @@ test('search feedback purge previews full chains, requires confirmation and neve
       documentId: 'entity:person-feedback-purge',
       action: 'helpful'
     })
+    const invalidDatePreview = store.deleteMemorySearchFeedback({
+      from: '2026-02-30', to: '2026-02-30'
+    })
+    assert.equal(invalidDatePreview.matchingRows, 0)
+    assert.equal(invalidDatePreview.rowsToDelete, 0)
     const targetHistory = store.getMemorySearchFeedbackArchive({ query: '敏感项目代号' })
     assert.equal(targetHistory.total, 3)
     const preview = store.deleteMemorySearchFeedback({ id: targetHistory.items[0].id })
@@ -13967,7 +13975,36 @@ test('memory scope filters apply entity, session, date and document type togethe
     evidenceBreadth: 'forged-breadth'
   }).length, 0)
   assert.equal(filterMemorySearchResults(items, { from: '2026-07-29' }).length, 0)
+  assert.equal(filterMemorySearchResults(items, {
+    from: '2026-02-30', to: '2026-02-30'
+  }).length, 0)
+  assert.deepEqual(filterMemorySearchResults([{
+    id: 'end-of-shanghai-day', document_type: 'task', metadata: {},
+    evidence: [{ timestamp: Math.floor(Date.parse('2026-07-28T23:59:59+08:00') / 1000) }]
+  }], { from: '2026-07-28', to: '2026-07-28' }).map(item => item.id), [
+    'end-of-shanghai-day'
+  ])
 })
+
+test('SQLCipher memory scope includes the Shanghai day tail and excludes next midnight', () => withStore(store => {
+  const endOfDay = Math.floor(Date.parse('2026-08-12T23:59:59+08:00') / 1000)
+  const nextDay = Math.floor(Date.parse('2026-08-13T00:00:00+08:00') / 1000)
+  store.syncTasks([{
+    id: 'day-tail', title: '当天最后一秒', status: 'todo', classification: 'mine',
+    evidence: [{ sourceId: 'wechat', sessionId: 'day-session', messageId: 'tail',
+      timestamp: endOfDay, excerpt: '当天最后一秒' }]
+  }, {
+    id: 'next-midnight', title: '次日零点', status: 'todo', classification: 'mine',
+    evidence: [{ sourceId: 'wechat', sessionId: 'day-session', messageId: 'next',
+      timestamp: nextDay, excerpt: '次日零点' }]
+  }])
+  assert.deepEqual([...(store.listScopedSearchDocumentIds({
+    from: '2026-08-12', to: '2026-08-12', documentTypes: ['task']
+  }) || [])], ['task:day-tail'])
+  assert.deepEqual([...(store.listScopedSearchDocumentIds({
+    from: '2026-08-13', to: '2026-08-13', documentTypes: ['task']
+  }) || [])], ['task:next-midnight'])
+}))
 
 test('retrieval scope is applied before lexical and vector top-k ranking', () => withStore(store => {
   const timestamp = Math.floor(Date.parse('2026-07-30T02:00:00.000Z') / 1000)
@@ -14000,6 +14037,12 @@ test('retrieval scope is applied before lexical and vector top-k ranking', () =>
     documentTypes: ['task']
   })
   assert.deepEqual([...scope || []], ['task:scoped-target'])
+  assert.deepEqual([...(store.listScopedSearchDocumentIds({
+    from: '2026-02-30', to: '2026-02-30'
+  }) || [])], [])
+  const invalidDateHandle = store.createSearchDocumentScope({ from: 'not-a-date' })!
+  assert.equal(invalidDateHandle.size, 0)
+  store.releaseSearchDocumentScope(invalidDateHandle)
   assert.deepEqual([...(store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }) || [])].length, 350)
   assert.deepEqual(
     [...(store.listScopedSearchDocumentIds({ sourceIds: ['calendar'] }) || [])],
@@ -16981,6 +17024,11 @@ test('database retrieval scope covers entity links, relation type and evidence t
   })
   assert.equal(evidenceTimePayload.evidenceTimeScopeMode, 'evidence_time')
   assert.equal(evidenceTimePayload.evidenceTotal, 0)
+  const invalidTimePayload = store.getDocumentEvidencePayload('relation', 'scope-relation', {
+    from: '2025-02-30', to: '2025-02-30'
+  })
+  assert.equal(invalidTimePayload.evidenceTotal, 0)
+  assert.equal(invalidTimePayload.evidenceScopeRestricted, true)
   assert.deepEqual(new Set(
     store.listScopedSearchDocumentIds({ sourceIds: ['wechat'] }) || []
   ), new Set(['relation:scope-relation', 'resource:scope-combination-resource']))
