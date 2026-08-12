@@ -5438,7 +5438,10 @@ export class AiAssistantService {
           ? `仍有 ${batchErrors.length} 个消息批次等待重试：${batchErrors[0]}`
           : collectionError || backlogNotice
       }
-      this.saveState()
+      // Identity scans above may have appended review candidates and advanced a
+      // durable continuation cursor. Never publish that cursor unless graph and
+      // task authorities have accepted the same snapshot first.
+      this.saveState(true)
       personalMemoryStore.finishIngestionRun(runId, {
         status: runErrors.length ? 'partial' : 'completed',
         messageCount: successfulMessageKeys.length,
@@ -5522,7 +5525,10 @@ export class AiAssistantService {
         attemptedAt: this.state.cursor.lastAttemptAt || new Date().toISOString(),
         error: this.state.cursor.lastError
       })
-      this.saveState()
+      // A failed strict final commit must remain strict on the error path too:
+      // best-effort persistence here could advance the identity cursor past
+      // candidates that SQLCipher never accepted.
+      this.saveState(true)
       if (!runFinished) {
         personalMemoryStore.finishIngestionRun(runId, {
           status: 'failed', messageCount: 0,
