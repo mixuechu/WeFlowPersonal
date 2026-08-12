@@ -21090,7 +21090,7 @@ function AiAssistantPage() {
       {showSettings && (
         <div className="assistant-modal-backdrop">
           <div className="assistant-modal">
-            <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 由 Electron safeStorage 加密保存。</p></div><button disabled={settingsSaving} onClick={closeSettings}><X size={16} /></button></div>
+            <div className="assistant-modal-title"><div><h2>AI 助理设置</h2><p>敏感 Key 使用本机随机密钥加密保存，不访问 macOS 钥匙串。</p></div><button disabled={settingsSaving} onClick={closeSettings}><X size={16} /></button></div>
             {settingsLoading && <div className="assistant-delete-status">
               <RefreshCw size={16} /><span><strong>正在读取当前设置…</strong>
                 <small>读取完成前不会展示默认值，也不会允许保存。</small></span>

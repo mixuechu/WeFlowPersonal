@@ -1,5 +1,5 @@
 ﻿import { join } from 'path'
-import { existsSync, readdirSync, statSync } from 'fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs'
 import crypto from 'crypto'
 import Store from 'electron-store'
 import { expandHomePath } from '../utils/pathUtils.ts'
@@ -20,7 +20,8 @@ if (!isWorkerThread) {
 }
 
 // 加密前缀标记
-const SAFE_PREFIX = 'safe:'  // safeStorage 加密（普通模式）
+const SAFE_PREFIX = 'safe:'  // 仅读：旧版 safeStorage 数据迁移
+const LOCAL_PREFIX = 'local:v1:' // 本机密钥文件 + AES-256-GCM，不访问 macOS 钥匙串
 const isSafeStorageAvailable = (): boolean => {
   try {
     return typeof safeStorage?.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable()
@@ -168,7 +169,7 @@ interface ConfigSchema {
   autoDownloadWhitelist: string[]
 }
 
-// 需要 safeStorage 加密的字段（普通模式）
+  // 需要本机密钥文件加密的字段（普通模式）
 const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'decryptKey',
   'imageAesKey',
@@ -208,6 +209,7 @@ export class ConfigService {
 
   // 账号目录缓存
   private accountDirCache: Map<string, string> = new Map()
+  private localSecretKey: Buffer | null = null
 
   static getInstance(): ConfigService {
     if (!ConfigService.instance) {
@@ -363,6 +365,8 @@ export class ConfigService {
         throw error
       }
     }
+    this.localSecretKey = this.loadOrCreateLocalSecretKey()
+    this.migrateLegacySafeStorageValues()
     this.migrateAuthFields()
     this.migrateAiConfig()
     if (!runningInWorker) {
@@ -404,17 +408,17 @@ export class ConfigService {
     return !this.isLockMode() || this.unlockedKeys.size > 0
   }
 
-  isSafeStorageEncryptionAvailable(): boolean {
-    return isSafeStorageAvailable()
+  isLocalSecretStorageAvailable(): boolean {
+    return this.localSecretKey?.length === 32
   }
 
-  isStoredWithSafeStorage(key: keyof ConfigSchema): boolean {
+  isStoredWithLocalSecret(key: keyof ConfigSchema): boolean {
     const raw = this.store.get(key)
-    return typeof raw === 'string' && raw.startsWith(SAFE_PREFIX)
+    return typeof raw === 'string' && raw.startsWith(LOCAL_PREFIX)
   }
 
   getOrCreateLocalCacheEncryptionKey(): string {
-    if (!isSafeStorageAvailable()) return ''
+    if (!this.isLocalSecretStorageAvailable()) return ''
     const existing = String(this.get('localCacheEncryptionKey') || '')
     if (/^[a-f0-9]{64}$/i.test(existing)) return existing
     const generated = crypto.randomBytes(32).toString('hex')
@@ -445,7 +449,7 @@ export class ConfigService {
 
     if (ENCRYPTED_BOOL_KEYS.has(key)) {
       const str = typeof raw === 'string' ? raw : ''
-      if (!str || !str.startsWith(SAFE_PREFIX)) return raw
+      if (!str || (!str.startsWith(SAFE_PREFIX) && !str.startsWith(LOCAL_PREFIX))) return raw
       return (this.safeDecrypt(str) === 'true') as ConfigSchema[K]
     }
 
@@ -456,7 +460,7 @@ export class ConfigService {
         const cached = this.unlockedKeys.get(key as string)
         return (cached !== undefined ? cached : 0) as ConfigSchema[K]
       }
-      if (!str.startsWith(SAFE_PREFIX)) return raw
+      if (!str.startsWith(SAFE_PREFIX) && !str.startsWith(LOCAL_PREFIX)) return raw
       const num = Number(this.safeDecrypt(str))
       return (Number.isFinite(num) ? num : 0) as ConfigSchema[K]
     }
@@ -550,21 +554,101 @@ export class ConfigService {
 
   private safeEncrypt(plaintext: string): string {
     if (!plaintext) return ''
-    if (plaintext.startsWith(SAFE_PREFIX)) return plaintext
-    if (!isSafeStorageAvailable()) return plaintext
-    const encrypted = safeStorage.encryptString(plaintext)
-    return SAFE_PREFIX + encrypted.toString('base64')
+    if (plaintext.startsWith(LOCAL_PREFIX) || plaintext.startsWith(SAFE_PREFIX)) return plaintext
+    if (!this.localSecretKey) return plaintext
+    const nonce = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.localSecretKey, nonce)
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+    const tag = cipher.getAuthTag()
+    return LOCAL_PREFIX + Buffer.concat([nonce, tag, encrypted]).toString('base64')
   }
 
   private safeDecrypt(stored: string): string {
     if (!stored) return ''
+    if (stored.startsWith(LOCAL_PREFIX)) {
+      if (!this.localSecretKey) return ''
+      try {
+        const combined = Buffer.from(stored.slice(LOCAL_PREFIX.length), 'base64')
+        if (combined.length < 29) return ''
+        const decipher = crypto.createDecipheriv('aes-256-gcm', this.localSecretKey, combined.subarray(0, 12))
+        decipher.setAuthTag(combined.subarray(12, 28))
+        return Buffer.concat([decipher.update(combined.subarray(28)), decipher.final()]).toString('utf8')
+      } catch {
+        return ''
+      }
+    }
     if (!stored.startsWith(SAFE_PREFIX)) return stored
+    // 仅用于旧版 safe: 值的一次性迁移；新值永远不写入钥匙串。
     if (!isSafeStorageAvailable()) return ''
     try {
       const buf = Buffer.from(stored.slice(SAFE_PREFIX.length), 'base64')
       return safeStorage.decryptString(buf)
     } catch {
       return ''
+    }
+  }
+
+  private loadOrCreateLocalSecretKey(): Buffer | null {
+    const directory = join(this.getUserDataPath(), 'secrets')
+    const keyPath = join(directory, 'local-master-key.bin')
+    try {
+      mkdirSync(directory, { recursive: true, mode: 0o700 })
+      chmodSync(directory, 0o700)
+      if (!existsSync(keyPath)) {
+        try {
+          writeFileSync(keyPath, crypto.randomBytes(32), { flag: 'wx', mode: 0o600 })
+        } catch (error: any) {
+          if (error?.code !== 'EEXIST') throw error
+        }
+      }
+      const info = lstatSync(keyPath)
+      if (!info.isFile() || info.isSymbolicLink()) return null
+      chmodSync(keyPath, 0o600)
+      const key = readFileSync(keyPath)
+      return key.length === 32 ? key : null
+    } catch (error) {
+      console.error('ConfigService: 本机密钥文件初始化失败', error)
+      return null
+    }
+  }
+
+  private migrateLegacySafeStorageValues(): void {
+    if (!this.localSecretKey) return
+    const migrate = (value: unknown): unknown => {
+      if (typeof value !== 'string' || !value.startsWith(SAFE_PREFIX)) return value
+      const plaintext = this.safeDecrypt(value)
+      return plaintext ? this.safeEncrypt(plaintext) : value
+    }
+    try {
+      const next = { ...(this.store.store as unknown as Record<string, unknown>) }
+      let changed = false
+      for (const key of [...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS]) {
+        const migrated = migrate(next[key])
+        if (migrated !== next[key]) {
+          next[key] = migrated
+          changed = true
+        }
+      }
+      const wxidConfigs = next.wxidConfigs
+      if (wxidConfigs && typeof wxidConfigs === 'object' && !Array.isArray(wxidConfigs)) {
+        const migratedConfigs = structuredClone(wxidConfigs as Record<string, unknown>)
+        for (const rawConfig of Object.values(migratedConfigs)) {
+          if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) continue
+          for (const key of ['decryptKey', 'imageAesKey', 'imageXorKey']) {
+            const record = rawConfig as Record<string, unknown>
+            const migrated = migrate(record[key])
+            if (migrated !== record[key]) {
+              record[key] = migrated
+              changed = true
+            }
+          }
+        }
+        if (changed) next.wxidConfigs = migratedConfigs
+      }
+      if (changed) (this.store as any).store = next
+    } catch (error) {
+      // 旧值解密失败时原样保留，不得用新密钥覆盖旧加密数据。
+      console.error('ConfigService: 旧 Safe Storage 配置迁移未完成', error)
     }
   }
 
@@ -671,7 +755,7 @@ export class ConfigService {
       if (typeof cfg.imageXorKey === 'string') {
         if (cfg.imageXorKey.startsWith(LOCK_PREFIX)) {
           result[wxid].imageXorKey = this.unlockedKeys.get(`wxid:${wxid}:imageXorKey`) ?? 0
-        } else if (cfg.imageXorKey.startsWith(SAFE_PREFIX)) {
+        } else if (cfg.imageXorKey.startsWith(SAFE_PREFIX) || cfg.imageXorKey.startsWith(LOCAL_PREFIX)) {
           const num = Number(this.safeDecrypt(cfg.imageXorKey))
           result[wxid].imageXorKey = Number.isFinite(num) ? num : 0
         }

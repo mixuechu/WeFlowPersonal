@@ -1340,42 +1340,42 @@ export class AiAssistantService {
     this.disposed = false
     this.statePath = join(app.getPath('userData'), 'ai-assistant-state.json')
     localEmbeddingService.initialize(app.getPath('userData'))
-    if (!this.config.isSafeStorageEncryptionAvailable()) {
-      throw new Error('macOS 安全存储当前不可用，不能安全初始化个人记忆数据库密钥')
+    if (!this.config.isLocalSecretStorageAvailable()) {
+      throw new Error('本机密钥文件当前不可用，不能安全初始化个人记忆数据库密钥')
     }
     const databasePath = join(app.getPath('userData'), 'personal-memory.sqlite')
-    const keyStored = this.config.isStoredWithSafeStorage('aiAssistantDatabaseKey')
+    const keyStored = this.config.isStoredWithLocalSecret('aiAssistantDatabaseKey')
     let databaseKey = String(this.config.get('aiAssistantDatabaseKey') || '')
     if (keyStored && !/^[a-f0-9]{64}$/i.test(databaseKey)) {
-      throw new Error('无法从 macOS 安全存储读取个人记忆数据库密钥；为避免覆盖密钥，数据库未打开')
+      throw new Error('无法从本机密钥文件读取个人记忆数据库密钥；为避免覆盖密钥，数据库未打开')
     }
     if (!keyStored && existsSync(databasePath) && statSync(databasePath).size >= 16 &&
         !readFileSync(databasePath).subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) {
-      throw new Error('检测到已加密的个人记忆库，但 macOS 安全存储中缺少对应密钥；数据库未被修改')
+      throw new Error('检测到已加密的个人记忆库，但本机密钥文件中缺少对应密钥；数据库未被修改')
     }
     if (!/^[a-f0-9]{64}$/i.test(databaseKey)) databaseKey = crypto.randomBytes(32).toString('hex')
     if (!keyStored) {
       this.config.set('aiAssistantDatabaseKey', databaseKey)
     }
-    if (!this.config.isStoredWithSafeStorage('aiAssistantDatabaseKey')) {
-      throw new Error('个人记忆数据库密钥未能写入 macOS 安全存储')
+    if (!this.config.isStoredWithLocalSecret('aiAssistantDatabaseKey')) {
+      throw new Error('个人记忆数据库密钥未能写入本机密钥文件')
     }
-    const stateKeyStored = this.config.isStoredWithSafeStorage('aiAssistantStateKey')
+    const stateKeyStored = this.config.isStoredWithLocalSecret('aiAssistantStateKey')
     let stateKey = String(this.config.get('aiAssistantStateKey') || '')
     if (stateKeyStored && !/^[a-f0-9]{64}$/i.test(stateKey)) {
-      throw new Error('无法从 macOS 安全存储读取 AI 状态密钥；为避免覆盖状态，初始化已停止')
+      throw new Error('无法从本机密钥文件读取 AI 状态密钥；为避免覆盖状态，初始化已停止')
     }
     if (!stateKeyStored) {
       const encryptedStateExists = [this.statePath, `${this.statePath}.bak`]
         .some(path => existsSync(path) && isEncryptedDurableJson(readFileSync(path)))
       if (encryptedStateExists) {
-        throw new Error('检测到已加密的 AI 状态，但 macOS 安全存储中缺少对应密钥；状态文件未被修改')
+        throw new Error('检测到已加密的 AI 状态，但本机密钥文件中缺少对应密钥；状态文件未被修改')
       }
       stateKey = crypto.randomBytes(32).toString('hex')
       this.config.set('aiAssistantStateKey', stateKey)
     }
-    if (!this.config.isStoredWithSafeStorage('aiAssistantStateKey') || !/^[a-f0-9]{64}$/i.test(stateKey)) {
-      throw new Error('AI 状态密钥未能写入 macOS 安全存储')
+    if (!this.config.isStoredWithLocalSecret('aiAssistantStateKey') || !/^[a-f0-9]{64}$/i.test(stateKey)) {
+      throw new Error('AI 状态密钥未能写入本机密钥文件')
     }
     this.stateEncryptionKey = stateKey
     this.memoryRestoreJournalPath = join(app.getPath('userData'), 'memory-restore-journal.json')
@@ -1614,7 +1614,7 @@ export class AiAssistantService {
         lastWriteAt: this.stateStorage.lastWriteAt,
         encrypted: durable.recovery.source !== 'empty',
         migratedPlaintext,
-        keyStorage: 'macOS Safe Storage'
+        keyStorage: '本机密钥文件（0600）'
       }
       if (durable.recovery.source === 'empty' &&
           (durable.recovery.primaryError !== 'missing' || durable.recovery.backupError !== 'missing')) {
@@ -7880,9 +7880,9 @@ export class AiAssistantService {
         stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
         stateBackupMode: (() => { try { return (statSync(`${this.statePath}.bak`).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),
         stateEncryption: isEncryptedDurableJson(readFileSync(this.statePath))
-          ? 'AES-256-GCM · key in macOS Safe Storage'
+          ? 'AES-256-GCM · key in local 0600 file'
           : 'not encrypted',
-        apiKeyStorage: 'macOS Safe Storage',
+        apiKeyStorage: 'AES-256-GCM · local 0600 key file',
         httpBinding: '127.0.0.1',
         logsRedacted: true,
         sensitiveLogRetention: getSensitiveLogDiagnostics(

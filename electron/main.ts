@@ -5049,7 +5049,7 @@ app.whenReady().then(async () => {
       }
     })
   }
-  updateSplashProgress(5, '正在访问本机安全存储，如系统询问请完成钥匙串授权...')
+  updateSplashProgress(5, '正在读取本机加密配置...')
 
   // Splash 已可见后再初始化可能触发钥匙串访问的配置。
   configService = new ConfigService()
