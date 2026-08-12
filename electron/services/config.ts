@@ -913,29 +913,49 @@ export class ConfigService {
         this.store.set('authEnabled', this.safeEncrypt('true') as any)
       }
 
-      // 解密所有 lock: 字段到内存缓存
+      // 先在临时缓存中认证全部 lock: 字段；任一字段损坏都不得提交半解锁状态。
+      const decrypted = new Map<string, any>()
       const rawDecryptKey: any = this.store.get('decryptKey')
       if (typeof rawDecryptKey === 'string' && rawDecryptKey.startsWith(LOCK_PREFIX)) {
         const d = this.lockDecrypt(rawDecryptKey, password)
-        if (d !== null) this.unlockedKeys.set('decryptKey', d)
+        if (d === null) return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+        decrypted.set('decryptKey', d)
       }
 
       const rawImageAesKey: any = this.store.get('imageAesKey')
       if (typeof rawImageAesKey === 'string' && rawImageAesKey.startsWith(LOCK_PREFIX)) {
         const d = this.lockDecrypt(rawImageAesKey, password)
-        if (d !== null) this.unlockedKeys.set('imageAesKey', d)
+        if (d === null) return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+        decrypted.set('imageAesKey', d)
       }
 
       const rawImageXorKey: any = this.store.get('imageXorKey')
       if (typeof rawImageXorKey === 'string' && rawImageXorKey.startsWith(LOCK_PREFIX)) {
         const d = this.lockDecrypt(rawImageXorKey, password)
-        if (d !== null) this.unlockedKeys.set('imageXorKey', Number(d))
+        if (d === null || !Number.isFinite(Number(d))) {
+          return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+        }
+        decrypted.set('imageXorKey', Number(d))
       }
 
-      // 解密 wxidConfigs 嵌套密钥
-      this.decryptLockedWxidConfigs(password)
+      const wxidConfigs = this.store.get('wxidConfigs')
+      if (wxidConfigs && typeof wxidConfigs === 'object') {
+        for (const [wxid, cfg] of Object.entries(wxidConfigs) as [string, any][]) {
+          for (const [field, numeric] of [['decryptKey', false], ['imageAesKey', false], ['imageXorKey', true]] as const) {
+            const raw = cfg?.[field]
+            if (typeof raw !== 'string' || !raw.startsWith(LOCK_PREFIX)) continue
+            const value = this.lockDecrypt(raw, password)
+            if (value === null || (numeric && !Number.isFinite(Number(value)))) {
+              return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+            }
+            decrypted.set(`wxid:${wxid}:${field}`, numeric ? Number(value) : value)
+          }
+        }
+      }
 
       // 保留密码供 set() 使用
+      this.unlockedKeys.clear()
+      for (const [key, value] of decrypted) this.unlockedKeys.set(key, value)
       this.unlockPassword = password
       return { success: true }
     } catch (e: any) {
