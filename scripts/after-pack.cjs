@@ -46,7 +46,9 @@ function findStableLocalSigningIdentity() {
   }
   try {
     const output = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' })
-    return output.match(/\)\s+([A-F0-9]{40})\s+"Apple Development:/)?.[1] || ''
+    return output.match(/\)\s+([A-F0-9]{40})\s+"WeFlow Personal Local Signing"/)?.[1]
+      || output.match(/\)\s+([A-F0-9]{40})\s+"Apple Development:/)?.[1]
+      || ''
   } catch {
     return ''
   }
