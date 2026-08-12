@@ -5,6 +5,13 @@ export type ShanghaiDateBoundary = {
   iso: string | null
 }
 
+export type ShanghaiDateRangeValidation = {
+  valid: boolean
+  reason: '' | 'invalid_from' | 'invalid_to' | 'reversed'
+  from: ShanghaiDateBoundary
+  to: ShanghaiDateBoundary
+}
+
 function isValidCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
   if (!match) return false
@@ -44,4 +51,19 @@ export function parseShanghaiDateBoundary(
     seconds: Math.floor(milliseconds / 1000),
     iso: new Date(milliseconds).toISOString()
   }
+}
+
+export function validateShanghaiDateRange(
+  fromValue: unknown,
+  toValue: unknown
+): ShanghaiDateRangeValidation {
+  const from = parseShanghaiDateBoundary(fromValue)
+  const to = parseShanghaiDateBoundary(toValue, true)
+  if (from.state === 'invalid') return { valid: false, reason: 'invalid_from', from, to }
+  if (to.state === 'invalid') return { valid: false, reason: 'invalid_to', from, to }
+  if (from.milliseconds !== null && to.milliseconds !== null &&
+    from.milliseconds > to.milliseconds) {
+    return { valid: false, reason: 'reversed', from, to }
+  }
+  return { valid: true, reason: '', from, to }
 }

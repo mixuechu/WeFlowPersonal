@@ -19,3 +19,23 @@ test('all memory-search and briefing date scopes share one strict Shanghai parse
   assert.doesNotMatch(store, /23:59:59\.999.*\+08:00/)
   assert.doesNotMatch(filters, /23:59:59\.999.*\+08:00/)
 })
+
+test('invalid date ranges stop search and memory Q&A before retrieval', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const types = read('src/types/electron.d.ts')
+  const searchStart = service.indexOf('async searchMemoryPage(')
+  const dateValidation = service.indexOf(
+    'validateShanghaiDateRange(options.from, options.to)', searchStart
+  )
+  const scopeCreation = service.indexOf(
+    'personalMemoryStore.createSearchDocumentScope(scopedOptions)', searchStart
+  )
+  assert.ok(searchStart >= 0 && dateValidation > searchStart && scopeCreation > dateValidation)
+  assert.match(service, /dateScopeInvalid: true,[\s\S]*?dateScopeInvalidReason: dateRange\.reason/)
+  assert.match(service, /async askMemory\([\s\S]*?this\.assertValidMemorySearchDateRange\(options\)[\s\S]*?this\.runMemoryQuestion/)
+  assert.match(service, /async searchMemoryWithTrustedScope\([\s\S]*?this\.assertValidMemorySearchDateRange\(options\)[\s\S]*?runWithMemoryScopeRevalidation/)
+  assert.match(service, /this\.assertValidMemorySearchDateRange\(plannedOptions\)[\s\S]*?createSearchDocumentScope\(scopeAuditOptions\)/)
+  assert.match(page, /if \(page\.dateScopeInvalid\)[\s\S]*?开始日期不能晚于结束日期/)
+  assert.match(types, /dateScopeInvalidReason\?: 'invalid_from' \| 'invalid_to' \| 'reversed'/)
+})

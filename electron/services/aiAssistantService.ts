@@ -175,6 +175,7 @@ import {
   isQuietTime,
   mergeDailyBriefing
 } from './briefingIntelligence'
+import { validateShanghaiDateRange } from '../../shared/shanghaiDateBoundary.ts'
 import { groundBriefingDigest } from './briefingEvidencePolicy'
 import {
   buildStructuredExtractionEvidence,
@@ -11406,6 +11407,7 @@ export class AiAssistantService {
   }
 
   async searchMemoryWithTrustedScope(query: string, options: MemorySearchOptions = {}): Promise<any[]> {
+    this.assertValidMemorySearchDateRange(options)
     return runWithMemoryScopeRevalidation(
       boundary => this.assertMemoryScopeSelectionsCurrent(
         options,
@@ -11589,6 +11591,15 @@ export class AiAssistantService {
     const text = String(query || '').trim()
     const searchMode = pagination.mode === 'lexical_archive' ? 'lexical_archive' : 'hybrid'
     const revision = personalMemoryStore.getMemorySearchRevision()
+    const dateRange = validateShanghaiDateRange(options.from, options.to)
+    if (!dateRange.valid) {
+      return {
+        results: [], offset, limit, total: 0, hasMore: false, truncated: false,
+        scopeCandidates: 0, feedback: [], feedbackVersion: MEMORY_SEARCH_FEEDBACK_VERSION,
+        revision, stale: false, dateScopeInvalid: true,
+        dateScopeInvalidReason: dateRange.reason
+      }
+    }
     const expectedRevision = String(pagination.revision || '').trim()
     if (isMemorySearchPageRevisionStale({
       offset,
@@ -12296,6 +12307,17 @@ export class AiAssistantService {
     }
   }
 
+  private assertValidMemorySearchDateRange(options: MemorySearchOptions): void {
+    const dateRange = validateShanghaiDateRange(options.from, options.to)
+    if (dateRange.valid) return
+    const message = dateRange.reason === 'reversed'
+      ? '记忆检索的开始日期不能晚于结束日期，请调整日期范围'
+      : dateRange.reason === 'invalid_from'
+        ? '记忆检索的开始日期无效，请重新选择'
+        : '记忆检索的结束日期无效，请重新选择'
+    throw new Error(message)
+  }
+
   async askMemory(question: string, conversationId?: string, options: MemorySearchOptions = {}): Promise<any> {
     if (this.disposed) throw new Error('AI 助理正在安全退出，不能开始新的记忆问答')
     if (!this.config.get('aiAssistantEnabled')) {
@@ -12304,6 +12326,7 @@ export class AiAssistantService {
     if (this.memoryMaintenanceLease) {
       throw new Error(`${this.getMemoryMaintenanceStatus().message}，请完成后再开始记忆问答`)
     }
+    this.assertValidMemorySearchDateRange(options)
     const promise = this.runMemoryQuestion(question, conversationId, options)
     this.memoryQuestionPromises.add(promise)
     try {
@@ -12385,6 +12408,7 @@ export class AiAssistantService {
       relationTypes: options.relationTypes?.length ? options.relationTypes : plan.inferredOptions.relationTypes,
       sourceIds: options.sourceIds?.length ? options.sourceIds : plan.inferredOptions.sourceIds
     }
+    this.assertValidMemorySearchDateRange(plannedOptions)
     const plannedEntity = plannedOptions.entityId
       ? plannerEntities.find(entity => entity.id === plannedOptions.entityId) || null
       : null

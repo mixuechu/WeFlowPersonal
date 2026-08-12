@@ -2172,6 +2172,8 @@ export interface ElectronAPI {
         scopeCandidates: number | null
         revision: string
         stale: boolean
+        dateScopeInvalid?: boolean
+        dateScopeInvalidReason?: 'invalid_from' | 'invalid_to' | 'reversed'
         entityScopeStale?: boolean
         entityDirectoryRevision?: string
         entityScopeStaleReason?: 'missing_revision' | 'revision_changed' | 'entity_untrusted'

@@ -3217,6 +3217,15 @@ function AiAssistantPage() {
         mode: query ? memorySearchMode : 'hybrid'
       }).then(page => {
         if (!memorySearchGate.current.isCurrent(request)) return
+        if (page.dateScopeInvalid) {
+          const error = page.dateScopeInvalidReason === 'reversed'
+            ? '开始日期不能晚于结束日期，请调整统一检索的日期范围。'
+            : page.dateScopeInvalidReason === 'invalid_from'
+              ? '开始日期无效，请重新选择。'
+              : '结束日期无效，请重新选择。'
+          setMemorySearchState({ status: 'error', query, error })
+          return
+        }
         if (page.entityScopeStale) {
           setMemoryEntitySelection(null)
           setMemoryEntityFilter('')
