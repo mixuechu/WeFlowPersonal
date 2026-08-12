@@ -367,7 +367,6 @@ export class ConfigService {
       }
     }
     this.localSecretKey = this.loadOrCreateLocalSecretKey()
-    this.migrateLegacySafeStorageValues()
     this.migrateStartupConfiguration()
     if (!runningInWorker) {
       this.cacheMapStore = new CacheMapStore(
@@ -741,46 +740,6 @@ export class ConfigService {
     }
   }
 
-  private migrateLegacySafeStorageValues(): void {
-    if (!this.localSecretKey) return
-    const migrate = (value: unknown): unknown => {
-      if (typeof value !== 'string' || !value.startsWith(SAFE_PREFIX)) return value
-      const plaintext = this.safeDecrypt(value)
-      return plaintext ? this.safeEncrypt(plaintext) : value
-    }
-    try {
-      const next = { ...(this.store.store as unknown as Record<string, unknown>) }
-      let changed = false
-      for (const key of [...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS, 'authHelloSecret']) {
-        const migrated = migrate(next[key])
-        if (migrated !== next[key]) {
-          next[key] = migrated
-          changed = true
-        }
-      }
-      const wxidConfigs = next.wxidConfigs
-      if (wxidConfigs && typeof wxidConfigs === 'object' && !Array.isArray(wxidConfigs)) {
-        const migratedConfigs = structuredClone(wxidConfigs as Record<string, unknown>)
-        for (const rawConfig of Object.values(migratedConfigs)) {
-          if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) continue
-          for (const key of ['decryptKey', 'imageAesKey', 'imageXorKey']) {
-            const record = rawConfig as Record<string, unknown>
-            const migrated = migrate(record[key])
-            if (migrated !== record[key]) {
-              record[key] = migrated
-              changed = true
-            }
-          }
-        }
-        if (changed) next.wxidConfigs = migratedConfigs
-      }
-      if (changed) (this.store as any).store = next
-    } catch (error) {
-      // 旧值解密失败时原样保留，不得用新密钥覆盖旧加密数据。
-      console.error('ConfigService: 旧 Safe Storage 配置迁移未完成', error)
-    }
-  }
-
   private lockEncrypt(plaintext: string, password: string): string {
     if (!plaintext) return ''
     const salt = crypto.randomBytes(16)
@@ -1119,12 +1078,43 @@ export class ConfigService {
   // === 迁移 ===
 
   private migrateStartupConfiguration(): void {
+    try {
+      this.migrateStartupConfigurationAtomically()
+    } catch (error) {
+      // 任一旧钥匙串值无法解密时，整份配置保持原样，不能提交其他迁移形成混合版本。
+      console.error('ConfigService: 启动配置原子迁移未完成', error)
+    }
+  }
+
+  private migrateStartupConfigurationAtomically(): void {
     const next = structuredClone(this.store.store as ConfigSchema)
     let changed = false
     const replace = (key: keyof ConfigSchema, value: unknown): void => {
       if ((next as any)[key] === value) return
       ;(next as any)[key] = value
       changed = true
+    }
+
+    if (this.localSecretKey) {
+      const migrateLegacyValue = (value: unknown): unknown => {
+        if (typeof value !== 'string' || !value.startsWith(SAFE_PREFIX)) return value
+        const plaintext = this.safeDecrypt(value)
+        if (!plaintext) throw new Error('旧 Safe Storage 值无法解密')
+        return this.safeEncrypt(plaintext)
+      }
+      for (const key of [...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS, 'authHelloSecret']) {
+        const migrated = migrateLegacyValue((next as any)[key])
+        if (migrated !== (next as any)[key]) replace(key as keyof ConfigSchema, migrated)
+      }
+      for (const config of Object.values(next.wxidConfigs || {})) {
+        for (const key of ['decryptKey', 'imageAesKey', 'imageXorKey'] as const) {
+          const migrated = migrateLegacyValue(config[key])
+          if (migrated !== config[key]) {
+            ;(config as any)[key] = migrated
+            changed = true
+          }
+        }
+      }
     }
 
     // 将旧版明文 auth 字段迁移为本机密钥加密格式。

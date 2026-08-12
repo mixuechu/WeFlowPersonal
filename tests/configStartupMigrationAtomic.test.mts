@@ -49,11 +49,26 @@ test('legacy startup configuration migrates together into one local encrypted sn
 test('startup migration builds one snapshot without field-by-field store writes', () => {
   const source = readFileSync(new URL('../electron/services/config.ts', import.meta.url), 'utf8')
   const body = source.slice(
-    source.indexOf('private migrateStartupConfiguration()'),
+    source.indexOf('private migrateStartupConfigurationAtomically()'),
     source.indexOf('// === 验证 ===')
   )
   assert.match(body, /structuredClone\(this\.store\.store/)
   assert.match(body, /if \(changed\) \(this\.store as any\)\.store = next/)
   assert.doesNotMatch(body, /this\.store\.set\(/)
   assert.doesNotMatch(body, /this\.set\(/)
+})
+
+test('one unreadable legacy Safe Storage value aborts the complete startup snapshot', () => {
+  const source = readFileSync(new URL('../electron/services/config.ts', import.meta.url), 'utf8')
+  const wrapper = source.slice(
+    source.indexOf('private migrateStartupConfiguration(): void'),
+    source.indexOf('private migrateStartupConfigurationAtomically()')
+  )
+  const body = source.slice(
+    source.indexOf('private migrateStartupConfigurationAtomically()'),
+    source.indexOf('// === 验证 ===')
+  )
+  assert.match(wrapper, /try[\s\S]*migrateStartupConfigurationAtomically\(\)[\s\S]*catch/)
+  assert.match(body, /if \(!plaintext\) throw new Error\('旧 Safe Storage 值无法解密'\)/)
+  assert.equal((body.match(/\(this\.store as any\)\.store = next/g) || []).length, 1)
 })

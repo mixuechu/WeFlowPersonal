@@ -14,8 +14,8 @@ test('normal sensitive configuration uses a local AES-256-GCM envelope instead o
 
 test('Safe Storage remains read-only compatibility for legacy safe-prefixed values', () => {
   assert.match(config, /仅用于旧版 safe: 值的一次性迁移/)
-  assert.match(config, /this\.migrateLegacySafeStorageValues\(\)/)
-  assert.match(config, /旧值解密失败时原样保留/)
+  assert.match(config, /migrateStartupConfigurationAtomically/)
+  assert.match(config, /旧 Safe Storage 值无法解密/)
   const encryptBody = config.slice(config.indexOf('private safeEncrypt'), config.indexOf('private safeDecrypt'))
   assert.doesNotMatch(encryptBody, /safeStorage\.encryptString/)
 })
