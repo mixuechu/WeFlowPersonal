@@ -76,3 +76,13 @@ test('graph review directory continuation binds the complete candidate scope', (
   assert.match(page, /page\.reviewScopeStale[\s\S]*?避免混合不同候选队列/)
   assert.match(types, /reviewScopeStale\?: boolean/)
 })
+
+test('inline graph-review evidence carries the archive scope token across pages', () => {
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const methodStart = page.indexOf('const loadReviewEvidence = async')
+  const methodEnd = page.indexOf('\n  const updateMemoryStatus', methodStart)
+  const method = page.slice(methodStart, methodEnd)
+  assert.match(method, /evidenceScopeToken: loadMore \? current\?\.evidenceScopeToken : undefined/)
+  assert.match(method, /if \(page\.evidenceScopeStale\)[\s\S]*?loadReviewEvidence\(reviewId, false\)/)
+  assert.match(method, /审阅原文或候选状态已有变化[\s\S]*?setReviewRefreshKey/)
+})

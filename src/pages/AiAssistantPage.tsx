@@ -8222,10 +8222,16 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getGraphReviewEvidencePage(reviewId, {
         offset: loadMore ? Number(current?.items?.length || 0) : 0,
         limit: 40,
-        revision: reviewPage.revision
+        revision: reviewPage.revision,
+        evidenceScopeToken: loadMore ? current?.evidenceScopeToken : undefined
       })
       if (!reviewEvidenceGates.current.isCurrent(reviewId, request)) return
       if (page.stale) {
+        if (page.evidenceScopeStale) {
+          setMessage('候选卡片的原文分页范围已失效，已从该卡片第一页重新加载。')
+          void loadReviewEvidence(reviewId, false)
+          return
+        }
         setMessage('审阅原文或候选状态已有变化，已自动刷新审阅队列')
         setReviewRefreshKey(value => value + 1)
         return
