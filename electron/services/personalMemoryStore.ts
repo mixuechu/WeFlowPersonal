@@ -35,6 +35,10 @@ import {
   REVIEW_REASON_CODES,
   type ReviewReasonCode
 } from '../../shared/reviewReasonCodes.ts'
+import {
+  normalizeResourceContentBudgetMigrationHealth,
+  planResourceContentBudgetRetry
+} from './resourceContentBudgetPolicy.ts'
 
 type MemoryGraph = {
   entities: any[]
@@ -14300,7 +14304,7 @@ export class PersonalMemoryStore {
       `).get(RESOURCE_CONTENT_CHAR_LIMIT)?.count || 0)
       const checkedAt = new Date().toISOString()
       const result = {
-        version: 'resource-content-budget-migration-v1',
+        version: 'resource-content-budget-migration-v2',
         checkedAt,
         batchLimit: boundedLimit,
         checked: rows.length,
@@ -14310,7 +14314,8 @@ export class PersonalMemoryStore {
         remaining,
         failureStreak: 0,
         lastErrorAt: '',
-        lastError: ''
+        lastError: '',
+        nextAttemptAt: ''
       }
       this.db!.prepare(`
         INSERT INTO schema_meta(key,value,updated_at)
@@ -14321,20 +14326,23 @@ export class PersonalMemoryStore {
     })()
   }
 
-  recordResourceContentBudgetMigrationFailure(error: string): any {
+  recordResourceContentBudgetMigrationFailure(error: string, now = new Date()): any {
     if (!this.db) return null
     const auditRow = this.db.prepare(`
       SELECT value FROM schema_meta WHERE key='resource_content_budget_migration'
     `).get() as any
-    let previous: any = {}
-    try { previous = JSON.parse(String(auditRow?.value || '{}')) } catch {}
-    const failedAt = new Date().toISOString()
+    let parsed: unknown = {}
+    try { parsed = JSON.parse(String(auditRow?.value || '{}')) } catch {}
+    const previous = normalizeResourceContentBudgetMigrationHealth(parsed)
+    const failedAt = now.toISOString()
+    const retry = planResourceContentBudgetRetry(previous.failureStreak, now)
     const result = {
       ...previous,
-      version: 'resource-content-budget-migration-v1',
+      version: 'resource-content-budget-migration-v2',
       lastErrorAt: failedAt,
       lastError: String(error || '历史资源正文预算迁移失败').slice(0, 500),
-      failureStreak: Math.max(0, Number(previous?.failureStreak || 0)) + 1
+      failureStreak: retry.failureStreak,
+      nextAttemptAt: retry.nextAttemptAt
     }
     this.db.prepare(`
       INSERT INTO schema_meta(key,value,updated_at)
@@ -14367,11 +14375,6 @@ export class PersonalMemoryStore {
           THEN 1 ELSE 0 END),0) AS pending_legacy
       FROM memory_resources
     `).get(RESOURCE_CONTENT_CHAR_LIMIT, RESOURCE_CONTENT_CHAR_LIMIT) as any
-    const auditRow = this.db.prepare(`
-      SELECT value FROM schema_meta WHERE key='resource_content_budget_migration'
-    `).get() as any
-    let migration: any = null
-    try { migration = JSON.parse(String(auditRow?.value || 'null')) } catch {}
     return {
       version: 'resource-content-budget-v1',
       limitChars: RESOURCE_CONTENT_CHAR_LIMIT,
@@ -14381,7 +14384,20 @@ export class PersonalMemoryStore {
       boundaryUnknown: Number(row?.boundary_unknown || 0),
       pendingLegacy: Number(row?.pending_legacy || 0),
       healthy: Number(row?.oversized || 0) === 0 && Number(row?.pending_legacy || 0) === 0,
-      migration
+      migration: this.getResourceContentBudgetMigrationHealth()
+    }
+  }
+
+  getResourceContentBudgetMigrationHealth(): any {
+    if (!this.db) return null
+    const auditRow = this.db.prepare(`
+      SELECT value FROM schema_meta WHERE key='resource_content_budget_migration'
+    `).get() as any
+    try {
+      const parsed = JSON.parse(String(auditRow?.value || 'null'))
+      return parsed ? normalizeResourceContentBudgetMigrationHealth(parsed) : null
+    } catch {
+      return null
     }
   }
 

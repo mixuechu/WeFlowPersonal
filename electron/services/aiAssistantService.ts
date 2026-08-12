@@ -449,6 +449,7 @@ import {
   isNegativeDecisionCurrent
 } from './identityDisambiguation'
 import { type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
+import { resourceContentBudgetRetryCoolingDown } from './resourceContentBudgetPolicy'
 import {
   assertEntityRelationMutationRevision,
   entityRelationMutationRevision
@@ -13624,7 +13625,12 @@ export class AiAssistantService {
     })
   }
 
-  private continueLegacyResourceContentBudgetMigration(): string | null {
+  private continueLegacyResourceContentBudgetMigration(now = new Date()): string | null {
+    const migrationHealth = personalMemoryStore.getResourceContentBudgetMigrationHealth()
+    if (resourceContentBudgetRetryCoolingDown(
+      migrationHealth?.nextAttemptAt,
+      now.getTime()
+    )) return 'resource_content_budget_cooling_down'
     const resourceContentBudget = personalMemoryStore.getResourceContentBudgetStats()
     if (Number(resourceContentBudget.pendingLegacy || 0) <= 0) return null
     if (this.memoryMaintenanceLease || this.activeSync || this.vectorIndexPromise || this.memorySearchRepairPromise ||
@@ -13638,7 +13644,8 @@ export class AiAssistantService {
         : 'resource_content_budget_completed'
     } catch (error) {
       personalMemoryStore.recordResourceContentBudgetMigrationFailure(
-        sanitizeDiagnosticText(error)
+        sanitizeDiagnosticText(error),
+        now
       )
       return 'resource_content_budget_failed'
     }
@@ -13746,7 +13753,7 @@ export class AiAssistantService {
       this.saveState()
     }
     if (!this.config.get('aiAssistantEnabled')) {
-      return this.continueLegacyResourceContentBudgetMigration() || 'assistant_disabled'
+      return this.continueLegacyResourceContentBudgetMigration(now) || 'assistant_disabled'
     }
     if (!this.activeSync) await this.flushNotificationOutbox(now)
     if (this.activeSync) return 'sync_already_running'
@@ -13834,7 +13841,7 @@ export class AiAssistantService {
       }
       const identityNameScanOutcome = this.continueFullIdentityScanWhileIdle(now)
       if (identityNameScanOutcome) return identityNameScanOutcome
-      const resourceContentBudgetOutcome = this.continueLegacyResourceContentBudgetMigration()
+      const resourceContentBudgetOutcome = this.continueLegacyResourceContentBudgetMigration(now)
       if (resourceContentBudgetOutcome) return resourceContentBudgetOutcome
       const resourceEnrichmentOutcome = this.continueIdleResourceEnrichment(now)
       if (resourceEnrichmentOutcome) return await resourceEnrichmentOutcome

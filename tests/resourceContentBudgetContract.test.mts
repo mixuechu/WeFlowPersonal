@@ -25,22 +25,29 @@ test('resource dossiers disclose storage truncation and its model boundary', () 
   assert.match(page, /resourceContentBudget\.pendingLegacy/)
   assert.match(page, /空闲时自动接力核验/)
   assert.match(page, /migration\?\.lastError/)
+  assert.match(page, /migration\?\.nextAttemptAt/)
+  assert.match(page, /连续失败/)
 })
 
 test('legacy resource budget migration continues while idle and persists bounded failures', () => {
+  assert.match(service, /getResourceContentBudgetMigrationHealth\(\)[\s\S]*resourceContentBudgetRetryCoolingDown/)
+  assert.ok(service.indexOf('resourceContentBudgetRetryCoolingDown(') <
+    service.indexOf('personalMemoryStore.getResourceContentBudgetStats()',
+      service.indexOf('private continueLegacyResourceContentBudgetMigration')))
   assert.match(service, /getResourceContentBudgetStats\(\)[\s\S]*pendingLegacy/)
   assert.match(service, /this\.vectorIndexPromise \|\| this\.memorySearchRepairPromise/)
   assert.match(service, /repairLegacyResourceContentBudgets\(100\)/)
   assert.match(service, /recordResourceContentBudgetMigrationFailure\([\s\S]*sanitizeDiagnosticText/)
   assert.match(service, /resource_content_budget_progressed/)
   assert.match(service, /resource_content_budget_completed/)
-  assert.match(store, /failureStreak: Math\.max\(0, Number\(previous\?\.failureStreak \|\| 0\)\) \+ 1/)
+  assert.match(store, /planResourceContentBudgetRetry\(previous\.failureStreak, now\)/)
+  assert.match(store, /getResourceContentBudgetMigrationHealth\(\)/)
   assert.match(store, /return this\.db\.transaction\(\(\) => \{[\s\S]*for \(const row of rows\)[\s\S]*resource_content_budget_migration/)
 })
 
 test('disabling AI stops assistant work without blocking local resource repair', () => {
-  assert.match(service, /if \(!this\.config\.get\('aiAssistantEnabled'\)\) \{[\s\S]*continueLegacyResourceContentBudgetMigration\(\)[\s\S]*assistant_disabled/)
-  assert.match(service, /continueLegacyResourceContentBudgetMigration\(\): string \| null[\s\S]*this\.activeSync \|\| this\.vectorIndexPromise \|\| this\.memorySearchRepairPromise/)
+  assert.match(service, /if \(!this\.config\.get\('aiAssistantEnabled'\)\) \{[\s\S]*continueLegacyResourceContentBudgetMigration\(now\)[\s\S]*assistant_disabled/)
+  assert.match(service, /continueLegacyResourceContentBudgetMigration\(now = new Date\(\)\): string \| null[\s\S]*this\.activeSync \|\| this\.vectorIndexPromise \|\| this\.memorySearchRepairPromise/)
   assert.match(service, /if \(!this\.config\.get\('aiAssistantEnabled'\)\)[\s\S]*if \(!this\.activeSync\) await this\.flushNotificationOutbox/)
   assert.match(service, /if \(this\.config\.get\('aiAssistantEnabled'\)\) this\.scheduleVectorIndexContinuation\(12_000\)/)
   assert.match(service, /scheduleVectorIndexContinuation\(delayMs = 1_000\)[\s\S]*!this\.config\.get\('aiAssistantEnabled'\)/)

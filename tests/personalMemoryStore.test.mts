@@ -25738,10 +25738,20 @@ test('legacy resource budget migration is bounded and never guesses exact-limit 
   assert.equal(boundaryMetadata.contentStorageTruncated, false)
   assert.equal(boundaryMetadata.contentStorageAuditStatus, 'legacy_boundary_unknown')
 
-  const failed = store.recordResourceContentBudgetMigrationFailure('synthetic bounded failure')
+  const failed = store.recordResourceContentBudgetMigrationFailure(
+    'synthetic bounded failure',
+    new Date('2026-08-10T00:00:00.000Z')
+  )
   assert.equal(failed.failureStreak, 1)
   assert.equal(failed.lastError, 'synthetic bounded failure')
+  assert.equal(failed.nextAttemptAt, '2026-08-10T00:05:00.000Z')
   assert.equal(store.getResourceContentBudgetStats().migration.failureStreak, 1)
+  const failedAgain = store.recordResourceContentBudgetMigrationFailure(
+    'second synthetic bounded failure',
+    new Date('2026-08-10T00:05:00.000Z')
+  )
+  assert.equal(failedAgain.failureStreak, 2)
+  assert.equal(failedAgain.nextAttemptAt, '2026-08-10T00:20:00.000Z')
 
   const second = store.repairLegacyResourceContentBudgets(1)
   assert.deepEqual(
@@ -25769,6 +25779,7 @@ test('legacy resource budget migration is bounded and never guesses exact-limit 
   assert.equal(stats.healthy, true)
   assert.equal(stats.migration.failureStreak, 0)
   assert.equal(stats.migration.lastError, '')
+  assert.equal(stats.migration.nextAttemptAt, '')
 }))
 
 test('legacy resource budget migration rolls the complete batch and audit back on a later search failure', () => withStore(store => {

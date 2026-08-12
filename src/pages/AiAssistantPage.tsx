@@ -14863,6 +14863,8 @@ function AiAssistantPage() {
                 ` · 还有 ${Number(dashboard.resourceContentBudget.pendingLegacy).toLocaleString()} 项将在空闲时自动接力核验`}
               {!!dashboard.resourceContentBudget.migration?.lastError &&
                 ` · 最近接力失败：${dashboard.resourceContentBudget.migration.lastError}`}
+              {!!dashboard.resourceContentBudget.migration?.nextAttemptAt &&
+                ` · 下次自动重试 ${new Date(dashboard.resourceContentBudget.migration.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}（连续失败 ${Number(dashboard.resourceContentBudget.migration.failureStreak || 0)} 次）`}
             </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((directoryResource: any) => {
