@@ -368,8 +368,7 @@ export class ConfigService {
     }
     this.localSecretKey = this.loadOrCreateLocalSecretKey()
     this.migrateLegacySafeStorageValues()
-    this.migrateAuthFields()
-    this.migrateAiConfig()
+    this.migrateStartupConfiguration()
     if (!runningInWorker) {
       this.cacheMapStore = new CacheMapStore(
         this.getUserDataPath(),
@@ -1119,52 +1118,59 @@ export class ConfigService {
 
   // === 迁移 ===
 
-  private migrateAuthFields(): void {
+  private migrateStartupConfiguration(): void {
+    const next = structuredClone(this.store.store as ConfigSchema)
+    let changed = false
+    const replace = (key: keyof ConfigSchema, value: unknown): void => {
+      if ((next as any)[key] === value) return
+      ;(next as any)[key] = value
+      changed = true
+    }
+
     // 将旧版明文 auth 字段迁移为本机密钥加密格式。
-    const rawEnabled: any = this.store.get('authEnabled')
+    const rawEnabled: any = next.authEnabled
     if (rawEnabled === true || rawEnabled === 'true') {
-      this.store.set('authEnabled', this.safeEncrypt('true') as any)
+      replace('authEnabled', this.safeEncrypt('true'))
     } else if (rawEnabled === false || rawEnabled === 'false') {
       // 保持 false 为明文布尔，避免无意义的加密写入。
-      this.store.set('authEnabled', false as any)
+      replace('authEnabled', false)
     }
 
-    const rawUseHello: any = this.store.get('authUseHello')
+    const rawUseHello: any = next.authUseHello
     if (rawUseHello === true || rawUseHello === 'true') {
-      this.store.set('authUseHello', this.safeEncrypt('true') as any)
+      replace('authUseHello', this.safeEncrypt('true'))
     } else if (rawUseHello === false || rawUseHello === 'false') {
-      this.store.set('authUseHello', false as any)
+      replace('authUseHello', false)
     }
 
-    const rawPassword: any = this.store.get('authPassword')
-    if (typeof rawPassword === 'string' && rawPassword && !rawPassword.startsWith(SAFE_PREFIX)) {
-      this.store.set('authPassword', this.safeEncrypt(rawPassword) as any)
+    const rawPassword: any = next.authPassword
+    if (typeof rawPassword === 'string' && rawPassword &&
+        !rawPassword.startsWith(SAFE_PREFIX) && !rawPassword.startsWith(LOCAL_PREFIX)) {
+      replace('authPassword', this.safeEncrypt(rawPassword))
     }
 
-    // 迁移敏感密钥字段（明文 → safe:）
-    for (const key of LOCKABLE_STRING_KEYS) {
-      const raw: any = this.store.get(key as any)
-      if (typeof raw === 'string' && raw && !raw.startsWith(SAFE_PREFIX) && !raw.startsWith(LOCK_PREFIX)) {
-        this.store.set(key as any, this.safeEncrypt(raw) as any)
+    // 所有敏感字符串都必须迁移；兼容字段即使已复制到新字段，也不能留下明文副本。
+    for (const key of ENCRYPTED_STRING_KEYS) {
+      const raw: any = next[key]
+      if (typeof raw === 'string' && raw && !raw.startsWith(SAFE_PREFIX) &&
+          !raw.startsWith(LOCAL_PREFIX) && !raw.startsWith(LOCK_PREFIX)) {
+        replace(key, this.safeEncrypt(raw))
       }
     }
 
-    // imageXorKey: 数字 → safe:
-    const rawXor: any = this.store.get('imageXorKey')
+    const rawXor: any = next.imageXorKey
     if (typeof rawXor === 'number' && rawXor !== 0) {
-      this.store.set('imageXorKey', this.safeEncrypt(String(rawXor)) as any)
+      replace('imageXorKey', this.safeEncrypt(String(rawXor)))
     }
 
-    // wxidConfigs 中的嵌套密钥
-    const wxidConfigs: any = this.store.get('wxidConfigs')
+    const wxidConfigs: any = next.wxidConfigs
     if (wxidConfigs && typeof wxidConfigs === 'object') {
-      let changed = false
       for (const [_wxid, cfg] of Object.entries(wxidConfigs) as [string, any][]) {
-        if (cfg.decryptKey && typeof cfg.decryptKey === 'string' && !cfg.decryptKey.startsWith(SAFE_PREFIX) && !cfg.decryptKey.startsWith(LOCK_PREFIX)) {
+        if (cfg.decryptKey && typeof cfg.decryptKey === 'string' && !cfg.decryptKey.startsWith(SAFE_PREFIX) && !cfg.decryptKey.startsWith(LOCAL_PREFIX) && !cfg.decryptKey.startsWith(LOCK_PREFIX)) {
           cfg.decryptKey = this.safeEncrypt(cfg.decryptKey)
           changed = true
         }
-        if (cfg.imageAesKey && typeof cfg.imageAesKey === 'string' && !cfg.imageAesKey.startsWith(SAFE_PREFIX) && !cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
+        if (cfg.imageAesKey && typeof cfg.imageAesKey === 'string' && !cfg.imageAesKey.startsWith(SAFE_PREFIX) && !cfg.imageAesKey.startsWith(LOCAL_PREFIX) && !cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
           cfg.imageAesKey = this.safeEncrypt(cfg.imageAesKey)
           changed = true
         }
@@ -1173,36 +1179,28 @@ export class ConfigService {
           changed = true
         }
       }
-      if (changed) {
-        this.store.set('wxidConfigs', wxidConfigs)
-      }
-    }
-  }
-
-  private migrateAiConfig(): void {
-    const sharedBaseUrl = String(this.get('aiModelApiBaseUrl') || '').trim()
-    const sharedApiKey = String(this.get('aiModelApiKey') || '').trim()
-    const sharedModel = String(this.get('aiModelApiModel') || '').trim()
-
-    const legacyBaseUrl = String(this.get('aiInsightApiBaseUrl') || '').trim()
-    const legacyApiKey = String(this.get('aiInsightApiKey') || '').trim()
-    const legacyModel = String(this.get('aiInsightApiModel') || '').trim()
-
-    if (!sharedBaseUrl && legacyBaseUrl) {
-      this.set('aiModelApiBaseUrl', legacyBaseUrl)
-    }
-    if (!sharedApiKey && legacyApiKey) {
-      this.set('aiModelApiKey', legacyApiKey)
-    }
-    if (!sharedModel && legacyModel) {
-      this.set('aiModelApiModel', legacyModel)
     }
 
-    const groupSummaryFilterMode = String(this.store.get('aiGroupSummaryFilterMode' as any) || '').trim()
+    const decode = (value: unknown): string => this.safeDecrypt(String(value || '')).trim()
+    const sharedBaseUrl = decode(next.aiModelApiBaseUrl)
+    const sharedApiKey = decode(next.aiModelApiKey)
+    const sharedModel = decode(next.aiModelApiModel)
+
+    const legacyBaseUrl = decode(next.aiInsightApiBaseUrl)
+    const legacyApiKey = decode(next.aiInsightApiKey)
+    const legacyModel = decode(next.aiInsightApiModel)
+
+    if (!sharedBaseUrl && legacyBaseUrl) replace('aiModelApiBaseUrl', this.safeEncrypt(legacyBaseUrl))
+    if (!sharedApiKey && legacyApiKey) replace('aiModelApiKey', this.safeEncrypt(legacyApiKey))
+    if (!sharedModel && legacyModel) replace('aiModelApiModel', this.safeEncrypt(legacyModel))
+
+    const groupSummaryFilterMode = String(next.aiGroupSummaryFilterMode || '').trim()
     if (groupSummaryFilterMode === 'blacklist') {
-      this.store.set('aiGroupSummaryFilterList' as any, [] as any)
-      this.store.set('aiGroupSummaryFilterMode' as any, 'whitelist' as any)
+      next.aiGroupSummaryFilterList = []
+      next.aiGroupSummaryFilterMode = 'whitelist'
+      changed = true
     }
+    if (changed) (this.store as any).store = next
   }
 
   // === 验证 ===

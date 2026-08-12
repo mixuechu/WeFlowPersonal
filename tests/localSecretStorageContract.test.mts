@@ -23,7 +23,7 @@ test('Safe Storage remains read-only compatibility for legacy safe-prefixed valu
 test('legacy migration covers Hello secrets and every nested WeChat account secret', () => {
   assert.match(config, /ENCRYPTED_NUMBER_KEYS, 'authHelloSecret'/)
   assert.match(config, /\['decryptKey', 'imageAesKey', 'imageXorKey'\]/)
-  assert.match(config, /if \(changed\) \(this\.store as any\)\.store = next/)
+  assert.match(config, /private migrateStartupConfiguration\(\)/)
 })
 
 test('privacy diagnostics expose only bounded local-secret health and reject symlink roots', () => {
