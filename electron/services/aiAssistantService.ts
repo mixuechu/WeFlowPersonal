@@ -435,6 +435,7 @@ import {
   identityCandidateVersionsCurrent,
   identityPairKey,
   listIndexedIdentityCandidates,
+  normalizePersistedIdentityScanState,
   planStaleGraphIdentityReviews,
   planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
@@ -1704,10 +1705,10 @@ export class AiAssistantService {
           lastSqlCommitId: loaded.graph?.lastSqlCommitId || null,
           snapshotPolicy: String(loaded.graph?.snapshotPolicy || 'legacy-inline'),
           reviewQueue: Array.isArray(loaded.graph?.reviewQueue) ? loaded.graph.reviewQueue : [],
-          identityScan: {
-            ...structuredClone(EMPTY_STATE.graph.identityScan),
-            ...(loaded.graph?.identityScan || {})
-          }
+          identityScan: normalizePersistedIdentityScanState(
+            loaded.graph?.identityScan,
+            structuredClone(EMPTY_STATE.graph.identityScan)
+          ) as AssistantState['graph']['identityScan']
         }
       }
       this.taskLifecycleAuditState = { ...this.state.taskLifecycleAudit }

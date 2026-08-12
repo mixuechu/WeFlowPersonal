@@ -45,6 +45,55 @@ export const MAX_GRAPH_IDENTITY_NEIGHBOR_PEOPLE = 500
 export const MAX_GRAPH_IDENTITY_PAIR_CANDIDATES = 100_000
 export const MAX_GRAPH_IDENTITY_SUGGESTIONS = 2_000
 export const FULL_IDENTITY_SCAN_PAGE_SIZE = 10_000
+const IDENTITY_SCAN_CURSOR_MAX_CHARS = 2_048
+
+function boundedCount(value: unknown): number {
+  const number = Number(value)
+  return Number.isFinite(number)
+    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(number))) : 0
+}
+
+function validIsoOrNull(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) return null
+  const text = value
+  return Number.isFinite(Date.parse(text)) ? new Date(text).toISOString() : null
+}
+
+export function normalizePersistedIdentityScanState(
+  raw: unknown,
+  defaults: Record<string, any>
+): Record<string, any> {
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, any> : {}
+  const cursor = typeof value.fullScanCursor === 'string' &&
+    value.fullScanCursor.length <= IDENTITY_SCAN_CURSOR_MAX_CHARS &&
+    decodeNameScanCursor(value.fullScanCursor)
+    ? value.fullScanCursor : null
+  const fingerprint = typeof value.fullScanSnapshotFingerprint === 'string' &&
+    /^[a-f0-9]{64}$/.test(value.fullScanSnapshotFingerprint)
+    ? value.fullScanSnapshotFingerprint : null
+  const continuationValid = Boolean(cursor && fingerprint)
+  const countKeys = Object.keys(defaults).filter(key => typeof defaults[key] === 'number')
+  const booleanKeys = Object.keys(defaults).filter(key => typeof defaults[key] === 'boolean')
+  const normalized: Record<string, any> = { ...defaults }
+  for (const key of countKeys) normalized[key] = boundedCount(value[key])
+  for (const key of booleanKeys) {
+    normalized[key] = typeof value[key] === 'boolean' ? value[key] : defaults[key]
+  }
+  normalized.lastFullScanAt = validIsoOrNull(value.lastFullScanAt)
+  normalized.lastRunAt = validIsoOrNull(value.lastRunAt)
+  normalized.lastMode = value.lastMode === 'incremental' || value.lastMode === 'full'
+    ? value.lastMode : null
+  normalized.decisionLookupAt = validIsoOrNull(value.decisionLookupAt)
+  normalized.vectorContinuationAt = validIsoOrNull(value.vectorContinuationAt)
+  normalized.vectorContinuationError = String(value.vectorContinuationError || '').slice(0, 500) || null
+  normalized.fullScanCursor = continuationValid ? cursor : null
+  normalized.fullScanSnapshotFingerprint = continuationValid ? fingerprint : null
+  normalized.fullScanProcessedPairs = continuationValid
+    ? boundedCount(value.fullScanProcessedPairs) : 0
+  normalized.fullTruncated = continuationValid && Boolean(value.fullTruncated)
+  return normalized
+}
 
 function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
