@@ -25,3 +25,26 @@ test('legacy migration covers Hello secrets and every nested WeChat account secr
   assert.match(config, /\['decryptKey', 'imageAesKey', 'imageXorKey'\]/)
   assert.match(config, /if \(changed\) \(this\.store as any\)\.store = next/)
 })
+
+test('privacy diagnostics expose only bounded local-secret health and reject symlink roots', () => {
+  assert.match(config, /getLocalSecretStorageStatus\(\)/)
+  assert.match(config, /directorySymlink/)
+  assert.match(config, /keyFileSymlink/)
+  assert.match(config, /!directoryInfo\.isDirectory\(\) \|\| directoryInfo\.isSymbolicLink\(\)/)
+  const statusBody = config.slice(
+    config.indexOf('getLocalSecretStorageStatus()'),
+    config.indexOf('getOrCreateLocalCacheEncryptionKey()')
+  )
+  const returnedProjection = statusBody.slice(statusBody.lastIndexOf('return {'))
+  assert.doesNotMatch(returnedProjection, /keyPath\s*[,}]/)
+  assert.doesNotMatch(returnedProjection, /localSecretKey\s*[,}]/)
+})
+
+test('application lock verification recognizes the new local encrypted boolean', () => {
+  const verifyBody = config.slice(
+    config.indexOf('verifyAuthEnabled(): boolean'),
+    config.indexOf('// === 工具方法 ===')
+  )
+  assert.match(verifyBody, /rawEnabled\.startsWith\(LOCAL_PREFIX\)/)
+  assert.match(verifyBody, /this\.safeDecrypt\(rawEnabled\) === 'true'/)
+})

@@ -54,10 +54,13 @@ test('mac signing skips sealed Electron data resources but never native code', (
   assert.equal(ignored('/tmp/WeFlow.app/Contents/Frameworks/WeFlow Helper.app'), false)
 })
 
-test('mac signing prefers the stable local WeFlow identity before expiring development identities', () => {
+test('mac signing never discovers a private identity or triggers Keychain UI implicitly', () => {
   const afterPack = readFileSync(new URL('../scripts/after-pack.cjs', import.meta.url), 'utf8')
-  const localIdentity = afterPack.indexOf('"WeFlow Personal Local Signing"')
-  const appleIdentity = afterPack.indexOf('"Apple Development:')
-  assert.ok(localIdentity >= 0 && appleIdentity > localIdentity)
+  const identityBody = afterPack.slice(
+    afterPack.indexOf('function findStableLocalSigningIdentity()'),
+    afterPack.indexOf('module.exports =')
+  )
+  assert.match(identityBody, /WEFLOW_LOCAL_SIGN_IDENTITY/)
+  assert.doesNotMatch(identityBody, /security|find-identity|WeFlow Personal Local Signing|Apple Development/)
   assert.match(afterPack, /identity \|\| '-'/)
 })

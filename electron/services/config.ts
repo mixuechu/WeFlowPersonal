@@ -417,6 +417,71 @@ export class ConfigService {
     return typeof raw === 'string' && raw.startsWith(LOCAL_PREFIX)
   }
 
+  getLocalSecretStorageStatus(): {
+    backend: 'local-file-aes-256-gcm-v1'
+    available: boolean
+    directoryMode: string | null
+    directoryIsDirectory: boolean
+    directorySymlink: boolean
+    keyFileMode: string | null
+    keyFileRegular: boolean
+    keyFileSymlink: boolean
+    keyLengthValid: boolean
+    localEncryptedValues: number
+    legacySafeValues: number
+  } {
+    const { directory, keyPath } = this.getLocalSecretPaths()
+    const raw = this.store.store as unknown as Record<string, unknown>
+    const candidates: unknown[] = [
+      ...[...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS, 'authHelloSecret']
+        .map(key => raw[key])
+    ]
+    const wxidConfigs = raw.wxidConfigs
+    if (wxidConfigs && typeof wxidConfigs === 'object' && !Array.isArray(wxidConfigs)) {
+      for (const config of Object.values(wxidConfigs)) {
+        if (!config || typeof config !== 'object' || Array.isArray(config)) continue
+        const record = config as Record<string, unknown>
+        candidates.push(record.decryptKey, record.imageAesKey, record.imageXorKey)
+      }
+    }
+    let directoryMode: string | null = null
+    let directoryIsDirectory = false
+    let directorySymlink = false
+    let keyFileMode: string | null = null
+    let keyFileRegular = false
+    let keyFileSymlink = false
+    let keyLengthValid = false
+    try {
+      const info = lstatSync(directory)
+      directoryMode = (info.mode & 0o777).toString(8).padStart(3, '0')
+      directoryIsDirectory = info.isDirectory()
+      directorySymlink = info.isSymbolicLink()
+    } catch { /* missing/unreadable remains explicit */ }
+    try {
+      const info = lstatSync(keyPath)
+      keyFileMode = (info.mode & 0o777).toString(8).padStart(3, '0')
+      keyFileRegular = info.isFile()
+      keyFileSymlink = info.isSymbolicLink()
+      keyLengthValid = keyFileRegular && !keyFileSymlink && info.size === 32
+    } catch { /* missing/unreadable remains explicit */ }
+    return {
+      backend: 'local-file-aes-256-gcm-v1',
+      available: this.localSecretKey?.length === 32 && directoryIsDirectory &&
+        !directorySymlink && keyLengthValid,
+      directoryMode,
+      directoryIsDirectory,
+      directorySymlink,
+      keyFileMode,
+      keyFileRegular,
+      keyFileSymlink,
+      keyLengthValid,
+      localEncryptedValues: candidates.filter(value =>
+        typeof value === 'string' && value.startsWith(LOCAL_PREFIX)).length,
+      legacySafeValues: candidates.filter(value =>
+        typeof value === 'string' && value.startsWith(SAFE_PREFIX)).length
+    }
+  }
+
   getOrCreateLocalCacheEncryptionKey(): string {
     if (!this.isLocalSecretStorageAvailable()) return ''
     const existing = String(this.get('localCacheEncryptionKey') || '')
@@ -589,10 +654,11 @@ export class ConfigService {
   }
 
   private loadOrCreateLocalSecretKey(): Buffer | null {
-    const directory = join(this.getUserDataPath(), 'secrets')
-    const keyPath = join(directory, 'local-master-key.bin')
+    const { directory, keyPath } = this.getLocalSecretPaths()
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
+      const directoryInfo = lstatSync(directory)
+      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return null
       chmodSync(directory, 0o700)
       if (!existsSync(keyPath)) {
         try {
@@ -610,6 +676,11 @@ export class ConfigService {
       console.error('ConfigService: 本机密钥文件初始化失败', error)
       return null
     }
+  }
+
+  private getLocalSecretPaths(): { directory: string; keyPath: string } {
+    const directory = join(this.getUserDataPath(), 'secrets')
+    return { directory, keyPath: join(directory, 'local-master-key.bin') }
   }
 
   private migrateLegacySafeStorageValues(): void {
@@ -1077,7 +1148,8 @@ export class ConfigService {
   verifyAuthEnabled(): boolean {
     // 先检查 authEnabled 字段
     const rawEnabled: any = this.store.get('authEnabled')
-    if (typeof rawEnabled === 'string' && rawEnabled.startsWith(SAFE_PREFIX)) {
+    if (typeof rawEnabled === 'string' &&
+        (rawEnabled.startsWith(SAFE_PREFIX) || rawEnabled.startsWith(LOCAL_PREFIX))) {
       if (this.safeDecrypt(rawEnabled) === 'true') return true
     }
 

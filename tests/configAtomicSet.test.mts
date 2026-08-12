@@ -30,6 +30,19 @@ test('config batch commit persists all assistant settings in one store replaceme
   assert.match(storedApiKey, /^local:v1:/)
   assert.equal(statSync(join(directory, 'secrets')).mode & 0o777, 0o700)
   assert.equal(statSync(join(directory, 'secrets', 'local-master-key.bin')).mode & 0o777, 0o600)
+  assert.deepEqual(config.getLocalSecretStorageStatus(), {
+    backend: 'local-file-aes-256-gcm-v1',
+    available: true,
+    directoryMode: '700',
+    directoryIsDirectory: true,
+    directorySymlink: false,
+    keyFileMode: '600',
+    keyFileRegular: true,
+    keyFileSymlink: false,
+    keyLengthValid: true,
+    localEncryptedValues: 1,
+    legacySafeValues: 0
+  })
   const tamperOffset = 'local:v1:'.length + 20
   const tampered = storedApiKey.slice(0, tamperOffset) +
     (storedApiKey[tamperOffset] === 'A' ? 'B' : 'A') + storedApiKey.slice(tamperOffset + 1)

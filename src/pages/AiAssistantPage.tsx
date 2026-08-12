@@ -19047,11 +19047,18 @@ function AiAssistantPage() {
                 </small>}
               <small>索引可由加密库中的有效向量完全重建；离线或模型暂不可用时按 1 分钟至 6 小时跨重启退避，成功后自动恢复；JSON 损坏、维度错误或非数字向量会重新进入补建队列。</small>
             </div>}
-            {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted && sensitiveCachesSecure ? 'secure' : 'warning'}`}>
+            {memoryDiagnostics.privacy && <div className={`assistant-privacy-audit ${memoryDiagnostics.privacy.secure && memoryDiagnostics.privacy.stateMode === '600' && memoryDiagnostics.stateStorage?.encrypted && sensitiveCachesSecure && memoryDiagnostics.privacy.localSecretStorage?.available && memoryDiagnostics.privacy.localSecretStorage?.directoryMode === '700' && memoryDiagnostics.privacy.localSecretStorage?.keyFileMode === '600' && !memoryDiagnostics.privacy.localSecretStorage?.legacySafeValues ? 'secure' : 'warning'}`}>
               <div><ShieldCheck size={15} /><span><b>本机隐私与权限审计</b>
                 <small>数据库 {memoryDiagnostics.privacy.databaseMode || '未知'} · 状态 {memoryDiagnostics.privacy.stateMode || '未知'} / 副本 {memoryDiagnostics.privacy.stateBackupMode || '尚未生成'} · 备份目录 {memoryDiagnostics.privacy.backupDirectoryMode || '尚未创建'}</small>
               </span></div>
-              <div><span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span>
+              <div><span>本机主密钥：{memoryDiagnostics.privacy.localSecretStorage?.available
+                  ? `可用 · 目录 ${memoryDiagnostics.privacy.localSecretStorage.directoryMode} / 文件 ${memoryDiagnostics.privacy.localSecretStorage.keyFileMode}`
+                  : '未通过完整性校验'}</span>
+                <span>敏感配置：{Number(memoryDiagnostics.privacy.localSecretStorage?.localEncryptedValues || 0).toLocaleString()} 项本机加密
+                  {Number(memoryDiagnostics.privacy.localSecretStorage?.legacySafeValues || 0)
+                    ? ` · ${Number(memoryDiagnostics.privacy.localSecretStorage.legacySafeValues).toLocaleString()} 项旧格式待迁移`
+                    : ' · 无旧钥匙串格式'}</span>
+                <span>API Key：{memoryDiagnostics.privacy.apiKeyStorage}</span>
                 <span>个人记忆库：{memoryDiagnostics.privacy.databaseEncryption?.enabled &&
                   memoryDiagnostics.privacy.databaseEncryption?.cipher === 'sqlcipher' &&
                   !memoryDiagnostics.privacy.databaseEncryption?.plaintextHeader
@@ -19088,6 +19095,13 @@ function AiAssistantPage() {
               {!sensitiveCachesSecure && <small className="assistant-diagnostics-error">
                 至少一个本地识别缓存未通过加密、权限或可写性校验；认证失败时系统会保留现场并停止覆盖，请先备份后检查完整诊断。
               </small>}
+              {(!memoryDiagnostics.privacy.localSecretStorage?.available ||
+                memoryDiagnostics.privacy.localSecretStorage?.directoryMode !== '700' ||
+                memoryDiagnostics.privacy.localSecretStorage?.keyFileMode !== '600' ||
+                Number(memoryDiagnostics.privacy.localSecretStorage?.legacySafeValues || 0) > 0) &&
+                <small className="assistant-diagnostics-error">
+                  本机主密钥未通过普通文件、32 字节长度、目录 700、文件 600 或旧格式迁移门禁；系统不会在该状态下覆盖已加密个人记忆。
+                </small>}
             </div>}
             {memoryDiagnostics.conversationSourceMutationCommits && <div className={`assistant-recovery-audit ${Number(memoryDiagnostics.conversationSourceMutationCommits.prepared || 0) ? 'warning' : 'healthy'}`}>
               <header><RefreshCw size={15} /><span><b>来源开关跨存储提交</b>

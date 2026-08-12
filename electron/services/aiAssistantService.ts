@@ -7875,6 +7875,7 @@ export class AiAssistantService {
         query: { ...this.vectorQueryHealth }
       },
       privacy: {
+        localSecretStorage: this.config.getLocalSecretStorageStatus(),
         ...personalMemoryStore.getFilePermissionAudit(),
         databaseEncryption: databaseDiagnostics.encryption,
         stateMode: (() => { try { return (statSync(this.statePath).mode & 0o777).toString(8).padStart(3, '0') } catch { return null } })(),

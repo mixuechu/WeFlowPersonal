@@ -41,17 +41,11 @@ function patchWcdbDylib(dylibPath) {
 }
 
 function findStableLocalSigningIdentity() {
-  if (process.env.WEFLOW_LOCAL_SIGN_IDENTITY) {
-    return process.env.WEFLOW_LOCAL_SIGN_IDENTITY.trim()
-  }
-  try {
-    const output = execFileSync('security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' })
-    return output.match(/\)\s+([A-F0-9]{40})\s+"WeFlow Personal Local Signing"/)?.[1]
-      || output.match(/\)\s+([A-F0-9]{40})\s+"Apple Development:/)?.[1]
-      || ''
-  } catch {
-    return ''
-  }
+  // Local/demo builds must never discover a private key implicitly: codesign
+  // can then block on a Keychain password dialog that the app user cannot know.
+  // A release operator may opt in explicitly; otherwise use password-free
+  // ad-hoc signing, which is sufficient for this local-only distribution.
+  return String(process.env.WEFLOW_LOCAL_SIGN_IDENTITY || '').trim()
 }
 
 module.exports = async function afterPack(context) {
