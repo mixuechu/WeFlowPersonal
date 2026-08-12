@@ -15165,9 +15165,9 @@ function AiAssistantPage() {
             <span><b>{identityDisambiguation.contextualRetiredCandidates || 0}</b><small>本轮撤销过期纯关系候选</small></span>
             <span><b>{identityDisambiguation.ruleRetiredCandidates || 0}</b><small>本轮撤销过期纯规则候选</small></span>
             {identityDisambiguation.contextualTruncated && <span className="warning"><b>已达安全上限</b><small>其余组合需等待新证据或人工检索复核</small></span>}
-            <span><b>{identityDisambiguation.fullPairCandidates || 0}</b><small>最近每周同名候选对</small></span>
+            <span><b>{identityDisambiguation.fullPairCandidates || 0}</b><small>最近每周同名候选对（本页）</small></span>
             <span><b>{identityDisambiguation.fullLargestNameBucket || 0}</b><small>最大同名/别名桶</small></span>
-            {identityDisambiguation.fullTruncated && <span className="warning"><b>每周巡检已达上限</b><small>其余同名组合需结合新证据或人工检索复核</small></span>}
+            {identityDisambiguation.fullTruncated && <span className="warning"><b>每周巡检正在续跑</b><small>已完成 {identityDisambiguation.fullScanProcessedPairs || 0} 对；稳定断点已加密保存，后续同步继续下一页</small></span>}
             <span><b>{identityDisambiguation.decisionLookupPairs || 0}</b><small>本轮身份决定匹配对</small></span>
             <span><b>{identityDisambiguation.decisionLookupQueries || 0} 次 · {Number(identityDisambiguation.decisionLookupDurationMs || 0).toFixed(1)}ms</b><small>SQLCipher 批量决定查询</small></span>
             <span><b>{identityDisambiguation.vectorProbes || 0} / {identityDisambiguation.vectorPendingBefore || 0}</b><small>本轮向量探针 / 扫描前待处理</small></span>

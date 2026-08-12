@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 export type IdentityCandidateEntity = {
   id: string
   type: string
@@ -42,6 +44,7 @@ export const FULL_IDENTITY_SCAN_INTERVAL_DAYS = 7
 export const MAX_GRAPH_IDENTITY_NEIGHBOR_PEOPLE = 500
 export const MAX_GRAPH_IDENTITY_PAIR_CANDIDATES = 100_000
 export const MAX_GRAPH_IDENTITY_SUGGESTIONS = 2_000
+export const FULL_IDENTITY_SCAN_PAGE_SIZE = 10_000
 
 function normalize(value: unknown): string {
   return String(value || '').trim().toLocaleLowerCase('zh-CN').replace(/\s+/g, '')
@@ -344,6 +347,100 @@ export function buildNameBuckets(entities: IdentityCandidateEntity[]): Map<strin
     }
   }
   return buckets
+}
+
+function nameScanSignals(entity: IdentityCandidateEntity): string[] {
+  return [...new Set([entity.canonicalName, ...(entity.aliases || [])]
+    .map(normalize).filter(value => value.length >= 2))].sort()
+}
+
+function encodeNameScanCursor(signal: string, leftId: string, rightId: string): string {
+  return Buffer.from(JSON.stringify([signal, leftId, rightId]), 'utf8').toString('base64url')
+}
+
+function decodeNameScanCursor(cursor: string | null | undefined): [string, string, string] | null {
+  if (!cursor) return null
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+    return Array.isArray(value) && value.length === 3 && value.every(item => typeof item === 'string')
+      ? value as [string, string, string] : null
+  } catch {
+    return null
+  }
+}
+
+export function buildNameIdentityPairPage(
+  entities: IdentityCandidateEntity[],
+  options: { cursor?: string | null; limit?: number } = {}
+): {
+  pairKeys: string[]
+  nextCursor: string | null
+  hasMore: boolean
+  cursorAccepted: boolean
+  snapshotFingerprint: string
+  stats: { people: number; nameBuckets: number; largestBucket: number }
+} {
+  const people = entities.filter(entity => entity.type === 'person')
+  const signalByEntity = new Map(people.map(entity => [entity.id, nameScanSignals(entity)]))
+  const buckets = new Map<string, string[]>()
+  for (const entity of people) {
+    for (const signal of signalByEntity.get(entity.id) || []) {
+      buckets.set(signal, [...(buckets.get(signal) || []), entity.id])
+    }
+  }
+  const orderedBuckets = [...buckets.entries()]
+    .map(([signal, ids]) => [signal, [...new Set(ids)].sort()] as const)
+    .sort(([left], [right]) => left.localeCompare(right))
+  const snapshotFingerprint = createHash('sha256').update(JSON.stringify(people
+    .map(entity => [entity.id, Number(entity.identityVersion || 1), signalByEntity.get(entity.id) || []])
+    .sort(([left]: any, [right]: any) => String(left).localeCompare(String(right))))).digest('hex')
+  const after = decodeNameScanCursor(options.cursor)
+  const cursorAccepted = !options.cursor || Boolean(after && orderedBuckets.some(([signal, ids]) =>
+    signal === after[0] && ids.indexOf(after[1]) >= 0 && ids.indexOf(after[2]) > ids.indexOf(after[1])))
+  const effectiveAfter = cursorAccepted ? after : null
+  const limit = Math.max(1, Math.min(100_000, Math.floor(options.limit || FULL_IDENTITY_SCAN_PAGE_SIZE)))
+  const emitted: Array<{ pairKey: string; cursor: string }> = []
+  let hasMore = false
+  bucketLoop: for (const [signal, ids] of orderedBuckets) {
+    const signalOrder = effectiveAfter ? signal.localeCompare(effectiveAfter[0]) : 1
+    if (signalOrder < 0) continue
+    let firstLeftIndex = 0
+    let resumeRightIndex = -1
+    if (effectiveAfter && signalOrder === 0) {
+      firstLeftIndex = ids.indexOf(effectiveAfter[1])
+      resumeRightIndex = ids.indexOf(effectiveAfter[2])
+      if (firstLeftIndex < 0 || resumeRightIndex <= firstLeftIndex) continue
+    }
+    for (let leftIndex = firstLeftIndex; leftIndex < ids.length; leftIndex += 1) {
+      const firstRightIndex = effectiveAfter && signalOrder === 0 && leftIndex === firstLeftIndex
+        ? resumeRightIndex + 1 : leftIndex + 1
+      for (let rightIndex = firstRightIndex; rightIndex < ids.length; rightIndex += 1) {
+        const leftId = ids[leftIndex]
+        const rightId = ids[rightIndex]
+        const sharedSignals = (signalByEntity.get(leftId) || []).filter(value =>
+          (signalByEntity.get(rightId) || []).includes(value))
+        if (sharedSignals[0] !== signal) continue
+        const tuple: [string, string, string] = [signal, leftId, rightId]
+        if (emitted.length >= limit) {
+          hasMore = true
+          break bucketLoop
+        }
+        emitted.push({ pairKey: identityPairKey(leftId, rightId), cursor: encodeNameScanCursor(...tuple) })
+      }
+    }
+  }
+  return {
+    pairKeys: emitted.map(item => item.pairKey),
+    nextCursor: hasMore ? emitted.at(-1)?.cursor || null : null,
+    hasMore,
+    cursorAccepted,
+    snapshotFingerprint,
+    stats: {
+      people: people.length,
+      nameBuckets: orderedBuckets.length,
+      largestBucket: orderedBuckets.reduce((largest, [, ids]) => Math.max(largest, ids.length), 0)
+    }
+  }
 }
 
 export function buildNameIdentityPairPlan(

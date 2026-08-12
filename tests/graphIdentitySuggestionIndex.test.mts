@@ -7,6 +7,7 @@ import {
   assertIdentityCandidateVersionsCurrent,
   buildGraphIdentitySuggestionPlan,
   buildGraphIdentitySuggestions,
+  buildNameIdentityPairPage,
   buildNameIdentityPairPlan,
   identityCandidateVersionsCurrent,
   planStaleGraphIdentityReviews,
@@ -229,8 +230,12 @@ test('identity scan diagnostics expose hub exclusions and truncation in the UI',
   assert.match(page, /已达安全上限/)
   assert.match(page, /最近每周同名候选对/)
   assert.match(page, /最大同名\/别名桶/)
-  assert.match(page, /每周巡检已达上限/)
-  assert.match(service, /loadIdentityDecisionIndex\(pairPlan\.pairKeys, now\)/)
+  assert.match(page, /每周巡检正在续跑/)
+  assert.match(page, /稳定断点已加密保存/)
+  assert.match(service, /buildNameIdentityPairPage\(people, \{ cursor: pendingCursor \}\)/)
+  assert.match(service, /loadIdentityDecisionIndex\(pairPage\.pairKeys, now\)/)
+  assert.match(service, /lastFullScanAt: pairPage\.hasMore \? this\.state\.graph\.identityScan\.lastFullScanAt : now/)
+  assert.match(service, /fullScanCursor: pairPage\.nextCursor/)
   assert.match(service, /suggestions\.map\(suggestion => identityPairKey/)
   assert.match(store, /listIdentityDecisions\(pairKeys: string\[\]\)/)
   assert.match(store, /FROM json_each\(\?\) requested[\s\S]*JOIN identity_decisions/)
@@ -421,4 +426,37 @@ test('weekly name scan keeps deterministic deduplicated order and bounds huge sa
   assert.equal(bounded.stats.largestBucket, 10_000)
   assert.equal(bounded.stats.truncated, true)
   assert.ok(performance.now() - startedAt < 3_000)
+})
+
+test('weekly name scan continuation reaches every pair exactly once and rejects stale cursors', () => {
+  const people = Array.from({ length: 6 }, (_, index) => ({
+    id: `person-${index}`, type: 'person', canonicalName: '同名',
+    aliases: index < 3 ? ['共享别名'] : [], identityVersion: 1
+  }))
+  const seen: string[] = []
+  let cursor: string | null = null
+  let fingerprint = ''
+  do {
+    const page = buildNameIdentityPairPage(people, { cursor, limit: 4 })
+    if (fingerprint) assert.equal(page.snapshotFingerprint, fingerprint)
+    fingerprint = page.snapshotFingerprint
+    seen.push(...page.pairKeys)
+    cursor = page.nextCursor
+    if (!page.hasMore) break
+  } while (true)
+  assert.equal(seen.length, 15)
+  assert.equal(new Set(seen).size, 15)
+  assert.deepEqual([...seen].sort(), [...buildNameIdentityPairPlan(people).pairKeys].sort())
+
+  const malformed = buildNameIdentityPairPage(people, { cursor: 'not-a-cursor', limit: 4 })
+  assert.equal(malformed.cursorAccepted, false)
+  assert.deepEqual(malformed.pairKeys, seen.slice(0, 4))
+  const missingEndpointCursor = Buffer.from(JSON.stringify(['同名', 'missing', 'person-5'])).toString('base64url')
+  const missingEndpoint = buildNameIdentityPairPage(people, { cursor: missingEndpointCursor, limit: 4 })
+  assert.equal(missingEndpoint.cursorAccepted, false)
+  assert.deepEqual(missingEndpoint.pairKeys, seen.slice(0, 4))
+  const changed = buildNameIdentityPairPage([
+    ...people.slice(0, 5), { ...people[5], identityVersion: 2 }
+  ], { cursor: buildNameIdentityPairPage(people, { limit: 4 }).nextCursor, limit: 4 })
+  assert.notEqual(changed.snapshotFingerprint, fingerprint)
 })

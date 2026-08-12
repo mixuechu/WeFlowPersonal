@@ -429,7 +429,7 @@ import {
   addIdentityCandidateToLookup,
   buildIdentityCandidateLookup,
   buildGraphIdentitySuggestionPlan,
-  buildNameIdentityPairPlan,
+  buildNameIdentityPairPage,
   assertIdentityCandidateVersionsCurrent,
   getFullIdentityScanSchedule,
   identityCandidateVersionsCurrent,
@@ -688,6 +688,9 @@ type AssistantState = {
       fullPairCandidates: number
       fullLargestNameBucket: number
       fullTruncated: boolean
+      fullScanCursor: string | null
+      fullScanSnapshotFingerprint: string | null
+      fullScanProcessedPairs: number
       decisionLookupPairs: number
       decisionLookupQueries: number
       decisionLookupDurationMs: number
@@ -776,6 +779,7 @@ const EMPTY_STATE: AssistantState = {
     versionRegeneratedCandidates: 0,
     ruleRetiredCandidates: 0,
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
+    fullScanCursor: null, fullScanSnapshotFingerprint: null, fullScanProcessedPairs: 0,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
     decisionLookupAt: null,
     vectorEligible: 0, vectorPendingBefore: 0, vectorProbes: 0,
@@ -3932,36 +3936,50 @@ export class AiAssistantService {
   }
 
   private runScheduledIdentityScan(now: string): void {
+    const pendingCursor = this.state.graph.identityScan.fullScanCursor
     const schedule = getFullIdentityScanSchedule(
       this.state.graph.entities.length,
       this.state.graph.identityScan.lastFullScanAt,
       new Date(now)
     )
-    if (!schedule.due) return
+    if (!schedule.due && !pendingCursor) return
     const people = this.state.graph.entities.filter(entity => entity.type === 'person')
     const byId = new Map(people.map(entity => [entity.id, entity]))
-    const pairPlan = buildNameIdentityPairPlan(people)
+    let pairPage = buildNameIdentityPairPage(people, { cursor: pendingCursor })
+    const expectedFingerprint = this.state.graph.identityScan.fullScanSnapshotFingerprint
+    const continuesCurrentSnapshot = Boolean(
+      pendingCursor && pairPage.cursorAccepted && expectedFingerprint === pairPage.snapshotFingerprint
+    )
+    if (pendingCursor && !continuesCurrentSnapshot) {
+      pairPage = buildNameIdentityPairPage(people)
+    }
     let candidates = 0
     const reviewsById = new Map(this.state.graph.reviewQueue.map(review => [review.id, review]))
-    const identityDecisions = this.loadIdentityDecisionIndex(pairPlan.pairKeys, now)
-    for (const pairKey of pairPlan.pairKeys) {
+    const identityDecisions = this.loadIdentityDecisionIndex(pairPage.pairKeys, now)
+    for (const pairKey of pairPage.pairKeys) {
       const [leftId, rightId] = pairKey.split('|')
       const left = byId.get(leftId)
       const right = byId.get(rightId)
       if (left && right && this.enqueueIdentityPair(
         left, right, now, undefined, {}, reviewsById, identityDecisions)) candidates += 1
     }
+    const processedBefore = continuesCurrentSnapshot
+      ? Number(this.state.graph.identityScan.fullScanProcessedPairs || 0) : 0
+    const processedPairs = processedBefore + pairPage.pairKeys.length
     this.state.graph.identityScan = {
       ...this.state.graph.identityScan,
-      lastFullScanAt: now,
+      lastFullScanAt: pairPage.hasMore ? this.state.graph.identityScan.lastFullScanAt : now,
       lastRunAt: now,
       lastMode: 'full',
       lastCandidateCount: (this.state.graph.identityScan.lastRunAt === now
         ? this.state.graph.identityScan.lastCandidateCount
         : 0) + candidates,
-      fullPairCandidates: pairPlan.stats.pairCandidates,
-      fullLargestNameBucket: pairPlan.stats.largestBucket,
-      fullTruncated: pairPlan.stats.truncated
+      fullPairCandidates: pairPage.pairKeys.length,
+      fullLargestNameBucket: pairPage.stats.largestBucket,
+      fullTruncated: pairPage.hasMore,
+      fullScanCursor: pairPage.nextCursor,
+      fullScanSnapshotFingerprint: pairPage.hasMore ? pairPage.snapshotFingerprint : null,
+      fullScanProcessedPairs: pairPage.hasMore ? processedPairs : 0
     }
   }
 
