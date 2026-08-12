@@ -191,9 +191,8 @@ module.exports = async function afterPack(context) {
   }
 
   // 本地构建跳过 electron-builder 的在线时间戳签名后，在这里使用固定的
-  // Apple Development 身份签名。稳定的 designated requirement 可让钥匙串
-  // 记住 Safe Storage 访问许可，避免每次重打包都弹窗；没有本地证书时才
-  // 降级为 ad-hoc 签名。
+  // Apple Development 身份签名，保持应用和系统 helper 代码身份稳定；
+  // 没有本地证书时才降级为 ad-hoc 签名。
   if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === 'false') {
     const identity = findStableLocalSigningIdentity()
     const signArgs = ['--force', '--deep', '--timestamp=none', '--sign', identity || '-']

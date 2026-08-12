@@ -152,7 +152,7 @@ test('new runtime cache writes and UI cache maps never persist identifiers as pl
   }
 })
 
-test('UI cache maps defer migration until Electron Safe Storage becomes available', () => {
+test('UI cache maps defer migration until the local encryption key becomes available', () => {
   const directory = mkdtempSync(join(tmpdir(), 'weflow-runtime-cache-'))
   const path = join(directory, 'WeFlow-cache-maps.json')
   const key = randomBytes(32)

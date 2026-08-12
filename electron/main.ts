@@ -5037,8 +5037,8 @@ function checkForUpdatesOnStartup() {
 app.whenReady().then(async () => {
   installRendererPermissionPolicy()
 
-  // Safe Storage 在 macOS 钥匙串锁定时会同步等待系统授权。必须先给系统
-  // 一个已显示的前台窗口，否则启动会停在 starting 且授权框可能没有可见锚点。
+  // 先显示本地 Splash，再读取加密配置和初始化较重的本机服务，
+  // 确保冷启动始终有可见进度，不会在第一个窗口出现前长时间无响应。
   createSplashWindow({ themeId: 'cloud-dancer', themeMode: 'system' })
   if (splashWindow) {
     await new Promise<void>((resolve) => {
@@ -5051,7 +5051,7 @@ app.whenReady().then(async () => {
   }
   updateSplashProgress(5, '正在读取本机加密配置...')
 
-  // Splash 已可见后再初始化可能触发钥匙串访问的配置。
+  // Splash 已可见后再初始化本机加密配置。
   configService = new ConfigService()
   const localCacheEncryptionKey = configService.initializeLocalCacheEncryption()
   chatService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
@@ -5062,7 +5062,7 @@ app.whenReady().then(async () => {
   const startInBackground = onboardingDone && isSilentStartupEnabled()
   shouldShowMain = onboardingDone
 
-  // 静默启动仍先以 Splash 作为钥匙串授权锚点；配置成功读取后立即隐藏，
+  // 静默启动仍先显示 Splash；配置成功读取后立即隐藏，
   // 后续保持原有托盘启动语义。
   if (startInBackground) closeSplash()
 

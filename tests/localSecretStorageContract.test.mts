@@ -19,3 +19,9 @@ test('Safe Storage remains read-only compatibility for legacy safe-prefixed valu
   const encryptBody = config.slice(config.indexOf('private safeEncrypt'), config.indexOf('private safeDecrypt'))
   assert.doesNotMatch(encryptBody, /safeStorage\.encryptString/)
 })
+
+test('legacy migration covers Hello secrets and every nested WeChat account secret', () => {
+  assert.match(config, /ENCRYPTED_NUMBER_KEYS, 'authHelloSecret'/)
+  assert.match(config, /\['decryptKey', 'imageAesKey', 'imageXorKey'\]/)
+  assert.match(config, /if \(changed\) \(this\.store as any\)\.store = next/)
+})

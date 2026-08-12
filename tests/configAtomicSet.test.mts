@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -25,6 +25,18 @@ test('config batch commit persists all assistant settings in one store replaceme
   const persisted = readFileSync(join(directory, 'WeFlow-config.json'), 'utf8')
   assert.match(persisted, /批量设置用户/)
   assert.match(persisted, /strict/)
+  assert.doesNotMatch(persisted, /sk-batch-secret/)
+  const storedApiKey = JSON.parse(persisted).aiAssistantApiKey
+  assert.match(storedApiKey, /^local:v1:/)
+  assert.equal(statSync(join(directory, 'secrets')).mode & 0o777, 0o700)
+  assert.equal(statSync(join(directory, 'secrets', 'local-master-key.bin')).mode & 0o777, 0o600)
+  const tamperOffset = 'local:v1:'.length + 20
+  const tampered = storedApiKey.slice(0, tamperOffset) +
+    (storedApiKey[tamperOffset] === 'A' ? 'B' : 'A') + storedApiKey.slice(tamperOffset + 1)
+  ;(config as any).store.set('aiAssistantApiKey', tampered)
+  assert.equal(config.get('aiAssistantApiKey'), '')
+  config.set('aiAssistantApiKey', 'sk-batch-secret')
+  assert.equal(config.get('aiAssistantApiKey'), 'sk-batch-secret')
   const before = config.get('aiAssistantOwnerName')
   assert.throws(() => config.setMany({
     aiAssistantOwnerName: '不应保存',

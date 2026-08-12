@@ -67,9 +67,9 @@ interface ConfigSchema {
 
   // 安全相关
   authEnabled: boolean
-  authPassword: string      // SHA-256 hash（safeStorage 加密）
+  authPassword: string      // SHA-256 hash（本机密钥加密）
   authUseHello: boolean
-  authHelloSecret: string   // 原始密码（safeStorage 加密，Hello 解锁时使用）
+  authHelloSecret: string   // 原始密码（本机密钥加密，Hello 解锁时使用）
 
   // 更新相关
   ignoredUpdateVersion: string
@@ -498,7 +498,7 @@ export class ConfigService {
 
     if (ENCRYPTED_BOOL_KEYS.has(key)) {
       const boolValue = value === true || value === 'true'
-      // `false` 不需要写入 keychain，避免无意义触发 macOS 钥匙串弹窗
+      // `false` 保留为布尔值，无需生成加密载荷。
       toStore = (boolValue ? this.safeEncrypt('true') : false) as ConfigSchema[K]
     } else if (ENCRYPTED_NUMBER_KEYS.has(key)) {
       if (inLockMode && LOCKABLE_NUMBER_KEYS.has(key)) {
@@ -622,7 +622,7 @@ export class ConfigService {
     try {
       const next = { ...(this.store.store as unknown as Record<string, unknown>) }
       let changed = false
-      for (const key of [...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS]) {
+      for (const key of [...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS, 'authHelloSecret']) {
         const migrated = migrate(next[key])
         if (migrated !== next[key]) {
           next[key] = migrated
@@ -786,7 +786,7 @@ export class ConfigService {
       const imageXorKey = this.get('imageXorKey')
       const wxidConfigs = this.get('wxidConfigs')
 
-      // 存储密码 hash（safeStorage 加密）
+      // 存储密码 hash（本机密钥加密）
       const passwordHash = crypto.createHash('sha256').update(password).digest('hex')
       this.store.set('authPassword', this.safeEncrypt(passwordHash) as any)
       this.store.set('authEnabled', this.safeEncrypt('true') as any)
@@ -987,13 +987,12 @@ export class ConfigService {
   // === 迁移 ===
 
   private migrateAuthFields(): void {
-    // 将旧版明文 auth 字段迁移为 safeStorage 加密格式
-    // 如果已经是 safe: 或 lock: 前缀则跳过
+    // 将旧版明文 auth 字段迁移为本机密钥加密格式。
     const rawEnabled: any = this.store.get('authEnabled')
     if (rawEnabled === true || rawEnabled === 'true') {
       this.store.set('authEnabled', this.safeEncrypt('true') as any)
     } else if (rawEnabled === false || rawEnabled === 'false') {
-      // 保持 false 为明文布尔，避免冷启动访问 keychain
+      // 保持 false 为明文布尔，避免无意义的加密写入。
       this.store.set('authEnabled', false as any)
     }
 

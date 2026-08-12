@@ -21227,7 +21227,7 @@ function AiAssistantPage() {
                 placeholder="导入并替换" /></label>
             </>}
             {migrationDialog.status !== 'preview' && <small className="assistant-settings-note">
-                采用 scrypt 派生密钥和 AES-256-GCM 认证加密；目标电脑导入后会自动换成自己的 macOS 钥匙串密钥。
+                采用 scrypt 派生密钥和 AES-256-GCM 认证加密；目标电脑导入后会自动换成自己的本机随机密钥。
               </small>}
             <div className="assistant-modal-actions">
               <button disabled={migratingMemory} onClick={closeMigrationDialog}>取消</button>
