@@ -335,6 +335,50 @@ export function getFullIdentityScanSchedule(
   }
 }
 
+export function projectIdentityScanDiagnostics(
+  scan: Record<string, any>,
+  schedule: ReturnType<typeof getFullIdentityScanSchedule>
+): Record<string, unknown> {
+  return {
+    lastFullScanAt: scan.lastFullScanAt || null,
+    lastRunAt: scan.lastRunAt || null,
+    lastMode: scan.lastMode || null,
+    lastCandidateCount: Number(scan.lastCandidateCount || 0),
+    contextualRelations: Number(scan.contextualRelations || 0),
+    contextualEligibleNeighbors: Number(scan.contextualEligibleNeighbors || 0),
+    contextualSkippedHubs: Number(scan.contextualSkippedHubs || 0),
+    contextualPairCandidates: Number(scan.contextualPairCandidates || 0),
+    contextualTruncated: Boolean(scan.contextualTruncated),
+    contextualRetiredCandidates: Number(scan.contextualRetiredCandidates || 0),
+    versionRetiredCandidates: Number(scan.versionRetiredCandidates || 0),
+    versionRegeneratedCandidates: Number(scan.versionRegeneratedCandidates || 0),
+    ruleRetiredCandidates: Number(scan.ruleRetiredCandidates || 0),
+    fullPairCandidates: Number(scan.fullPairCandidates || 0),
+    fullLargestNameBucket: Number(scan.fullLargestNameBucket || 0),
+    fullTruncated: Boolean(scan.fullTruncated),
+    fullScanProcessedPairs: Number(scan.fullScanProcessedPairs || 0),
+    decisionLookupPairs: Number(scan.decisionLookupPairs || 0),
+    decisionLookupQueries: Number(scan.decisionLookupQueries || 0),
+    decisionLookupDurationMs: Number(scan.decisionLookupDurationMs || 0),
+    decisionLookupAt: scan.decisionLookupAt || null,
+    vectorEligible: Number(scan.vectorEligible || 0),
+    vectorPendingBefore: Number(scan.vectorPendingBefore || 0),
+    vectorProbes: Number(scan.vectorProbes || 0),
+    vectorComparisons: Number(scan.vectorComparisons || 0),
+    vectorMatchedComparisons: Number(scan.vectorMatchedComparisons || 0),
+    vectorProbesWithMatches: Number(scan.vectorProbesWithMatches || 0),
+    vectorRepresentedProbes: Number(scan.vectorRepresentedProbes || 0),
+    vectorTruncated: Boolean(scan.vectorTruncated),
+    vectorScanDurationMs: Number(scan.vectorScanDurationMs || 0),
+    vectorPendingAfter: Number(scan.vectorPendingAfter || 0),
+    vectorRetiredCandidates: Number(scan.vectorRetiredCandidates || 0),
+    vectorCheckpointCommitted: Boolean(scan.vectorCheckpointCommitted),
+    vectorContinuationAt: scan.vectorContinuationAt || null,
+    vectorContinuationError: scan.vectorContinuationError || null,
+    ...schedule
+  }
+}
+
 export function buildNameBuckets(entities: IdentityCandidateEntity[]): Map<string, string[]> {
   const buckets = new Map<string, string[]>()
   for (const entity of entities) {

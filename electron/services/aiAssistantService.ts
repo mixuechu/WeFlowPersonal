@@ -439,6 +439,7 @@ import {
   planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
   planStaleVectorIdentityReviews,
+  projectIdentityScanDiagnostics,
   resolveModelIdentitySuggestionTarget,
   type IdentityCandidateLookup,
   isNegativeDecisionCurrent
@@ -6277,13 +6278,13 @@ export class AiAssistantService {
       graphRevision,
       graphReviewRevision,
       graphReviewStorage: this.graphReviewStorage,
-      identityDisambiguation: {
-        ...this.state.graph.identityScan,
-        ...getFullIdentityScanSchedule(
+      identityDisambiguation: projectIdentityScanDiagnostics(
+        this.state.graph.identityScan,
+        getFullIdentityScanSchedule(
           this.state.graph.entities.length,
           this.state.graph.identityScan.lastFullScanAt
         )
-      },
+      ),
       mergeHistoryArchive: {
         ...mergeHistoryArchiveStats,
         snapshotStorage: identityMergeSnapshotStorage,
