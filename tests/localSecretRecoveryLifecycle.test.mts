@@ -75,3 +75,32 @@ test('missing primary and replica fail closed when encrypted configuration alrea
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('unavailable master key rejects new secrets without partially saving ordinary settings', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-local-key-write-gate-'))
+  process.env.WEFLOW_WORKER = '1'
+  process.env.WEFLOW_CONFIG_CWD = directory
+  const { ConfigService } = await import('../electron/services/config.ts')
+  ;(ConfigService as any).instance = undefined
+  try {
+    const config = new ConfigService()
+    config.set('aiAssistantApiKey', 'existing-secret')
+    const keyPath = join(directory, 'secrets', 'local-master-key.bin')
+    writeFileSync(keyPath, Buffer.alloc(31, 9))
+    ;(ConfigService as any).instance = undefined
+    const unavailable = new ConfigService()
+    const before = readFileSync(join(directory, 'WeFlow-config.json'), 'utf8')
+    assert.throws(() => unavailable.setMany({
+      aiAssistantOwnerName: '不应部分保存',
+      aiAssistantApiKey: 'new-plaintext-secret'
+    }), /主密钥不可用/)
+    const after = readFileSync(join(directory, 'WeFlow-config.json'), 'utf8')
+    assert.equal(after, before)
+    assert.doesNotMatch(after, /new-plaintext-secret|不应部分保存/)
+    assert.doesNotThrow(() => unavailable.set('aiAssistantApiKey', ''))
+    assert.equal(unavailable.get('aiAssistantApiKey'), '')
+  } finally {
+    ;(ConfigService as any).instance = undefined
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

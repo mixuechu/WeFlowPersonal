@@ -48,3 +48,9 @@ test('application lock verification recognizes the new local encrypted boolean',
   assert.match(verifyBody, /rawEnabled\.startsWith\(LOCAL_PREFIX\)/)
   assert.match(verifyBody, /this\.safeDecrypt\(rawEnabled\) === 'true'/)
 })
+
+test('new sensitive writes fail closed instead of falling back to plaintext', () => {
+  const encryptBody = config.slice(config.indexOf('private safeEncrypt'), config.indexOf('private safeDecrypt'))
+  assert.match(encryptBody, /本机主密钥不可用，敏感配置未写入/)
+  assert.doesNotMatch(encryptBody, /if \(!this\.localSecretKey\) return plaintext/)
+})

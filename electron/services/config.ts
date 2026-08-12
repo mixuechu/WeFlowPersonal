@@ -627,7 +627,9 @@ export class ConfigService {
   private safeEncrypt(plaintext: string): string {
     if (!plaintext) return ''
     if (plaintext.startsWith(LOCAL_PREFIX) || plaintext.startsWith(SAFE_PREFIX)) return plaintext
-    if (!this.localSecretKey) return plaintext
+    if (!this.localSecretKey) {
+      throw new Error('本机主密钥不可用，敏感配置未写入；请先保留现场并检查隐私诊断')
+    }
     const nonce = crypto.randomBytes(12)
     const cipher = crypto.createCipheriv('aes-256-gcm', this.localSecretKey, nonce)
     const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])

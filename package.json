@@ -271,6 +271,7 @@
       "dist-electron/**/*"
     ],
     "afterPack": "scripts/after-pack.cjs",
+    "afterSign": "scripts/after-sign.cjs",
     "asarUnpack": [
       "node_modules/silk-wasm/**/*",
       "node_modules/sherpa-onnx-node/**/*",

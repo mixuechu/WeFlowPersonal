@@ -184,17 +184,6 @@ module.exports = async function afterPack(context) {
     }
   }
 
-  // 本地构建跳过 electron-builder 的在线时间戳签名后，在这里使用固定的
-  // Apple Development 身份签名，保持应用和系统 helper 代码身份稳定；
-  // 没有本地证书时才降级为 ad-hoc 签名。
-  if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === 'false') {
-    const identity = findStableLocalSigningIdentity()
-    const signArgs = ['--force', '--deep', '--timestamp=none', '--sign', identity || '-']
-    if (identity) signArgs.push('--entitlements', join(process.cwd(), 'electron', 'entitlements.mac.plist'))
-    signArgs.push(appPath)
-    execFileSync('codesign', signArgs, {
-      stdio: 'inherit',
-    })
-    console.log(`[afterPack] Applied ${identity ? `stable local signature ${identity}` : 'ad-hoc fallback signature'} to ${appPath}`)
-  }
+  // The final bundle is signed in afterSign. electron-builder still mutates the
+  // bundle after afterPack, so signing it here leaves a stale resource seal.
 }

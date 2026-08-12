@@ -56,11 +56,18 @@ test('mac signing skips sealed Electron data resources but never native code', (
 
 test('mac signing never discovers a private identity or triggers Keychain UI implicitly', () => {
   const afterPack = readFileSync(new URL('../scripts/after-pack.cjs', import.meta.url), 'utf8')
+  const afterSign = readFileSync(new URL('../scripts/after-sign.cjs', import.meta.url), 'utf8')
+  const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8'))
   const identityBody = afterPack.slice(
     afterPack.indexOf('function findStableLocalSigningIdentity()'),
     afterPack.indexOf('module.exports =')
   )
   assert.match(identityBody, /WEFLOW_LOCAL_SIGN_IDENTITY/)
   assert.doesNotMatch(identityBody, /security|find-identity|WeFlow Personal Local Signing|Apple Development/)
-  assert.match(afterPack, /identity \|\| '-'/)
+  assert.equal(packageJson.build?.afterSign, 'scripts/after-sign.cjs')
+  assert.match(afterSign, /WEFLOW_LOCAL_SIGN_IDENTITY/)
+  assert.match(afterSign, /identity \|\| '-'/)
+  assert.doesNotMatch(afterSign, /security|find-identity|weflow-local-signing|Apple Development/)
+  assert.match(afterSign, /--verify', '--deep', '--strict'/)
+  assert.doesNotMatch(afterPack, /signArgs\.push\(appPath\)/)
 })
