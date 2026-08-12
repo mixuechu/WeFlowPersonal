@@ -81,3 +81,51 @@ test('application lock rejects corrupted encrypted fields without committing par
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('application lock transitions use one durable commit and publish runtime state only after success', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-app-lock-atomic-'))
+  process.env.WEFLOW_WORKER = '1'
+  process.env.WEFLOW_CONFIG_CWD = directory
+  const { ConfigService } = await import('../electron/services/config.ts')
+  ;(ConfigService as any).instance = undefined
+  try {
+    const config = new ConfigService()
+    config.setMany({ decryptKey: 'atomic-secret', imageXorKey: 17 })
+    const configPath = join(directory, 'WeFlow-config.json')
+    const before = readFileSync(configPath, 'utf8')
+    const originalStore = (config as any).store
+    ;(config as any).store = {
+      get: originalStore.get.bind(originalStore),
+      set: originalStore.set.bind(originalStore),
+      get store() { return originalStore.store },
+      set store(_value: unknown) { throw new Error('injected atomic commit failure') }
+    }
+    const failed = config.enableLock('atomic-password')
+    assert.equal(failed.success, false)
+    assert.match(failed.error || '', /injected atomic commit failure/)
+    assert.equal(readFileSync(configPath, 'utf8'), before)
+    assert.equal((config as any).unlockPassword, null)
+    assert.equal((config as any).unlockedKeys.size, 0)
+
+    ;(config as any).store = originalStore
+    let commits = 0
+    ;(config as any).commitStoredValues = function (values: unknown) {
+      commits += 1
+      const next = { ...originalStore.store, ...(values as object) }
+      originalStore.store = next
+    }
+    assert.equal(config.enableLock('atomic-password').success, true)
+    assert.equal(commits, 1)
+    assert.equal(config.changePassword('atomic-password', 'changed-password').success, true)
+    assert.equal(commits, 2)
+    config.setHelloSecret('changed-password')
+    assert.equal(commits, 3)
+    config.clearHelloSecret()
+    assert.equal(commits, 4)
+    assert.equal(config.disableLock('changed-password').success, true)
+    assert.equal(commits, 5)
+  } finally {
+    ;(ConfigService as any).instance = undefined
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

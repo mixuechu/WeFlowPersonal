@@ -622,6 +622,11 @@ export class ConfigService {
     ;(this.store as any).store = next
   }
 
+  private commitStoredValues(values: Partial<ConfigSchema>): void {
+    const next = { ...(this.store.store as ConfigSchema), ...values }
+    ;(this.store as any).store = next
+  }
+
   // === 加密/解密工具 ===
 
   private safeEncrypt(plaintext: string): string {
@@ -888,14 +893,17 @@ export class ConfigService {
     }
     return result
   }
-  private lockEncryptWxidConfigs(configs: ConfigSchema['wxidConfigs']): ConfigSchema['wxidConfigs'] {
+  private lockEncryptWxidConfigs(
+    configs: ConfigSchema['wxidConfigs'],
+    password = this.unlockPassword!
+  ): ConfigSchema['wxidConfigs'] {
     const result: ConfigSchema['wxidConfigs'] = {}
     for (const [wxid, cfg] of Object.entries(configs)) {
       result[wxid] = { ...cfg }
-      if (cfg.decryptKey) result[wxid].decryptKey = this.lockEncrypt(cfg.decryptKey, this.unlockPassword!) as any
-      if (cfg.imageAesKey) result[wxid].imageAesKey = this.lockEncrypt(cfg.imageAesKey, this.unlockPassword!) as any
+      if (cfg.decryptKey) result[wxid].decryptKey = this.lockEncrypt(cfg.decryptKey, password) as any
+      if (cfg.imageAesKey) result[wxid].imageAesKey = this.lockEncrypt(cfg.imageAesKey, password) as any
       if (cfg.imageXorKey !== undefined) {
-        (result[wxid] as any).imageXorKey = this.lockEncrypt(String(cfg.imageXorKey), this.unlockPassword!)
+        (result[wxid] as any).imageXorKey = this.lockEncrypt(String(cfg.imageXorKey), password)
       }
     }
     return result
@@ -911,32 +919,27 @@ export class ConfigService {
       const imageXorKey = this.get('imageXorKey')
       const wxidConfigs = this.get('wxidConfigs')
 
-      // 存储密码 hash（本机密钥加密）
       const passwordHash = crypto.createHash('sha256').update(password).digest('hex')
-      this.store.set('authPassword', this.safeEncrypt(passwordHash) as any)
-      this.store.set('authEnabled', this.safeEncrypt('true') as any)
-
-      // 设置运行时状态
-      this.unlockPassword = password
-      this.unlockedKeys.set('decryptKey', decryptKey)
-      this.unlockedKeys.set('imageAesKey', imageAesKey)
-      this.unlockedKeys.set('imageXorKey', imageXorKey)
-
-      // 用密码派生密钥重新加密所有敏感字段
-      if (decryptKey) this.store.set('decryptKey', this.lockEncrypt(String(decryptKey), password) as any)
-      if (imageAesKey) this.store.set('imageAesKey', this.lockEncrypt(String(imageAesKey), password) as any)
-      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.lockEncrypt(String(imageXorKey), password) as any)
-
-      // 处理 wxidConfigs 中的嵌套密钥
-      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
-        const lockedConfigs = this.lockEncryptWxidConfigs(wxidConfigs)
-        this.store.set('wxidConfigs', lockedConfigs)
-        for (const [wxid, cfg] of Object.entries(wxidConfigs)) {
-          if (cfg.decryptKey) this.unlockedKeys.set(`wxid:${wxid}:decryptKey`, cfg.decryptKey)
-          if (cfg.imageAesKey) this.unlockedKeys.set(`wxid:${wxid}:imageAesKey`, cfg.imageAesKey)
-          if (cfg.imageXorKey !== undefined) this.unlockedKeys.set(`wxid:${wxid}:imageXorKey`, cfg.imageXorKey)
-        }
+      const stored: Partial<ConfigSchema> = {
+        authPassword: this.safeEncrypt(passwordHash) as any,
+        authEnabled: this.safeEncrypt('true') as any,
+        decryptKey: decryptKey ? this.lockEncrypt(String(decryptKey), password) as any : '',
+        imageAesKey: imageAesKey ? this.lockEncrypt(String(imageAesKey), password) as any : '',
+        imageXorKey: this.lockEncrypt(String(imageXorKey), password) as any,
+        wxidConfigs: this.lockEncryptWxidConfigs(wxidConfigs, password)
       }
+      this.commitStoredValues(stored)
+
+      const unlocked = new Map<string, any>([
+        ['decryptKey', decryptKey], ['imageAesKey', imageAesKey], ['imageXorKey', imageXorKey]
+      ])
+      for (const [wxid, cfg] of Object.entries(wxidConfigs)) {
+        if (cfg.decryptKey) unlocked.set(`wxid:${wxid}:decryptKey`, cfg.decryptKey)
+        if (cfg.imageAesKey) unlocked.set(`wxid:${wxid}:imageAesKey`, cfg.imageAesKey)
+        if (cfg.imageXorKey !== undefined) unlocked.set(`wxid:${wxid}:imageXorKey`, cfg.imageXorKey)
+      }
+      this.unlockedKeys = unlocked
+      this.unlockPassword = password
 
       return { success: true }
     } catch (e: any) {
@@ -1026,32 +1029,26 @@ export class ConfigService {
         return { success: false, error: '密码错误' }
       }
 
-      // 先解密所有 lock: 字段
       if (this.unlockedKeys.size === 0) {
-        this.unlock(password)
+        const unlocked = this.unlock(password)
+        if (!unlocked.success) return unlocked
       }
 
-      // 将所有密钥转回 safe: 格式
       const decryptKey = this.unlockedKeys.get('decryptKey')
       const imageAesKey = this.unlockedKeys.get('imageAesKey')
       const imageXorKey = this.unlockedKeys.get('imageXorKey')
 
-      if (decryptKey) this.store.set('decryptKey', this.safeEncrypt(String(decryptKey)) as any)
-      if (imageAesKey) this.store.set('imageAesKey', this.safeEncrypt(String(imageAesKey)) as any)
-      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.safeEncrypt(String(imageXorKey)) as any)
-
-      // 转换 wxidConfigs
       const wxidConfigs = this.get('wxidConfigs')
-      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
-        const safeConfigs = this.encryptWxidConfigs(wxidConfigs)
-        this.store.set('wxidConfigs', safeConfigs)
-      }
-
-      // 清除 auth 字段
-      this.store.set('authEnabled', false as any)
-      this.store.set('authPassword', '' as any)
-      this.store.set('authUseHello', false as any)
-      this.store.set('authHelloSecret', '' as any)
+      this.commitStoredValues({
+        decryptKey: decryptKey ? this.safeEncrypt(String(decryptKey)) as any : '',
+        imageAesKey: imageAesKey ? this.safeEncrypt(String(imageAesKey)) as any : '',
+        imageXorKey: imageXorKey !== undefined ? this.safeEncrypt(String(imageXorKey)) as any : 0,
+        wxidConfigs: this.encryptWxidConfigs(wxidConfigs),
+        authEnabled: false,
+        authPassword: '',
+        authUseHello: false,
+        authHelloSecret: ''
+      })
 
       // 清除运行时状态
       this.unlockedKeys.clear()
@@ -1074,35 +1071,25 @@ export class ConfigService {
 
       // 确保已解锁
       if (this.unlockedKeys.size === 0) {
-        this.unlock(oldPassword)
+        const unlocked = this.unlock(oldPassword)
+        if (!unlocked.success) return unlocked
       }
 
-      // 用新密码重新加密所有密钥
       const decryptKey = this.unlockedKeys.get('decryptKey')
       const imageAesKey = this.unlockedKeys.get('imageAesKey')
       const imageXorKey = this.unlockedKeys.get('imageXorKey')
 
-      if (decryptKey) this.store.set('decryptKey', this.lockEncrypt(String(decryptKey), newPassword) as any)
-      if (imageAesKey) this.store.set('imageAesKey', this.lockEncrypt(String(imageAesKey), newPassword) as any)
-      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.lockEncrypt(String(imageXorKey), newPassword) as any)
-
-      // 重新加密 wxidConfigs
       const wxidConfigs = this.get('wxidConfigs')
-      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
-        this.unlockPassword = newPassword
-        const lockedConfigs = this.lockEncryptWxidConfigs(wxidConfigs)
-        this.store.set('wxidConfigs', lockedConfigs)
-      }
-
-      // 更新密码 hash
       const newHash = crypto.createHash('sha256').update(newPassword).digest('hex')
-      this.store.set('authPassword', this.safeEncrypt(newHash) as any)
-
-      // 更新 Hello secret（如果启用了 Hello）
       const useHello = this.get('authUseHello')
-      if (useHello) {
-        this.store.set('authHelloSecret', this.safeEncrypt(newPassword) as any)
-      }
+      this.commitStoredValues({
+        decryptKey: decryptKey ? this.lockEncrypt(String(decryptKey), newPassword) as any : '',
+        imageAesKey: imageAesKey ? this.lockEncrypt(String(imageAesKey), newPassword) as any : '',
+        imageXorKey: imageXorKey !== undefined ? this.lockEncrypt(String(imageXorKey), newPassword) as any : 0,
+        wxidConfigs: this.lockEncryptWxidConfigs(wxidConfigs, newPassword),
+        authPassword: this.safeEncrypt(newHash) as any,
+        ...(useHello ? { authHelloSecret: this.safeEncrypt(newPassword) as any } : {})
+      })
 
       this.unlockPassword = newPassword
       return { success: true }
@@ -1114,8 +1101,10 @@ export class ConfigService {
   // === Hello 相关 ===
 
   setHelloSecret(password: string): void {
-    this.store.set('authHelloSecret', this.safeEncrypt(password) as any)
-    this.store.set('authUseHello', this.safeEncrypt('true') as any)
+    this.commitStoredValues({
+      authHelloSecret: this.safeEncrypt(password) as any,
+      authUseHello: this.safeEncrypt('true') as any
+    })
   }
 
   getHelloSecret(): string {
@@ -1125,8 +1114,7 @@ export class ConfigService {
   }
 
   clearHelloSecret(): void {
-    this.store.set('authHelloSecret', '' as any)
-    this.store.set('authUseHello', false as any)
+    this.commitStoredValues({ authHelloSecret: '', authUseHello: false })
   }
 
   // === 迁移 ===
