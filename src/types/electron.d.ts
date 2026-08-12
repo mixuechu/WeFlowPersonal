@@ -1873,6 +1873,8 @@ export interface ElectronAPI {
         hasMore: boolean
         revision: string
         stale: boolean
+        taskArchiveScopeToken?: string
+        taskArchiveScopeStale?: boolean
       }>
       getTaskArchiveProjects: (options?: any) => Promise<{
         items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>

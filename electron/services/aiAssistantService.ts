@@ -212,6 +212,7 @@ import {
   buildTrustedEntityDirectoryScopeToken,
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
+import { buildTaskArchiveScopeToken } from './taskArchiveScope.ts'
 import { resolveOwnerEntityBinding } from './ownerEntityBindingPolicy.ts'
 import {
   assertEntityForgetConfirmation,
@@ -6547,6 +6548,15 @@ export class AiAssistantService {
   }
 
   getTaskArchive(options: any = {}): any {
+    const taskArchiveScopeToken = buildTaskArchiveScopeToken(options)
+    const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    if (offset > 0 && String(options?.taskArchiveScopeToken || '').trim() !== taskArchiveScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: personalMemoryStore.getTaskArchiveRevision(),
+        stale: true, taskArchiveScopeStale: true, taskArchiveScopeToken
+      }
+    }
     const page = personalMemoryStore.listTaskArchive({
       status: options?.status === 'done' || options?.status === 'cancelled'
         ? options.status
@@ -6560,13 +6570,14 @@ export class AiAssistantService {
       to: String(options?.to || ''),
       entityId: String(options?.entityId || ''),
       limit: Number(options?.limit || 40),
-      offset: Number(options?.offset || 0),
+      offset,
       revision: String(options?.revision || '')
     })
-    if (page.stale) return page
+    if (page.stale) return { ...page, taskArchiveScopeToken }
     const tasks = this.getTaskStateIndex()
     return {
       ...page,
+      taskArchiveScopeToken,
       items: page.items.map((item: any) => {
         const task = tasks.get(String(item.id || ''))
         return {

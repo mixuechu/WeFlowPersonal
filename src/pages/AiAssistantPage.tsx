@@ -1501,6 +1501,8 @@ function AiAssistantPage() {
     hasMore: boolean
     revision?: string
     stale?: boolean
+    taskArchiveScopeToken?: string
+    taskArchiveScopeStale?: boolean
     loading?: boolean
     error?: string
   }>({ items: [], total: 0, hasMore: false })
@@ -5437,11 +5439,14 @@ function AiAssistantPage() {
         ...taskArchiveOptions,
         offset: taskArchive.items.length,
         limit: 40,
-        revision: taskArchive.revision
+        revision: taskArchive.revision,
+        taskArchiveScopeToken: taskArchive.taskArchiveScopeToken
       })
       if (!taskArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
-        setMessage('历史任务在加载期间已有变化，已自动从第一页刷新')
+        setMessage(result.taskArchiveScopeStale
+          ? '历史任务筛选范围在翻页期间发生变化，已自动从最新第一页刷新'
+          : '历史任务在加载期间已有变化，已自动从第一页刷新')
         setTaskArchiveRefreshKey(value => value + 1)
         return
       }
