@@ -1702,6 +1702,7 @@ export interface ElectronAPI {
         sender?: string
         fromTimestamp?: number
         toTimestamp?: number
+        evidenceScopeToken?: string
       }) => Promise<{
         items: any[]
         total: number
@@ -1711,6 +1712,8 @@ export interface ElectronAPI {
         hasMore: boolean
         revision: string
         stale: boolean
+        evidenceScopeToken?: string
+        evidenceScopeStale?: boolean
       }>
       getGraphWorkspace: (options?: {
         query?: string
@@ -2237,6 +2240,7 @@ export interface ElectronAPI {
           expectedSearchRevision?: string
           expectedContentHash?: string
           expectedEvidenceAuthorityRevision?: number
+          evidenceScopeToken?: string
         }
       ) => Promise<{
         items: any[]
@@ -2249,6 +2253,8 @@ export interface ElectronAPI {
         sourceId: string
         revision: string
         stale: boolean
+        evidenceScopeToken?: string
+        evidenceScopeStale?: boolean
         searchSnapshotStale?: boolean
         evidenceSnapshotStale?: boolean
         searchRevision?: string

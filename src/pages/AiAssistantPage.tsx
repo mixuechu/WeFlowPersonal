@@ -1343,6 +1343,7 @@ function AiAssistantPage() {
     hasMore: boolean
     filters: MemoryEvidenceArchiveFilters
     revision?: string
+    evidenceScopeToken?: string
     stale?: boolean
     status: 'loading' | 'ready' | 'error'
     error?: string
@@ -9235,6 +9236,7 @@ function AiAssistantPage() {
         hasMore: page.hasMore,
         filters,
         revision: page.revision,
+        evidenceScopeToken: page.evidenceScopeToken,
         status: 'ready'
       })
     } catch (error: any) {
@@ -9271,6 +9273,7 @@ function AiAssistantPage() {
           offset: archive.items.length,
           limit: 40,
           revision: archive.revision,
+          evidenceScopeToken: archive.evidenceScopeToken,
           query: archive.filters.query,
           source: archive.filters.source,
           session: archive.filters.session,
@@ -9288,7 +9291,9 @@ function AiAssistantPage() {
         )
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
-        setMessage('原文证据在翻页期间发生变化，已重新载入最新证据。')
+        setMessage(page.evidenceScopeStale
+          ? '原文筛选范围在翻页期间发生变化，已从第一页重新载入，避免混合两组证据。'
+          : '原文证据在翻页期间发生变化，已重新载入最新证据。')
         void openMemoryEvidenceArchive(
           archive.documentType,
           archive.sourceId,
@@ -9311,7 +9316,8 @@ function AiAssistantPage() {
           items: [...current.items, ...additions],
           total: page.total,
           hasMore: page.hasMore,
-          revision: page.revision
+          revision: page.revision,
+          evidenceScopeToken: page.evidenceScopeToken
         }
       })
     } catch (error: any) {

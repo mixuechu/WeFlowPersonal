@@ -51,3 +51,16 @@ test('memory search continuation binds the original query and complete scope', (
   assert.match(page, /page\.pageScopeStale[\s\S]*?避免混合两次查询/)
   assert.match(types, /pageScopeStale\?: boolean/)
 })
+
+test('memory and graph-review evidence continuations bind every archive filter', () => {
+  const service = read('electron/services/aiAssistantService.ts')
+  const page = read('src/pages/AiAssistantPage.tsx')
+  const types = read('src/types/electron.d.ts')
+  assert.match(service, /buildMemoryEvidenceArchiveScopeToken\(\s*'memory'/)
+  assert.match(service, /buildMemoryEvidenceArchiveScopeToken\(\s*'graph_review'/)
+  assert.match(service, /offset > 0 && String\([^)]*evidenceScopeToken/)
+  assert.match(service, /evidenceScopeStale: true,[\s\S]*?evidenceScopeToken/)
+  assert.match(page, /evidenceScopeToken: archive\.evidenceScopeToken/)
+  assert.match(page, /page\.evidenceScopeStale[\s\S]*?避免混合两组证据/)
+  assert.match(types, /evidenceScopeStale\?: boolean/)
+})

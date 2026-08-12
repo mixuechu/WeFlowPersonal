@@ -90,6 +90,7 @@ import {
   type MemorySearchOptions
 } from './memorySearchFilters'
 import { runWithMemoryScopeRevalidation } from './memoryScopeRevalidation.ts'
+import { buildMemoryEvidenceArchiveScopeToken } from './memoryEvidenceArchiveScope.ts'
 import {
   applyMemorySearchFeedback,
   buildMemorySearchFeedbackContext,
@@ -6804,18 +6805,28 @@ export class AiAssistantService {
     if (!normalizedId || normalizedId.length > 512 || /[\u0000-\u001f]/.test(normalizedId)) {
       throw new Error('审阅记录标识无效')
     }
-    return personalMemoryStore.listGraphReviewEvidencePage({
-      reviewId: normalizedId,
-      offset: Number(options?.offset || 0),
-      limit: Number(options?.limit || 40),
-      revision: String(options?.revision || ''),
-      query: String(options?.query || ''),
-      source: String(options?.source || ''),
-      session: String(options?.session || ''),
-      sender: String(options?.sender || ''),
-      fromTimestamp: Number(options?.fromTimestamp || 0),
-      toTimestamp: Number(options?.toTimestamp || 0)
-    })
+    const evidenceScope = buildMemoryEvidenceArchiveScopeToken(
+      'graph_review', 'graph_review', normalizedId, options || {}
+    )
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(options?.offset) || 0)))
+    if (offset > 0 && String(options?.evidenceScopeToken || '').trim() !== evidenceScope.token) {
+      return {
+        items: [], total: 0, unfilteredTotal: 0, offset,
+        limit: Math.max(1, Math.min(100, Math.floor(Number(options?.limit) || 40))),
+        hasMore: false, revision: '', stale: true,
+        evidenceScopeStale: true, evidenceScopeToken: evidenceScope.token
+      }
+    }
+    return {
+      ...personalMemoryStore.listGraphReviewEvidencePage({
+        reviewId: normalizedId,
+        offset,
+        limit: Number(options?.limit || 40),
+        revision: String(options?.revision || ''),
+        ...evidenceScope.scope
+      }),
+      evidenceScopeToken: evidenceScope.token
+    }
   }
 
   getGraphWorkspace(options?: Partial<GraphViewportOptions>): any {
@@ -11955,6 +11966,19 @@ export class AiAssistantService {
     if (!normalizedSourceId || normalizedSourceId.length > 512 || /[\u0000-\u001f]/.test(normalizedSourceId)) {
       throw new Error('记忆标识无效')
     }
+    const evidenceScope = buildMemoryEvidenceArchiveScopeToken(
+      'memory', normalizedType, normalizedSourceId, pagination || {}
+    )
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(pagination?.offset) || 0)))
+    if (offset > 0 && String(pagination?.evidenceScopeToken || '').trim() !== evidenceScope.token) {
+      return {
+        items: [], total: 0, unfilteredTotal: 0, hasMore: false, offset,
+        limit: Math.max(1, Math.min(100, Number(pagination?.limit) || 40)),
+        documentType: normalizedType, sourceId: normalizedSourceId,
+        revision: '', stale: true, evidenceScopeStale: true,
+        evidenceScopeToken: evidenceScope.token
+      }
+    }
     const expectedSearchRevision = String(pagination?.expectedSearchRevision || '').trim()
     if (expectedSearchRevision) {
       const snapshot = personalMemoryStore.validateSearchDocumentSnapshot(
@@ -12007,18 +12031,15 @@ export class AiAssistantService {
         }
       }
     }
-    return personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
-      offset: Number(pagination?.offset || 0),
-      limit: Number(pagination?.limit || 40),
-      revision: String(pagination?.revision || ''),
-      query: String(pagination?.query || '').trim().slice(0, 500),
-      source: String(pagination?.source || '').trim().toLowerCase().slice(0, 100),
-      session: String(pagination?.session || '').trim().slice(0, 500),
-      sender: String(pagination?.sender || '').trim().slice(0, 200),
-      role: String(pagination?.role || '').trim().toLowerCase().slice(0, 32),
-      fromTimestamp: Number(pagination?.fromTimestamp || 0),
-      toTimestamp: Number(pagination?.toTimestamp || 0)
-    })
+    return {
+      ...personalMemoryStore.getDocumentEvidencePage(normalizedType, normalizedSourceId, {
+        offset,
+        limit: Number(pagination?.limit || 40),
+        revision: String(pagination?.revision || ''),
+        ...evidenceScope.scope
+      }),
+      evidenceScopeToken: evidenceScope.token
+    }
   }
 
   private scheduleVectorIndexContinuation(delayMs = 1_000): void {
