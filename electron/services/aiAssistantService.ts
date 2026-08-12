@@ -437,6 +437,7 @@ import {
   identityPairKey,
   listIndexedIdentityCandidates,
   normalizePersistedIdentityScanState,
+  planIdentityNameScanRetry,
   planStaleGraphIdentityReviews,
   planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
@@ -696,6 +697,8 @@ type AssistantState = {
       fullScanProcessedPairs: number
       fullScanContinuationAt: string | null
       fullScanContinuationError: string | null
+      fullScanContinuationFailures: number
+      fullScanNextAttemptAt: string | null
       decisionLookupPairs: number
       decisionLookupQueries: number
       decisionLookupDurationMs: number
@@ -786,6 +789,7 @@ const EMPTY_STATE: AssistantState = {
     fullPairCandidates: 0, fullLargestNameBucket: 0, fullTruncated: false,
     fullScanCursor: null, fullScanSnapshotFingerprint: null, fullScanProcessedPairs: 0,
     fullScanContinuationAt: null, fullScanContinuationError: null,
+    fullScanContinuationFailures: 0, fullScanNextAttemptAt: null,
     decisionLookupPairs: 0, decisionLookupQueries: 0, decisionLookupDurationMs: 0,
     decisionLookupAt: null,
     vectorEligible: 0, vectorPendingBefore: 0, vectorProbes: 0,
@@ -3985,7 +3989,10 @@ export class AiAssistantService {
       fullTruncated: pairPage.hasMore,
       fullScanCursor: pairPage.nextCursor,
       fullScanSnapshotFingerprint: pairPage.hasMore ? pairPage.snapshotFingerprint : null,
-      fullScanProcessedPairs: pairPage.hasMore ? processedPairs : 0
+      fullScanProcessedPairs: pairPage.hasMore ? processedPairs : 0,
+      fullScanContinuationError: null,
+      fullScanContinuationFailures: 0,
+      fullScanNextAttemptAt: null
     }
   }
 
@@ -4220,6 +4227,8 @@ export class AiAssistantService {
   private continueFullIdentityScanWhileIdle(now: Date): string | null {
     const admission = identityNameScanIdleStatus({
       pending: Boolean(this.state.graph.identityScan.fullScanCursor),
+      nextAttemptAt: this.state.graph.identityScan.fullScanNextAttemptAt,
+      nowMs: now.getTime(),
       maintenance: Boolean(this.memoryMaintenanceLease),
       syncing: Boolean(this.activeSync),
       vectorIndexing: Boolean(this.vectorIndexPromise),
@@ -4229,25 +4238,40 @@ export class AiAssistantService {
     })
     if (admission === 'no_pending_scan') return null
     if (admission === 'busy') return 'identity_name_scan_busy'
+    if (admission === 'cooling_down') return 'identity_name_scan_cooling_down'
     const graphBefore = structuredClone(this.state.graph)
     const observedAt = now.toISOString()
     try {
       this.runScheduledIdentityScan(observedAt)
       this.state.graph.identityScan.fullScanContinuationAt = observedAt
       this.state.graph.identityScan.fullScanContinuationError = null
+      this.state.graph.identityScan.fullScanContinuationFailures = 0
+      this.state.graph.identityScan.fullScanNextAttemptAt = null
       this.saveState(true)
       return this.state.graph.identityScan.fullScanCursor
         ? 'identity_name_scan_advanced'
         : 'identity_name_scan_completed'
     } catch (error) {
-      const sqlCommitId = personalMemoryStore.getGraphCommitId()
-      const sqlSnapshot = personalMemoryStore.loadGraphSnapshot()
-      this.state.graph = recoverGraphStateFromSql(graphBefore, sqlSnapshot, sqlCommitId)
+      const graphAfter = this.state.graph
+      try {
+        const sqlCommitId = personalMemoryStore.getGraphCommitId()
+        const sqlSnapshot = personalMemoryStore.loadGraphSnapshot()
+        this.state.graph = recoverGraphStateFromSql(graphBefore, sqlSnapshot, sqlCommitId)
+      } catch {
+        this.state.graph = graphAfter
+      }
+      const retry = planIdentityNameScanRetry(
+        graphBefore.identityScan.fullScanContinuationFailures,
+        now
+      )
       this.state.graph.identityScan = {
         ...graphBefore.identityScan,
         fullScanContinuationAt: observedAt,
-        fullScanContinuationError: sanitizeDiagnosticText(error)
+        fullScanContinuationError: sanitizeDiagnosticText(error),
+        fullScanContinuationFailures: retry.failures,
+        fullScanNextAttemptAt: retry.nextAttemptAt
       }
+      try { this.persistCrossStoreMutationState() } catch {}
       return 'identity_name_scan_failed'
     }
   }

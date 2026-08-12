@@ -17,6 +17,10 @@ const defaults = {
   fullScanCursor: null,
   fullScanSnapshotFingerprint: null,
   fullScanProcessedPairs: 0,
+  fullScanContinuationAt: null,
+  fullScanContinuationError: null,
+  fullScanContinuationFailures: 0,
+  fullScanNextAttemptAt: null,
   contextualTruncated: false,
   decisionLookupAt: null,
   vectorContinuationAt: null,
@@ -36,6 +40,8 @@ test('valid identity continuation survives restart with bounded normalized diagn
     fullScanCursor: page.nextCursor,
     fullScanSnapshotFingerprint: page.snapshotFingerprint,
     fullScanProcessedPairs: 2,
+    fullScanContinuationFailures: 2,
+    fullScanNextAttemptAt: '2026-08-12T00:15:00Z',
     futurePrivateField: 'discarded'
   }, defaults)
   assert.equal(normalized.lastFullScanAt, '2026-07-31T16:00:00.000Z')
@@ -43,6 +49,8 @@ test('valid identity continuation survives restart with bounded normalized diagn
   assert.equal(normalized.lastCandidateCount, 3)
   assert.equal(normalized.fullScanCursor, page.nextCursor)
   assert.equal(normalized.fullScanProcessedPairs, 2)
+  assert.equal(normalized.fullScanContinuationFailures, 2)
+  assert.equal(normalized.fullScanNextAttemptAt, '2026-08-12T00:15:00.000Z')
   assert.equal('futurePrivateField' in normalized, false)
 })
 
@@ -56,6 +64,8 @@ test('malformed or incomplete identity continuation fails closed to a fresh auth
     fullScanCursor: 'not-base64-json',
     fullScanSnapshotFingerprint: 'a'.repeat(64),
     fullScanProcessedPairs: 99,
+    fullScanContinuationFailures: 8,
+    fullScanNextAttemptAt: '2026-08-12T06:00:00Z',
     fullTruncated: true
   }, {
     fullScanCursor: Buffer.from(JSON.stringify(['同名', 'a', 'b'])).toString('base64url'),
@@ -68,6 +78,8 @@ test('malformed or incomplete identity continuation fails closed to a fresh auth
     assert.equal(normalized.fullScanSnapshotFingerprint, null)
     assert.equal(normalized.fullScanProcessedPairs, 0)
     assert.equal(normalized.fullTruncated, false)
+    assert.equal(normalized.fullScanContinuationFailures, 0)
+    assert.equal(normalized.fullScanNextAttemptAt, null)
   }
 })
 
@@ -79,7 +91,9 @@ test('identity restart normalization bounds invalid timestamps, counters, enums 
     lastCandidateCount: -10,
     fullPairCandidates: Infinity,
     contextualTruncated: 'false',
-    vectorContinuationError: '错'.repeat(800)
+    vectorContinuationError: '错'.repeat(800),
+    fullScanContinuationFailures: -4,
+    fullScanNextAttemptAt: 'not-a-time'
   }, defaults)
   assert.equal(normalized.lastFullScanAt, null)
   assert.equal(normalized.lastRunAt, null)
@@ -88,4 +102,6 @@ test('identity restart normalization bounds invalid timestamps, counters, enums 
   assert.equal(normalized.fullPairCandidates, 0)
   assert.equal(normalized.contextualTruncated, false)
   assert.equal(normalized.vectorContinuationError.length, 500)
+  assert.equal(normalized.fullScanContinuationFailures, 0)
+  assert.equal(normalized.fullScanNextAttemptAt, null)
 })

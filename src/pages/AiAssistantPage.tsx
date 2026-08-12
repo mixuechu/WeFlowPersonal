@@ -15170,6 +15170,7 @@ function AiAssistantPage() {
             {identityDisambiguation.fullTruncated && <span className="warning"><b>每周巡检正在续跑</b><small>已完成 {identityDisambiguation.fullScanProcessedPairs || 0} 对；稳定断点已加密保存，后续同步继续下一页</small></span>}
             {identityDisambiguation.fullScanContinuationAt && <span><b>{new Date(identityDisambiguation.fullScanContinuationAt).toLocaleString('zh-CN', { hour12: false })}</b><small>最近空闲同名巡检续跑</small></span>}
             {identityDisambiguation.fullScanContinuationError && <span className="warning"><b>本轮同名巡检未提交</b><small>{identityDisambiguation.fullScanContinuationError}；断点保持原位，空闲后自动重试</small></span>}
+            {identityDisambiguation.fullScanNextAttemptAt && <span className="warning"><b>{new Date(identityDisambiguation.fullScanNextAttemptAt).toLocaleString('zh-CN', { hour12: false })}</b><small>同名巡检下次自动重试 · 已连续失败 {identityDisambiguation.fullScanContinuationFailures || 0} 次</small></span>}
             <span><b>{identityDisambiguation.decisionLookupPairs || 0}</b><small>本轮身份决定匹配对</small></span>
             <span><b>{identityDisambiguation.decisionLookupQueries || 0} 次 · {Number(identityDisambiguation.decisionLookupDurationMs || 0).toFixed(1)}ms</b><small>SQLCipher 批量决定查询</small></span>
             <span><b>{identityDisambiguation.vectorProbes || 0} / {identityDisambiguation.vectorPendingBefore || 0}</b><small>本轮向量探针 / 扫描前待处理</small></span>

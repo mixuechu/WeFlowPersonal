@@ -49,16 +49,39 @@ const IDENTITY_SCAN_CURSOR_MAX_CHARS = 2_048
 
 export function identityNameScanIdleStatus(input: {
   pending: boolean
+  nextAttemptAt?: string | null
+  nowMs?: number
   maintenance: boolean
   syncing: boolean
   vectorIndexing: boolean
   searchRepairing: boolean
   resourceEnriching: boolean
   taskAuditing: boolean
-}): 'no_pending_scan' | 'busy' | 'due' {
+}): 'no_pending_scan' | 'busy' | 'cooling_down' | 'due' {
   if (!input.pending) return 'no_pending_scan'
-  return input.maintenance || input.syncing || input.vectorIndexing || input.searchRepairing ||
-    input.resourceEnriching || input.taskAuditing ? 'busy' : 'due'
+  if (input.maintenance || input.syncing || input.vectorIndexing || input.searchRepairing ||
+      input.resourceEnriching || input.taskAuditing) return 'busy'
+  const nextAttemptAt = Date.parse(String(input.nextAttemptAt || ''))
+  if (Number.isFinite(nextAttemptAt) && nextAttemptAt > (input.nowMs ?? Date.now())) {
+    return 'cooling_down'
+  }
+  return 'due'
+}
+
+const IDENTITY_NAME_SCAN_RETRY_MINUTES = [5, 15, 30, 60, 180, 360] as const
+
+export function planIdentityNameScanRetry(previousFailures: unknown, now: Date): {
+  failures: number
+  nextAttemptAt: string
+} {
+  const failures = Math.min(Number.MAX_SAFE_INTEGER, boundedCount(previousFailures) + 1)
+  const delayMinutes = IDENTITY_NAME_SCAN_RETRY_MINUTES[
+    Math.min(failures - 1, IDENTITY_NAME_SCAN_RETRY_MINUTES.length - 1)
+  ]
+  return {
+    failures,
+    nextAttemptAt: new Date(now.getTime() + delayMinutes * 60_000).toISOString()
+  }
 }
 
 function boundedCount(value: unknown): number {
@@ -103,6 +126,10 @@ export function normalizePersistedIdentityScanState(
   normalized.vectorContinuationError = String(value.vectorContinuationError || '').slice(0, 500) || null
   normalized.fullScanContinuationAt = validIsoOrNull(value.fullScanContinuationAt)
   normalized.fullScanContinuationError = String(value.fullScanContinuationError || '').slice(0, 500) || null
+  normalized.fullScanContinuationFailures = continuationValid
+    ? boundedCount(value.fullScanContinuationFailures) : 0
+  normalized.fullScanNextAttemptAt = continuationValid
+    ? validIsoOrNull(value.fullScanNextAttemptAt) : null
   normalized.fullScanCursor = continuationValid ? cursor : null
   normalized.fullScanSnapshotFingerprint = continuationValid ? fingerprint : null
   normalized.fullScanProcessedPairs = continuationValid
@@ -424,6 +451,8 @@ export function projectIdentityScanDiagnostics(
     fullScanProcessedPairs: Number(scan.fullScanProcessedPairs || 0),
     fullScanContinuationAt: scan.fullScanContinuationAt || null,
     fullScanContinuationError: scan.fullScanContinuationError || null,
+    fullScanContinuationFailures: Number(scan.fullScanContinuationFailures || 0),
+    fullScanNextAttemptAt: scan.fullScanNextAttemptAt || null,
     decisionLookupPairs: Number(scan.decisionLookupPairs || 0),
     decisionLookupQueries: Number(scan.decisionLookupQueries || 0),
     decisionLookupDurationMs: Number(scan.decisionLookupDurationMs || 0),
