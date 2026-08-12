@@ -15182,6 +15182,7 @@ function AiAssistantPage() {
             {identityDisambiguation.vectorTruncated && <span className="warning"><b>向量候选已达上限</b><small>本轮只保留最高分候选，其余低分命中未进入人工队列</small></span>}
             {!identityDisambiguation.vectorCheckpointCommitted && Number(identityDisambiguation.vectorProbes || 0) > 0 && <span className="warning"><b>本轮向量进度未提交</b><small>{identityDisambiguation.vectorContinuationError || '候选与探针账本未能原子提交，下次会从同一批重试'}</small></span>}
             {identityDisambiguation.vectorContinuationAt && <span><b>{new Date(identityDisambiguation.vectorContinuationAt).toLocaleString('zh-CN', { hour12: false })}</b><small>最近空闲向量续跑</small></span>}
+            {identityDisambiguation.vectorNextAttemptAt && <span className="warning"><b>{new Date(identityDisambiguation.vectorNextAttemptAt).toLocaleString('zh-CN', { hour12: false })}</b><small>向量身份巡检下次自动重试 · 已连续失败 {identityDisambiguation.vectorContinuationFailures || 0} 次</small></span>}
           </div>}
           <div className="assistant-path-finder">
             <TrustedEntityPicker

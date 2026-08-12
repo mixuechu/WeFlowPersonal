@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 
 import {
   identityNameScanIdleStatus,
-  planIdentityNameScanRetry
+  planIdentityScanRetry
 } from '../electron/services/identityDisambiguation.ts'
 
 const idle = {
@@ -45,7 +45,7 @@ test('name identity retry uses bounded exponential-style backoff', () => {
   const now = new Date('2026-08-12T00:00:00.000Z')
   const expectedMinutes = [5, 15, 30, 60, 180, 360, 360]
   expectedMinutes.forEach((minutes, previousFailures) => {
-    const retry = planIdentityNameScanRetry(previousFailures, now)
+    const retry = planIdentityScanRetry(previousFailures, now)
     assert.equal(retry.failures, previousFailures + 1)
     assert.equal(Date.parse(retry.nextAttemptAt), now.getTime() + minutes * 60_000)
   })
@@ -65,7 +65,7 @@ test('scheduler advances one bounded name page without requiring messages or Dee
   assert.match(continuation, /this\.saveState\(true\)/)
   assert.match(continuation, /recoverGraphStateFromSql\(graphBefore, sqlSnapshot, sqlCommitId\)/)
   assert.match(continuation, /fullScanContinuationError: sanitizeDiagnosticText\(error\)/)
-  assert.match(continuation, /planIdentityNameScanRetry/)
+  assert.match(continuation, /planIdentityScanRetry/)
   assert.match(continuation, /fullScanNextAttemptAt: retry\.nextAttemptAt/)
   assert.match(continuation, /this\.persistCrossStoreMutationState\(\)/)
   assert.doesNotMatch(continuation, /callAi|collectMessages/)

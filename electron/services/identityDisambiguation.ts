@@ -61,16 +61,21 @@ export function identityNameScanIdleStatus(input: {
   if (!input.pending) return 'no_pending_scan'
   if (input.maintenance || input.syncing || input.vectorIndexing || input.searchRepairing ||
       input.resourceEnriching || input.taskAuditing) return 'busy'
-  const nextAttemptAt = Date.parse(String(input.nextAttemptAt || ''))
-  if (Number.isFinite(nextAttemptAt) && nextAttemptAt > (input.nowMs ?? Date.now())) {
-    return 'cooling_down'
-  }
-  return 'due'
+  return identityScanRetryStatus(input.nextAttemptAt, input.nowMs) === 'cooling_down'
+    ? 'cooling_down' : 'due'
 }
 
 const IDENTITY_NAME_SCAN_RETRY_MINUTES = [5, 15, 30, 60, 180, 360] as const
 
-export function planIdentityNameScanRetry(previousFailures: unknown, now: Date): {
+export function identityScanRetryStatus(
+  nextAttemptAt: unknown,
+  nowMs = Date.now()
+): 'cooling_down' | 'due' {
+  const parsed = Date.parse(String(nextAttemptAt || ''))
+  return Number.isFinite(parsed) && parsed > nowMs ? 'cooling_down' : 'due'
+}
+
+export function planIdentityScanRetry(previousFailures: unknown, now: Date): {
   failures: number
   nextAttemptAt: string
 } {
@@ -124,6 +129,7 @@ export function normalizePersistedIdentityScanState(
   normalized.decisionLookupAt = validIsoOrNull(value.decisionLookupAt)
   normalized.vectorContinuationAt = validIsoOrNull(value.vectorContinuationAt)
   normalized.vectorContinuationError = String(value.vectorContinuationError || '').slice(0, 500) || null
+  normalized.vectorNextAttemptAt = validIsoOrNull(value.vectorNextAttemptAt)
   normalized.fullScanContinuationAt = validIsoOrNull(value.fullScanContinuationAt)
   normalized.fullScanContinuationError = String(value.fullScanContinuationError || '').slice(0, 500) || null
   normalized.fullScanContinuationFailures = continuationValid
@@ -471,6 +477,8 @@ export function projectIdentityScanDiagnostics(
     vectorCheckpointCommitted: Boolean(scan.vectorCheckpointCommitted),
     vectorContinuationAt: scan.vectorContinuationAt || null,
     vectorContinuationError: scan.vectorContinuationError || null,
+    vectorContinuationFailures: Number(scan.vectorContinuationFailures || 0),
+    vectorNextAttemptAt: scan.vectorNextAttemptAt || null,
     ...schedule
   }
 }

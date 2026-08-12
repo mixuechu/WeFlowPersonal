@@ -434,10 +434,11 @@ import {
   getFullIdentityScanSchedule,
   identityCandidateVersionsCurrent,
   identityNameScanIdleStatus,
+  identityScanRetryStatus,
   identityPairKey,
   listIndexedIdentityCandidates,
   normalizePersistedIdentityScanState,
-  planIdentityNameScanRetry,
+  planIdentityScanRetry,
   planStaleGraphIdentityReviews,
   planStaleIdentityVersionReviews,
   planStaleRuleIdentityReviews,
@@ -717,6 +718,8 @@ type AssistantState = {
       vectorCheckpointCommitted: boolean
       vectorContinuationAt: string | null
       vectorContinuationError: string | null
+      vectorContinuationFailures: number
+      vectorNextAttemptAt: string | null
     }
   }
 }
@@ -797,7 +800,8 @@ const EMPTY_STATE: AssistantState = {
     vectorProbesWithMatches: 0, vectorRepresentedProbes: 0,
     vectorTruncated: false, vectorScanDurationMs: 0,
     vectorPendingAfter: 0, vectorRetiredCandidates: 0, vectorCheckpointCommitted: false,
-    vectorContinuationAt: null, vectorContinuationError: null
+    vectorContinuationAt: null, vectorContinuationError: null,
+    vectorContinuationFailures: 0, vectorNextAttemptAt: null
   } }
 }
 
@@ -4103,6 +4107,8 @@ export class AiAssistantService {
       this.state.graph.identityScan.vectorRetiredCandidates = 0
       this.state.graph.identityScan.vectorCheckpointCommitted = true
       this.state.graph.identityScan.vectorContinuationError = null
+      this.state.graph.identityScan.vectorContinuationFailures = 0
+      this.state.graph.identityScan.vectorNextAttemptAt = null
       return { committed: true, pendingAfter: vectorScan.stats.pendingBefore, candidates: 0 }
     }
     const suggestions: Array<{
@@ -4175,6 +4181,8 @@ export class AiAssistantService {
       this.state.graph.identityScan.vectorRetiredCandidates = commit.retiredReviews
       this.state.graph.identityScan.vectorCheckpointCommitted = true
       this.state.graph.identityScan.vectorContinuationError = null
+      this.state.graph.identityScan.vectorContinuationFailures = 0
+      this.state.graph.identityScan.vectorNextAttemptAt = null
       let pendingAfter = Math.max(
         0,
         vectorScan.stats.pendingBefore - vectorScan.checkpoint.probes.length
@@ -4198,6 +4206,12 @@ export class AiAssistantService {
       this.state.graph.identityScan.vectorRetiredCandidates = 0
       this.state.graph.identityScan.vectorCheckpointCommitted = false
       this.state.graph.identityScan.vectorContinuationError = sanitizeDiagnosticText(error)
+      const retry = planIdentityScanRetry(
+        this.state.graph.identityScan.vectorContinuationFailures,
+        new Date(now)
+      )
+      this.state.graph.identityScan.vectorContinuationFailures = retry.failures
+      this.state.graph.identityScan.vectorNextAttemptAt = retry.nextAttemptAt
       return { committed: false, pendingAfter: vectorScan.stats.pendingBefore, candidates: 0 }
     }
   }
@@ -4207,12 +4221,44 @@ export class AiAssistantService {
         this.resourceEnrichmentPromise) {
       return 'identity_vector_scan_busy'
     }
+    if (identityScanRetryStatus(
+      this.state.graph.identityScan.vectorNextAttemptAt,
+      now.getTime()
+    ) === 'cooling_down') return 'identity_vector_scan_cooling_down'
     const model = localEmbeddingService.modelVersion
-    const backlog = personalMemoryStore.getIdentityVectorScanBacklog(model)
+    let backlog: ReturnType<typeof personalMemoryStore.getIdentityVectorScanBacklog>
+    try {
+      backlog = personalMemoryStore.getIdentityVectorScanBacklog(model)
+    } catch (error) {
+      const retry = planIdentityScanRetry(
+        this.state.graph.identityScan.vectorContinuationFailures,
+        now
+      )
+      this.state.graph.identityScan.vectorContinuationAt = now.toISOString()
+      this.state.graph.identityScan.vectorContinuationError = sanitizeDiagnosticText(error)
+      this.state.graph.identityScan.vectorContinuationFailures = retry.failures
+      this.state.graph.identityScan.vectorNextAttemptAt = retry.nextAttemptAt
+      try { this.persistCrossStoreMutationState() } catch {}
+      return 'identity_vector_scan_failed'
+    }
     this.state.graph.identityScan.vectorEligible = backlog.eligible
     this.state.graph.identityScan.vectorPendingBefore = backlog.pending
     this.state.graph.identityScan.vectorPendingAfter = backlog.pending
-    if (!backlog.pending) return 'identity_vector_scan_complete'
+    if (!backlog.pending) {
+      const retryStateChanged = Boolean(
+        this.state.graph.identityScan.vectorContinuationError ||
+        this.state.graph.identityScan.vectorContinuationFailures ||
+        this.state.graph.identityScan.vectorNextAttemptAt
+      )
+      this.state.graph.identityScan.vectorCheckpointCommitted = true
+      this.state.graph.identityScan.vectorContinuationError = null
+      this.state.graph.identityScan.vectorContinuationFailures = 0
+      this.state.graph.identityScan.vectorNextAttemptAt = null
+      if (retryStateChanged) {
+        try { this.persistCrossStoreMutationState() } catch {}
+      }
+      return 'identity_vector_scan_complete'
+    }
     const observedAt = now.toISOString()
     const result = this.runVectorIdentityScan(observedAt)
     this.state.graph.identityScan.vectorContinuationAt = observedAt
@@ -4260,7 +4306,7 @@ export class AiAssistantService {
       } catch {
         this.state.graph = graphAfter
       }
-      const retry = planIdentityNameScanRetry(
+      const retry = planIdentityScanRetry(
         graphBefore.identityScan.fullScanContinuationFailures,
         now
       )
@@ -13792,12 +13838,8 @@ export class AiAssistantService {
       if (resourceContentBudgetOutcome) return resourceContentBudgetOutcome
       const resourceEnrichmentOutcome = this.continueIdleResourceEnrichment(now)
       if (resourceEnrichmentOutcome) return await resourceEnrichmentOutcome
-      const identityVectorBacklog = personalMemoryStore.getIdentityVectorScanBacklog(
-        localEmbeddingService.modelVersion
-      )
-      if (identityVectorBacklog.pending > 0) {
-        return this.continueIdentityVectorScanWhileIdle(now)
-      }
+      const identityVectorOutcome = this.continueIdentityVectorScanWhileIdle(now)
+      if (identityVectorOutcome !== 'identity_vector_scan_complete') return identityVectorOutcome
       return time < schedule ? 'before_daily_schedule' : 'daily_already_complete'
     }
     const nextScheduledRetryAt = Date.parse(String(this.state.cursor.nextScheduledRetryAt || ''))

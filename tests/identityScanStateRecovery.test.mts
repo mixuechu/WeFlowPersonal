@@ -24,7 +24,9 @@ const defaults = {
   contextualTruncated: false,
   decisionLookupAt: null,
   vectorContinuationAt: null,
-  vectorContinuationError: null
+  vectorContinuationError: null,
+  vectorContinuationFailures: 0,
+  vectorNextAttemptAt: null
 }
 
 test('valid identity continuation survives restart with bounded normalized diagnostics', () => {
@@ -42,6 +44,8 @@ test('valid identity continuation survives restart with bounded normalized diagn
     fullScanProcessedPairs: 2,
     fullScanContinuationFailures: 2,
     fullScanNextAttemptAt: '2026-08-12T00:15:00Z',
+    vectorContinuationFailures: 3,
+    vectorNextAttemptAt: '2026-08-12T00:30:00Z',
     futurePrivateField: 'discarded'
   }, defaults)
   assert.equal(normalized.lastFullScanAt, '2026-07-31T16:00:00.000Z')
@@ -51,6 +55,8 @@ test('valid identity continuation survives restart with bounded normalized diagn
   assert.equal(normalized.fullScanProcessedPairs, 2)
   assert.equal(normalized.fullScanContinuationFailures, 2)
   assert.equal(normalized.fullScanNextAttemptAt, '2026-08-12T00:15:00.000Z')
+  assert.equal(normalized.vectorContinuationFailures, 3)
+  assert.equal(normalized.vectorNextAttemptAt, '2026-08-12T00:30:00.000Z')
   assert.equal('futurePrivateField' in normalized, false)
 })
 
@@ -93,7 +99,9 @@ test('identity restart normalization bounds invalid timestamps, counters, enums 
     contextualTruncated: 'false',
     vectorContinuationError: '错'.repeat(800),
     fullScanContinuationFailures: -4,
-    fullScanNextAttemptAt: 'not-a-time'
+    fullScanNextAttemptAt: 'not-a-time',
+    vectorContinuationFailures: -8,
+    vectorNextAttemptAt: 'also-not-a-time'
   }, defaults)
   assert.equal(normalized.lastFullScanAt, null)
   assert.equal(normalized.lastRunAt, null)
@@ -104,4 +112,6 @@ test('identity restart normalization bounds invalid timestamps, counters, enums 
   assert.equal(normalized.vectorContinuationError.length, 500)
   assert.equal(normalized.fullScanContinuationFailures, 0)
   assert.equal(normalized.fullScanNextAttemptAt, null)
+  assert.equal(normalized.vectorContinuationFailures, 0)
+  assert.equal(normalized.vectorNextAttemptAt, null)
 })
