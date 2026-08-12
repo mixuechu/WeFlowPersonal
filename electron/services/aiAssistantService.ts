@@ -451,6 +451,13 @@ import {
 import { type GraphReviewPageOptions } from '../../shared/graphReviewPagination'
 import { resourceContentBudgetRetryCoolingDown } from './resourceContentBudgetPolicy'
 import {
+  EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY,
+  normalizeResourceEnrichmentSchedulerRetry,
+  planResourceEnrichmentDiscoveryFailure,
+  resourceEnrichmentDiscoveryCoolingDown,
+  type ResourceEnrichmentSchedulerRetry
+} from './resourceEnrichmentSchedulerPolicy'
+import {
   assertEntityRelationMutationRevision,
   entityRelationMutationRevision
 } from './entityRelationMutationPolicy'
@@ -670,6 +677,7 @@ type AssistantState = {
     pendingSessionRetryCount: number
     pendingSessionBacklogCount: number
     backlogRetry: BacklogRetryState
+    resourceEnrichmentRetry: ResourceEnrichmentSchedulerRetry
   }
   graph: {
     entities: GraphEntity[]
@@ -780,7 +788,8 @@ const EMPTY_STATE: AssistantState = {
     lastError: null,
     pendingSessionRetryCount: 0,
     pendingSessionBacklogCount: 0,
-    backlogRetry: { ...EMPTY_BACKLOG_RETRY_STATE }
+    backlogRetry: { ...EMPTY_BACKLOG_RETRY_STATE },
+    resourceEnrichmentRetry: { ...EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY }
   },
   graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: {
     lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0,
@@ -1656,7 +1665,10 @@ export class AiAssistantService {
           backlogRetry: {
             ...EMPTY_BACKLOG_RETRY_STATE,
             ...(loaded.cursor?.backlogRetry || {})
-          }
+          },
+          resourceEnrichmentRetry: normalizeResourceEnrichmentSchedulerRetry(
+            loaded.cursor?.resourceEnrichmentRetry
+          )
         },
         notifications: {
           ...normalizeNotificationOutbox(loaded.notifications)
@@ -6488,6 +6500,10 @@ export class AiAssistantService {
         trashDirectory: 'paginated_without_snapshot'
       },
       resourceContentBudget: personalMemoryStore.getResourceContentBudgetStats(),
+      resourceEnrichmentScheduler: {
+        ...this.state.cursor.resourceEnrichmentRetry,
+        policy: 'persistent_bounded_discovery_backoff_v1'
+      },
       resourceTrash: [],
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantArchive: {
@@ -13654,30 +13670,52 @@ export class AiAssistantService {
   private continueIdleResourceEnrichment(now: Date): Promise<string> | null {
     if (this.disposed || this.memoryMaintenanceLease || this.activeSync || this.vectorIndexPromise ||
         this.memorySearchRepairPromise || this.resourceEnrichmentPromise) return null
-    const ocrEnabled = Boolean(this.config.get('aiAssistantOcrImages'))
-    const attachment = personalMemoryStore.getAttachmentIndexMigrationStats(now)
-    const imageOcr = personalMemoryStore.getImageOcrMigrationStats(now)
-    const voice = personalMemoryStore.getVoiceTranscriptMigrationStats(now)
-    const imageSemantics = personalMemoryStore.getImageSemanticMigrationStats(
-      localImageSemanticService.getStatus().modelVersion,
-      now
-    )
-    const web = personalMemoryStore.getWebSnapshotMigrationStats(now)
-    const structure = personalMemoryStore.getAttachmentStructureMigrationStats(
-      ATTACHMENT_STRUCTURE_PARSER_VERSION,
-      now
-    )
-    const kind = selectDueResourceEnrichmentKind({
-      attachment_index: Number(attachment.pending || 0) > 0 ||
-        (ocrEnabled && Number(attachment.waitingForOcr || 0) > 0),
-      image_ocr: ocrEnabled && Number(imageOcr.pending || 0) > 0,
-      voice_transcript: Boolean(this.config.get('autoTranscribeVoice')) && Number(voice.pending || 0) > 0,
-      image_semantics: Boolean(this.config.get('aiAssistantAnalyzeImages')) &&
-        Number(imageSemantics.pending || 0) > 0,
-      web_snapshot: Boolean(this.config.get('aiAssistantIndexWebLinks')) && Number(web.pending || 0) > 0,
-      pdf_ocr: ocrEnabled && personalMemoryStore.listPendingPdfOcrResources(1).length > 0,
-      attachment_structure: Number(structure.pending || 0) > 0
-    }, now.getTime())
+    if (resourceEnrichmentDiscoveryCoolingDown(
+      this.state.cursor.resourceEnrichmentRetry,
+      now.getTime()
+    )) return Promise.resolve('resource_enrichment_discovery_cooling_down')
+    let kind: ResourceEnrichmentKind | null = null
+    try {
+      const ocrEnabled = Boolean(this.config.get('aiAssistantOcrImages'))
+      const attachment = personalMemoryStore.getAttachmentIndexMigrationStats(now)
+      const imageOcr = personalMemoryStore.getImageOcrMigrationStats(now)
+      const voice = personalMemoryStore.getVoiceTranscriptMigrationStats(now)
+      const imageSemantics = personalMemoryStore.getImageSemanticMigrationStats(
+        localImageSemanticService.getStatus().modelVersion,
+        now
+      )
+      const web = personalMemoryStore.getWebSnapshotMigrationStats(now)
+      const structure = personalMemoryStore.getAttachmentStructureMigrationStats(
+        ATTACHMENT_STRUCTURE_PARSER_VERSION,
+        now
+      )
+      kind = selectDueResourceEnrichmentKind({
+        attachment_index: Number(attachment.pending || 0) > 0 ||
+          (ocrEnabled && Number(attachment.waitingForOcr || 0) > 0),
+        image_ocr: ocrEnabled && Number(imageOcr.pending || 0) > 0,
+        voice_transcript: Boolean(this.config.get('autoTranscribeVoice')) && Number(voice.pending || 0) > 0,
+        image_semantics: Boolean(this.config.get('aiAssistantAnalyzeImages')) &&
+          Number(imageSemantics.pending || 0) > 0,
+        web_snapshot: Boolean(this.config.get('aiAssistantIndexWebLinks')) && Number(web.pending || 0) > 0,
+        pdf_ocr: ocrEnabled && personalMemoryStore.listPendingPdfOcrResources(1).length > 0,
+        attachment_structure: Number(structure.pending || 0) > 0
+      }, now.getTime())
+    } catch (error) {
+      this.state.cursor.resourceEnrichmentRetry = planResourceEnrichmentDiscoveryFailure(
+        this.state.cursor.resourceEnrichmentRetry,
+        now,
+        sanitizeDiagnosticText(error)
+      )
+      try { this.persistCrossStoreMutationState() } catch {}
+      return Promise.resolve('resource_enrichment_discovery_failed')
+    }
+    if (this.state.cursor.resourceEnrichmentRetry.failures) {
+      this.state.cursor.resourceEnrichmentRetry = {
+        ...EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY,
+        lastAttemptAt: now.toISOString()
+      }
+      try { this.persistCrossStoreMutationState() } catch {}
+    }
     if (!kind) return null
     const runId = `maintenance_${crypto.randomUUID()}`
     const runners: Record<ResourceEnrichmentKind, () => Promise<number>> = {

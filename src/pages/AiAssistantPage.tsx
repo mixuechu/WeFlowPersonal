@@ -14866,6 +14866,11 @@ function AiAssistantPage() {
               {!!dashboard.resourceContentBudget.migration?.nextAttemptAt &&
                 ` · 下次自动重试 ${new Date(dashboard.resourceContentBudget.migration.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}（连续失败 ${Number(dashboard.resourceContentBudget.migration.failureStreak || 0)} 次）`}
             </div>}
+            {!!dashboard?.resourceEnrichmentScheduler?.lastError && <div className="assistant-query-plan warning">
+              资源补全队列检查失败：{dashboard.resourceEnrichmentScheduler.lastError}
+              {!!dashboard.resourceEnrichmentScheduler.nextAttemptAt &&
+                ` · 下次自动重试 ${new Date(dashboard.resourceEnrichmentScheduler.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}（连续失败 ${Number(dashboard.resourceEnrichmentScheduler.failures || 0)} 次）`}
+            </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((directoryResource: any) => {
                 const resource = selectedResourceDossier?.id === directoryResource.id &&
