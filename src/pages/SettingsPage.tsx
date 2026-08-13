@@ -779,7 +779,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         setUpdateInfo(result)
         setShowUpdateDialog(true)
         showMessage(`发现新版：${result.version}`, true)
+      } else if (result.available === false) {
+        setUpdateInfo(result)
+        showMessage(result.reason || '当前版本未配置自动更新', false)
       } else {
+        setUpdateInfo(result)
         showMessage('当前已是最新版', true)
       }
     } catch (e: any) {
@@ -2560,7 +2564,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="form-group">
         <label>调试日志</label>
-        <span className="form-hint">开启后写入 WCDB 调试日志，便于排查连接问题</span>
+        <span className="form-hint">仅在排查连接问题时临时开启；日志可能包含本机路径和微信标识。关闭后立即清空，开启时最多保留 2MB 的最近诊断。</span>
         <div className="log-toggle-line">
           <span className="log-status">{logEnabled ? '已开启' : '已关闭'}</span>
           <label className="switch" htmlFor="log-enabled-toggle">
@@ -2779,6 +2783,10 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   // 确认启动 API 服务
   const confirmStartApi = async () => {
     setShowApiWarning(false)
+    if (httpApiToken.trim().length < 16) {
+      showMessage('请先生成或设置至少 16 位的 Access Token', false)
+      return
+    }
     setIsTogglingApi(true)
     try {
       const result = await window.electronAPI.http.start(httpApiPort, httpApiHost)
@@ -4588,15 +4596,16 @@ JSON 输出格式：
       <div className="form-group">
         <label>Access Token (鉴权凭证)</label>
         <span className="form-hint">
-          设置后，请求头需携带 <code>Authorization: Bearer &lt;token&gt;</code>，
-          或者参数中携带 <code>?access_token=&lt;token&gt;</code>
+          所有受保护请求必须通过请求头携带 <code>Authorization: Bearer &lt;token&gt;</code>。
+          Token 不允许放在 URL 或请求正文中，避免进入浏览历史、代理日志和截图。
         </span>
         <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
           <input
-              type="text"
+              type="password"
               className="field-input"
               value={httpApiToken}
-              placeholder="留空表示不验证 Token"
+              placeholder="未配置或少于 16 位时拒绝所有受保护请求"
+              autoComplete="new-password"
               onChange={(e) => {
                 const val = e.target.value
                 setHttpApiToken(val)
@@ -4824,14 +4833,14 @@ JSON 输出格式：
           <input
               type="text"
               className="field-input"
-              value={`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages${httpApiToken ? `?access_token=${httpApiToken}` : ''}`}
+              value={`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages`}
               readOnly
           />
           <button
               className="btn btn-secondary"
               onClick={() => {
-                navigator.clipboard.writeText(`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages${httpApiToken ? `?access_token=${httpApiToken}` : ''}`)
-                showMessage('已复制推送地址', true)
+                navigator.clipboard.writeText(`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages`)
+                showMessage('已复制不含 Token 的推送地址', true)
               }}
               title="复制"
           >
@@ -4850,6 +4859,7 @@ JSON 输出格式：
               <code>{`http://${httpApiHost}:${httpApiPort}/api/v1/push/messages`}</code>
             </div>
             <p className="api-desc">通过 SSE 长连接接收消息事件，建议接收端按 `event + rawid` 去重。</p>
+            <p className="api-desc">订阅端需支持自定义请求头并携带 <code>Authorization: Bearer &lt;token&gt;</code>；原生 EventSource 不能设置请求头，请使用 fetch 流或支持鉴权头的 SSE 客户端。</p>
             <div className="api-params">
               {['event', 'sessionId', 'sessionType', 'rawid', 'avatarUrl', 'sourceName', 'groupName?', 'content', 'timestamp'].map((param) => (
                 <span key={param} className="param">
@@ -4877,7 +4887,7 @@ JSON 输出格式：
                 </div>
                 <div className="warning-item">
                   <span className="bullet">•</span>
-                  <span>不要在公共或不信任的网络环境下使用</span>
+                  <span>服务只接受至少 16 位 Token 的 Authorization 请求头；不要把 Token 拼进 URL</span>
                 </div>
                 <div className="warning-item">
                   <span className="bullet">•</span>
@@ -5421,7 +5431,11 @@ JSON 输出格式：
           <div className="updates-hero-main">
             <span className="updates-chip">当前版本</span>
             <h2>{appVersion || '...'}</h2>
-            <p>{updateInfo?.hasUpdate ? `发现新版本 v${updateInfo.version}` : '当前已是最新版本，可手动检查更新'}</p>
+            <p>{updateInfo?.hasUpdate
+              ? `发现新版本 v${updateInfo.version}`
+              : updateInfo?.available === false
+                ? updateInfo.reason || '当前版本未配置自动更新'
+                : '尚未检查版本，可手动检查更新'}</p>
           </div>
           <div className="updates-hero-action">
             {updateInfo?.hasUpdate ? (
@@ -5429,9 +5443,15 @@ JSON 输出格式：
                 <Download size={16} /> 立即更新
               </button>
             ) : (
-              <button className="btn btn-secondary" onClick={handleCheckUpdate} disabled={isCheckingUpdate}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleCheckUpdate}
+                disabled={isCheckingUpdate || updateInfo?.available === false}
+              >
                 <RefreshCw size={16} className={isCheckingUpdate ? 'spin' : ''} />
-                {isCheckingUpdate ? '检查中...' : '检查更新'}
+                {isCheckingUpdate
+                  ? '检查中...'
+                  : updateInfo?.available === false ? '本地固化版本' : '检查更新'}
               </button>
             )}
           </div>
@@ -5669,9 +5689,6 @@ JSON 输出格式：
 }
 
 export default SettingsPage
-
-
-
 
 
 

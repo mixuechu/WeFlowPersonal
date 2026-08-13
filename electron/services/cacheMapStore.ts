@@ -1,6 +1,13 @@
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
-import { writeFile } from 'fs/promises'
+import { rmSync } from 'fs'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
 
 // 条件导入 electron（Worker 环境中不可用）
 let app: any = null
@@ -24,23 +31,33 @@ export class CacheMapStore {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private encryptionKey: Buffer | string
 
-  constructor(userDataPath: string) {
+  constructor(userDataPath: string, encryptionKey: Buffer | string) {
+    this.encryptionKey = encryptionKey
     this.filePath = join(userDataPath, 'WeFlow-cache-maps.json')
     this.load()
     app?.once?.('will-quit', () => this.flushSync())
   }
 
   private load(): void {
-    if (!existsSync(this.filePath)) return
     try {
-      const parsed = JSON.parse(readFileSync(this.filePath, 'utf8')) as unknown
+      const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(this.filePath, this.encryptionKey)
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       if (parsed && typeof parsed === 'object') {
         for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
           this.data.set(key, value)
         }
       }
     } catch (error) {
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
       console.error('CacheMapStore: 载入缓存失败', error)
     }
   }
@@ -62,6 +79,30 @@ export class CacheMapStore {
     return Object.fromEntries(this.data)
   }
 
+  getPrivacyStatus(): unknown {
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.filePath),
+      entries: this.data.size,
+      persistenceRetry: { ...this.persistenceRetry }
+    }
+  }
+
+  isWritable(): boolean {
+    return this.privacy.writable
+  }
+
+  initializeEncryption(encryptionKey: Buffer | string): void {
+    if (!encryptionKey || (this.encryptionKey && this.privacy.writable)) return
+    const pending = Object.fromEntries(this.data)
+    this.encryptionKey = encryptionKey
+    this.data.clear()
+    this.privacy = emptySensitiveCachePrivacy()
+    this.load()
+    for (const [key, value] of Object.entries(pending)) this.data.set(key, value)
+    if (Object.keys(pending).length > 0 && this.privacy.writable) this.persist()
+  }
+
   clear(): void {
     this.data.clear()
     if (this.persistTimer) {
@@ -75,12 +116,12 @@ export class CacheMapStore {
     }
   }
 
-  private persist(): void {
+  private persist(delayMs = 500): void {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persistNow()
-    }, 500)
+    }, Math.max(0, delayMs))
     this.persistTimer.unref?.()
   }
 
@@ -91,14 +132,21 @@ export class CacheMapStore {
     }
     this.persistInFlight = true
     try {
-      await writeFile(this.filePath, JSON.stringify(Object.fromEntries(this.data)), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.filePath, Object.fromEntries(this.data), this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('CacheMapStore: 保存缓存失败', error)
+      this.persistDirty = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistDirty) {
         this.persistDirty = false
-        void this.persistNow()
+        this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
     }
   }
@@ -109,7 +157,11 @@ export class CacheMapStore {
     clearTimeout(this.persistTimer)
     this.persistTimer = null
     try {
-      writeFileSync(this.filePath, JSON.stringify(Object.fromEntries(this.data)), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.filePath, Object.fromEntries(this.data), this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
     } catch (error) {
       console.error('CacheMapStore: 保存缓存失败', error)
     }

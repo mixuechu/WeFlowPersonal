@@ -2,10 +2,11 @@
 import { basename, dirname, extname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'fs'
-import { writeFile, rm, readdir, appendFile, readFile } from 'fs/promises'
+import { writeFile, rm, readdir, readFile } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
 import crypto from 'crypto'
 import { ConfigService } from './config'
+import { appendSensitiveLogFile } from './sensitiveLogPolicy'
 import { wcdbService } from './wcdbService'
 import { decryptDatViaNativeAsync, nativeAddonLocation } from './nativeImageDecrypt'
 
@@ -184,11 +185,12 @@ export class ImageDecryptService {
     if (this.pendingLogLines.length === 0) return
     const lines = this.pendingLogLines.splice(0, this.pendingLogLines.length).join('')
     try {
+      if (!this.configService.get('logEnabled')) return
       const logDir = join(this.getUserDataPath(), 'logs')
       if (!existsSync(logDir)) {
         mkdirSync(logDir, { recursive: true })
       }
-      await appendFile(join(logDir, 'wcdb.log'), lines, { encoding: 'utf8' })
+      await appendSensitiveLogFile(join(logDir, 'wcdb.log'), lines)
     } catch (err) {
       console.error('写入日志失败:', err)
     } finally {

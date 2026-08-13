@@ -3,6 +3,16 @@ import http, { IncomingMessage } from "http";
 import { promises as fs } from "fs";
 import { join } from "path";
 import { ConfigService } from "./config";
+import { formatAvatarCacheConsoleEvent } from "./runtimeConsolePrivacy";
+import {
+  AVATAR_DOWNLOAD_MAX_BYTES,
+  AVATAR_DOWNLOAD_MAX_REDIRECTS,
+  AVATAR_DOWNLOAD_TIMEOUT_MS,
+  isSupportedAvatarContentType,
+  isSupportedAvatarImage,
+  parseSafeAvatarUrl,
+} from "./avatarDownloadPolicy";
+import { resolvePublicAddress } from "./webSnapshotService";
 
 // 头像文件缓存服务 - 复用项目已有的缓存目录结构
 export class AvatarFileCacheService {
@@ -34,13 +44,16 @@ export class AvatarFileCacheService {
   private ensureCacheDir(): void {
     // 同步确保目录存在（构造函数调用）
     try {
-      fs.mkdir(this.cacheDir, { recursive: true }).catch(() => {});
+      fs.mkdir(this.cacheDir, { recursive: true, mode: 0o700 })
+        .then(() => fs.chmod(this.cacheDir, 0o700))
+        .catch(() => {});
     } catch {}
   }
 
   private async ensureCacheDirAsync(): Promise<void> {
     try {
-      await fs.mkdir(this.cacheDir, { recursive: true });
+      await fs.mkdir(this.cacheDir, { recursive: true, mode: 0o700 });
+      await fs.chmod(this.cacheDir, 0o700);
     } catch {}
   }
 
@@ -69,6 +82,7 @@ export class AvatarFileCacheService {
         if (!entry.startsWith("avatar_") || !entry.endsWith(".png")) continue;
         try {
           const stat = await fs.stat(join(this.cacheDir, entry));
+          await fs.chmod(join(this.cacheDir, entry), 0o600);
           filesWithTime.push({ file: entry, mtime: stat.mtimeMs });
         } catch {}
       }
@@ -92,7 +106,7 @@ export class AvatarFileCacheService {
       if (oldest) {
         try {
           await fs.rm(join(this.cacheDir, oldest));
-          console.log(`[AvatarFileCache] Evicted: ${oldest}`);
+          console.log(formatAvatarCacheConsoleEvent("evicted"));
         } catch {}
       }
     }
@@ -104,6 +118,7 @@ export class AvatarFileCacheService {
     // 检查文件是否已存在
     try {
       await fs.access(localPath);
+      await fs.chmod(localPath, 0o600);
       const fileName = localPath.split("/").pop()!;
       this.updateLru(fileName);
       return localPath;
@@ -112,53 +127,108 @@ export class AvatarFileCacheService {
     await this.ensureCacheDirAsync();
     await this.evictIfNeeded();
 
-    return new Promise<string | null>((resolve) => {
+    const buffer = await this.fetchAvatar(url).catch(() => null);
+    if (!buffer) return null;
+
+    const temporaryPath = `${localPath}.${process.pid}.tmp`;
+    try {
+      await fs.writeFile(temporaryPath, buffer, { mode: 0o600 });
+      await fs.chmod(temporaryPath, 0o600);
+      await fs.rename(temporaryPath, localPath);
+      await fs.chmod(localPath, 0o600);
+      const fileName = localPath.split("/").pop()!;
+      this.updateLru(fileName);
+      console.log(formatAvatarCacheConsoleEvent("downloaded"));
+      return localPath;
+    } catch {
+      await fs.rm(temporaryPath, { force: true }).catch(() => {});
+      return null;
+    }
+  }
+
+  private async fetchAvatar(input: string, redirectCount = 0): Promise<Buffer | null> {
+    if (redirectCount > AVATAR_DOWNLOAD_MAX_REDIRECTS) return null;
+    const url = parseSafeAvatarUrl(input);
+    if (!url) return null;
+    const resolved = await resolvePublicAddress(url.hostname);
+    if (!resolved) return null;
+
+    return new Promise<Buffer | null>((resolve) => {
       const options = {
+        protocol: url.protocol,
+        hostname: resolved.address,
+        family: resolved.family,
+        port: url.port || (url.protocol === "https:" ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        ...(url.protocol === "https:" ? { servername: url.hostname } : {}),
         headers: {
+          Host: url.host,
           "User-Agent":
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) WindowsWechat(0x63090719) XWEB/8351",
           Referer: "https://servicewechat.com/",
-          Accept:
-            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-          "Accept-Encoding": "gzip, deflate, br",
+          Accept: "image/png,image/jpeg,image/gif,image/webp",
           "Accept-Language": "zh-CN,zh;q=0.9",
           Connection: "keep-alive",
         },
       };
 
       const callback = (res: IncomingMessage) => {
+        if (
+          res.statusCode && res.statusCode >= 300 && res.statusCode < 400 &&
+          res.headers.location && redirectCount < AVATAR_DOWNLOAD_MAX_REDIRECTS
+        ) {
+          res.resume();
+          try {
+            const target = new URL(res.headers.location, url);
+            resolve(this.fetchAvatar(target.href, redirectCount + 1));
+          } catch {
+            resolve(null);
+          }
+          return;
+        }
         if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        if (!isSupportedAvatarContentType(res.headers["content-type"])) {
+          res.resume();
           resolve(null);
           return;
         }
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", async () => {
-          try {
-            const buffer = Buffer.concat(chunks);
-            await fs.writeFile(localPath, buffer);
-            const fileName = localPath.split("/").pop()!;
-            this.updateLru(fileName);
-            console.log(
-              `[AvatarFileCache] Downloaded: ${url.substring(0, 50)}... -> ${localPath}`,
-            );
-            resolve(localPath);
-          } catch {
+        let total = 0;
+        let rejected = false;
+        res.on("data", (chunk: Buffer) => {
+          if (rejected) return;
+          total += chunk.length;
+          if (total > AVATAR_DOWNLOAD_MAX_BYTES) {
+            rejected = true;
+            res.destroy();
             resolve(null);
+            return;
           }
+          chunks.push(Buffer.from(chunk));
+        });
+        res.on("end", () => {
+          if (rejected) return;
+          const buffer = Buffer.concat(chunks);
+          resolve(buffer.length > 0 && isSupportedAvatarImage(buffer) ? buffer : null);
         });
         res.on("error", () => resolve(null));
       };
 
-      const req = url.startsWith("https")
-        ? https.get(url, options, callback)
-        : http.get(url, options, callback);
+      const req = url.protocol === "https:"
+        ? https.request(options, callback)
+        : http.request(options, callback);
 
       req.on("error", () => resolve(null));
-      req.setTimeout(10000, () => {
+      req.setTimeout(AVATAR_DOWNLOAD_TIMEOUT_MS, () => {
         req.destroy();
         resolve(null);
       });
+      req.end();
     });
   }
 
@@ -199,7 +269,7 @@ export class AvatarFileCacheService {
         }
       }
       this.lruOrder.length = 0;
-      console.log("[AvatarFileCache] Cache cleared");
+      console.log(formatAvatarCacheConsoleEvent("cleared"));
     } catch {}
   }
 

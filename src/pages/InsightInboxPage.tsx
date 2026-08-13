@@ -77,6 +77,22 @@ function getSourceLabel(sourceType?: InsightRecordSourceType): string {
 
 function buildLogText(record: InsightRecord): string {
   const log = record.log
+  if (log.sensitivePayloadRetained === false) {
+    return [
+      `时间：${new Date(record.createdAt).toLocaleString('zh-CN')}`,
+      `联系人：${record.displayName} (${record.sessionId})`,
+      `来源：${getSourceLabel(record.sourceType)}`,
+      `触发类型：${getTriggerLabel(record.triggerReason)}`,
+      `接口地址：${log.endpoint}`,
+      `模型：${log.model}`,
+      `耗时：${log.durationMs}ms`,
+      '',
+      '隐私策略：完整 Prompt、聊天上下文和模型原始输出未作为调试副本持久化。',
+      '',
+      '最终见解：',
+      log.finalInsight
+    ].join('\n')
+  }
   const lines = [
     `时间：${new Date(record.createdAt).toLocaleString('zh-CN')}`,
     `联系人：${record.displayName} (${record.sessionId})`,
@@ -553,18 +569,16 @@ export default function InsightInboxPage() {
                   ].join('\n')}</pre>
                 </section>
               )}
-              <section>
-                <h4>System Prompt</h4>
-                <pre>{logRecord.log.systemPrompt}</pre>
-              </section>
-              <section>
-                <h4>User Prompt</h4>
-                <pre>{logRecord.log.userPrompt}</pre>
-              </section>
-              <section>
-                <h4>模型输出</h4>
-                <pre>{logRecord.log.rawOutput}</pre>
-              </section>
+              {logRecord.log.sensitivePayloadRetained === false ? (
+                <section>
+                  <h4>本机隐私策略</h4>
+                  <p>完整 Prompt、聊天上下文和模型原始输出不会作为调试副本持久化；这里只保留运行元数据、目标定位和结构化见解。</p>
+                </section>
+              ) : <>
+                <section><h4>System Prompt</h4><pre>{logRecord.log.systemPrompt}</pre></section>
+                <section><h4>User Prompt</h4><pre>{logRecord.log.userPrompt}</pre></section>
+                <section><h4>模型输出</h4><pre>{logRecord.log.rawOutput}</pre></section>
+              </>}
               <section>
                 <h4>最终见解</h4>
                 <pre>{logRecord.log.finalInsight}</pre>

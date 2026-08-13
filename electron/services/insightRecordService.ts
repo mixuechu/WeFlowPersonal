@@ -1,8 +1,26 @@
-import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
-import { ConfigService } from './config'
+import { ConfigService } from './config.ts'
+import {
+  modelTraceContainsSensitivePayload,
+  sanitizePersistedModelTrace
+} from '../../shared/modelTracePrivacy.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import {
+  cachePersistenceRetryDelayMs,
+  emptyCachePersistenceRetry,
+  planCachePersistenceRetry
+} from './cachePersistenceRetry.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 export type InsightRecordTriggerReason = 'activity' | 'silence' | 'test' | 'manual' | 'message_analysis'
 export type InsightRecordSourceType = 'insight' | 'message_analysis'
@@ -54,6 +72,8 @@ export interface InsightRecordLog {
     readError?: string
   }
   parsedAnalysis?: MessageInsightAnalysis
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
 }
 
 export interface InsightRecord {
@@ -116,11 +136,22 @@ class InsightRecordService {
   private filePath: string | null = null
   private loaded = false
   private records: InsightRecord[] = []
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private persistTimer: NodeJS.Timeout | null = null
+
+  constructor() {
+    electronApp?.once?.('will-quit', () => this.flushPendingPersistence())
+  }
+
+  private encryptionKey(): string {
+    return ConfigService.getInstance().getOrCreateLocalCacheEncryptionKey()
+  }
 
   private resolveFilePath(): string {
     if (this.filePath) return this.filePath
     const workerUserDataPath = String(process.env.WEFLOW_USER_DATA_PATH || process.env.WEFLOW_CONFIG_CWD || '').trim()
-    const userDataPath = workerUserDataPath || app?.getPath?.('userData') || process.cwd()
+    const userDataPath = workerUserDataPath || electronApp?.getPath?.('userData') || process.cwd()
     fs.mkdirSync(userDataPath, { recursive: true })
     this.filePath = path.join(userDataPath, 'weflow-insight-records.json')
     return this.filePath
@@ -131,25 +162,82 @@ class InsightRecordService {
     this.loaded = true
     const filePath = this.resolveFilePath()
     try {
-      if (!fs.existsSync(filePath)) return
-      const raw = fs.readFileSync(filePath, 'utf-8')
-      const parsed = JSON.parse(raw)
+      const loaded = loadEncryptedSensitiveCache<any>(filePath, this.encryptionKey())
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       if (Array.isArray(parsed)) {
         this.records = parsed.filter((item) => item && typeof item === 'object') as InsightRecord[]
       } else if (Array.isArray(parsed?.records)) {
         this.records = parsed.records.filter((item: unknown) => item && typeof item === 'object') as InsightRecord[]
       }
-    } catch {
+      const needsPrivacyMigration = this.records.some(record =>
+        modelTraceContainsSensitivePayload(record.log) ||
+        record.log?.sensitivePayloadRetained !== false
+      )
+      this.records = this.records.map(record => ({
+        ...record,
+        log: sanitizePersistedModelTrace(record.log || {} as InsightRecordLog)
+      }))
+      if (needsPrivacyMigration) this.persist()
+    } catch (error) {
       this.records = []
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
-  private persist(): void {
+  private persist(delayMs = 0): void {
+    if (this.persistTimer) return
+    if (delayMs > 0) {
+      this.persistTimer = setTimeout(() => {
+        this.persistTimer = null
+        this.persistNow()
+      }, delayMs)
+      this.persistTimer.unref?.()
+      return
+    }
+    this.persistNow()
+  }
+
+  private persistNow(): void {
     try {
+      if (!this.privacy.writable) return
       const filePath = this.resolveFilePath()
-      fs.writeFileSync(filePath, JSON.stringify({ version: 1, records: this.records }, null, 2), 'utf-8')
-    } catch {
-      // Keep insight generation non-blocking even if local persistence fails.
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(
+          filePath,
+          { version: 3, records: this.records },
+          this.encryptionKey()
+        ),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
+      this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
+    }
+  }
+
+  private flushPendingPersistence(): void {
+    if (!this.persistTimer) return
+    clearTimeout(this.persistTimer)
+    this.persistTimer = null
+    try {
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(
+          this.resolveFilePath(),
+          { version: 3, records: this.records },
+          this.encryptionKey()
+        ),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     }
   }
 
@@ -218,7 +306,7 @@ class InsightRecordService {
       insight: input.insight,
       read: false,
       messageInsight: input.messageInsight,
-      log: input.log
+      log: sanitizePersistedModelTrace(input.log)
     }
 
     this.records.push(record)
@@ -374,6 +462,21 @@ class InsightRecordService {
     })
     this.persist()
     return { success: true, removed }
+  }
+
+  migratePrivacy(): void {
+    this.ensureLoaded()
+  }
+
+  getPrivacyStatus(): unknown {
+    this.ensureLoaded()
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.resolveFilePath()),
+      entries: this.records.length,
+      persistenceRetry: { ...this.persistenceRetry },
+      content: 'insight_and_message_analysis_records'
+    }
   }
 }
 

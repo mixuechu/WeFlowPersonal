@@ -110,6 +110,14 @@
                 .text-box {
                     flex: 1;
 
+                    .update-notes-text {
+                        white-space: pre-wrap;
+                        overflow-wrap: anywhere;
+                        font-size: 14px;
+                        color: var(--text-secondary, #666666);
+                        line-height: 1.6;
+                    }
+
                     h1, h2, h3, h4, h5, h6 {
                         color: var(--text-primary, #333333);
                         font-weight: 700;

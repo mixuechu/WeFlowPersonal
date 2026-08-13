@@ -15,17 +15,19 @@ WeFlow 提供本地 HTTP API（已支持GET 和 POST请求），便于外部脚�
 
 ## 鉴权规范
 
-**鉴权规范 (Access Token)** 除健康检查接口外，所有 `/api/v1/*` 接口均受 Token 保护。支持三种传参方式（任选其一）：
+**鉴权规范 (Access Token)** 除健康检查接口外，所有 `/api/v1/*` 接口均受 Token 保护，只接受请求头：
 
-1. **HTTP Header (推荐)**: `Authorization: Bearer <您的Token>`
-2. **Query 参数**: `?access_token=<您的Token>`（SSE 长连接推荐此方式）
-3. **JSON Body**: `{"access_token": "<您的Token>"}`（仅限 POST 请求）
+```http
+Authorization: Bearer <您的Token>
+```
+
+Token 至少 16 位。URL 查询参数和 JSON Body 中的 `access_token` 不参与鉴权，避免凭证进入浏览历史、代理日志、崩溃报告或截图。
 
 ## 接口列表
 
 - `GET|POST /health`
 - `GET|POST /api/v1/health`
-- `GET|POST /api/v1/push/messages`
+- `GET /api/v1/push/messages`
 - `GET|POST /api/v1/messages`
 - `GET|POST /api/v1/sessions`
 - `GET /api/v1/sessions/:id/messages` (ChatLab Pull)
@@ -91,8 +93,12 @@ GET /api/v1/push/messages
 ### 示例
 
 ```bash
-curl -N "http://127.0.0.1:5031/api/v1/push/messages?access_token=YOUR_TOKEN
+curl -N \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  "http://127.0.0.1:5031/api/v1/push/messages"
 ```
+
+浏览器原生 `EventSource` 不能设置自定义鉴权头，请使用支持请求头的 SSE 客户端或 `fetch` 流。
 
 示例事件：
 
@@ -143,10 +149,10 @@ GET /api/v1/messages
 ### 示例
 
 ```bash
-curl "http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&limit=20"
-curl "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&chatlab=1"
-curl "http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&start=20260101&end=20260131"
-curl "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&media=1&image=1&voice=0&video=0&emoji=0"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&limit=20"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&chatlab=1"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&start=20260101&end=20260131"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&media=1&image=1&voice=0&video=0&emoji=0"
 ```
 
 ### JSON 响应字段
@@ -535,8 +541,8 @@ GET /api/v1/group-members
 **示例请求**
 
 ```bash
-curl "http://127.0.0.1:5031/api/v1/group-members?chatroomId=xxx@chatroom"
-curl "http://127.0.0.1:5031/api/v1/group-members?chatroomId=xxx@chatroom&includeMessageCounts=1&forceRefresh=1"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/group-members?chatroomId=xxx@chatroom"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/group-members?chatroomId=xxx@chatroom&includeMessageCounts=1&forceRefresh=1"
 ```
 
 **示例响应**
@@ -612,10 +618,10 @@ GET /api/v1/sns/timeline
 示例：
 
 ```bash
-curl "http://127.0.0.1:5031/api/v1/sns/timeline?limit=5"
-curl "http://127.0.0.1:5031/api/v1/sns/timeline?usernames=wxid_a,wxid_b&keyword=旅行"
-curl "http://127.0.0.1:5031/api/v1/sns/timeline?limit=3&media=1&replace=1"
-curl "http://127.0.0.1:5031/api/v1/sns/timeline?limit=3&media=1&inline=1"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/sns/timeline?limit=5"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/sns/timeline?usernames=wxid_a,wxid_b&keyword=旅行"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/sns/timeline?limit=3&media=1&replace=1"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/sns/timeline?limit=3&media=1&inline=1"
 ```
 
 媒体字段说明（`media=1`）：
@@ -718,10 +724,10 @@ GET /api/v1/media/{relativePath}
 ### 示例
 
 ```bash
-curl "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/images/abc123.jpg"
-curl "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/voices/voice_100.wav"
-curl "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/videos/video_200.mp4"
-curl "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/emojis/emoji_300.gif"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/images/abc123.jpg"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/voices/voice_100.wav"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/videos/video_200.mp4"
+curl -H "Authorization: Bearer YOUR_TOKEN" "http://127.0.0.1:5031/api/v1/media/xxx@chatroom/emojis/emoji_300.gif"
 ```
 
 ### 支持的 Content-Type

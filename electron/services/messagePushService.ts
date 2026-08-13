@@ -6,6 +6,19 @@ import { promises as fs } from 'fs'
 import path from 'path'
 import { createHash } from 'crypto'
 import { pathToFileURL } from 'url'
+import { runScheduledTaskSafely } from './scheduledTaskBoundary.ts'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
+import {
+  emptyLegacyBackgroundHealth,
+  recordLegacyBackgroundFailure,
+  recordLegacyBackgroundSuccess,
+  type LegacyBackgroundHealth
+} from './legacyBackgroundHealth.ts'
+import {
+  getLegacyBackgroundRetryDelayMs,
+  recordPersistentLegacyBackgroundFailure,
+  recordPersistentLegacyBackgroundSuccess
+} from './legacyBackgroundRetryController.ts'
 
 interface SessionBaseline {
   lastTimestamp: number
@@ -73,6 +86,7 @@ class MessagePushService {
   private baselineReady = false
   private messageTableScanRequested = false
   private readonly pendingMessageTableNames = new Set<string>()
+  private runtimeHealth = emptyLegacyBackgroundHealth()
 
   constructor() {
     this.configService = ConfigService.getInstance()
@@ -82,7 +96,37 @@ class MessagePushService {
   start(): void {
     if (this.started) return
     this.started = true
-    void this.refreshConfiguration('startup')
+    void this.runBackgroundTask(() => this.refreshConfiguration('startup'), '启动配置刷新', false)
+  }
+
+  getRuntimeHealth(): LegacyBackgroundHealth & { started: boolean; processing: boolean } {
+    return { ...this.runtimeHealth, started: this.started, processing: this.processing }
+  }
+
+  private runBackgroundTask(
+    task: () => void | Promise<void>,
+    label: string,
+    persistentRetry = true
+  ): Promise<void> {
+    if (persistentRetry && getLegacyBackgroundRetryDelayMs('messagePush') > 0) {
+      return Promise.resolve()
+    }
+    return runScheduledTaskSafely({
+      task,
+      onSuccess: () => {
+        if (persistentRetry) recordPersistentLegacyBackgroundSuccess('messagePush')
+        this.runtimeHealth = recordLegacyBackgroundSuccess(this.runtimeHealth)
+      },
+      onError: error => {
+        this.runtimeHealth = recordLegacyBackgroundFailure(this.runtimeHealth, error)
+        console.warn(`[MessagePushService] ${label}异常:`, sanitizeDiagnosticText(error))
+        if (persistentRetry) {
+          try { recordPersistentLegacyBackgroundFailure('messagePush', error) } catch (persistError) {
+            console.warn('[MessagePushService] 退避状态保存异常:', sanitizeDiagnosticText(persistError))
+          }
+        }
+      }
+    })
   }
 
   stop(): void {
@@ -125,12 +169,17 @@ class MessagePushService {
   }
 
   async handleConfigChanged(key: string): Promise<void> {
-    if (!PUSH_CONFIG_KEYS.has(String(key || '').trim())) return
-    if (key === 'dbPath' || key === 'decryptKey' || key === 'myWxid') {
+    const normalizedKey = String(key || '').trim()
+    if (!PUSH_CONFIG_KEYS.has(normalizedKey)) return
+    if (normalizedKey === 'dbPath' || normalizedKey === 'decryptKey' || normalizedKey === 'myWxid') {
       this.resetRuntimeState()
       chatService.close()
     }
-    await this.refreshConfiguration(`config:${key}`)
+    await this.runBackgroundTask(
+      () => this.refreshConfiguration(`config:${normalizedKey}`),
+      `配置刷新（${normalizedKey}）`,
+      false
+    )
   }
 
   handleConfigCleared(): void {
@@ -170,8 +219,9 @@ class MessagePushService {
 
     const connectResult = await chatService.connect()
     if (!connectResult.success) {
-      console.warn(`[MessagePushService] Bootstrap connect failed (${reason}):`, connectResult.error)
-      return
+      throw new Error(
+        `消息推送启动时无法连接微信数据库（${reason}）：${sanitizeDiagnosticText(connectResult.error)}`
+      )
     }
 
     await this.bootstrapBaseline()
@@ -180,7 +230,9 @@ class MessagePushService {
   private async bootstrapBaseline(): Promise<void> {
     const sessionsResult = await chatService.getSessions()
     if (!sessionsResult.success || !sessionsResult.sessions) {
-      return
+      throw new Error(
+        `消息推送启动时无法读取会话目录：${sanitizeDiagnosticText(sessionsResult.error)}`
+      )
     }
     this.setBaseline(sessionsResult.sessions as ChatSession[])
     this.baselineReady = true
@@ -199,10 +251,11 @@ class MessagePushService {
       clearTimeout(this.debounceTimer)
     }
 
+    const retryDelayMs = getLegacyBackgroundRetryDelayMs('messagePush')
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null
-      void this.flushPendingChanges()
-    }, this.debounceMs)
+      void this.runBackgroundTask(() => this.flushPendingChanges(), '后台消息推送')
+    }, Math.max(this.debounceMs, retryDelayMs))
   }
 
   private scheduleMessageTableRescan(messageTableNames: string[]): void {
@@ -237,13 +290,14 @@ class MessagePushService {
 
       const connectResult = await chatService.connect()
       if (!connectResult.success) {
-        console.warn('[MessagePushService] Sync connect failed:', connectResult.error)
-        return
+        this.rerunRequested = true
+        throw new Error(`消息推送暂时无法连接微信数据库：${sanitizeDiagnosticText(connectResult.error)}`)
       }
 
       const sessionsResult = await chatService.getSessions()
       if (!sessionsResult.success || !sessionsResult.sessions) {
-        return
+        this.rerunRequested = true
+        throw new Error(`消息推送暂时无法读取会话目录：${sanitizeDiagnosticText(sessionsResult.error)}`)
       }
 
       const sessions = sessionsResult.sessions as ChatSession[]

@@ -1,9 +1,10 @@
 ﻿import { join } from 'path'
 import { constants, existsSync, mkdirSync } from 'fs'
-import { access, appendFile, readFile, readdir } from 'fs/promises'
+import { access, readFile, readdir } from 'fs/promises'
 import { pathToFileURL } from 'url'
 import { app } from 'electron'
 import { ConfigService } from './config'
+import { appendSensitiveLogFile } from './sensitiveLogPolicy'
 import { wcdbService } from './wcdbService'
 
 export interface VideoInfo {
@@ -75,9 +76,10 @@ class VideoService {
     if (this.pendingLogLines.length === 0) return
     const lines = this.pendingLogLines.splice(0, this.pendingLogLines.length).join('')
     try {
+      if (!this.configService.get('logEnabled')) return
       const logDir = join(app.getPath('userData'), 'logs')
       if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true })
-      await appendFile(join(logDir, 'wcdb.log'), lines, 'utf8')
+      await appendSensitiveLogFile(join(logDir, 'wcdb.log'), lines)
     } catch {
       // Logging is diagnostic only; video browsing must never wait on it.
     } finally {

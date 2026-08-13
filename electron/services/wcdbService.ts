@@ -1,6 +1,7 @@
 import { Worker } from 'worker_threads'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
 
 /**
  * Worker 消息接口
@@ -11,6 +12,8 @@ interface WorkerMessage {
   error?: string
 }
 
+export const WCDB_MAX_PENDING_REQUESTS = 256
+
 /**
  * WCDB 服务 (客户端代理)
  * 负责与后台 Worker 线程通信，执行数据库操作
@@ -19,19 +22,73 @@ interface WorkerMessage {
 export class WcdbService {
   private worker: Worker | null = null
   private messageId = 0
-  private pending = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>()
+  private pending = new Map<number, {
+    resolve: (val: any) => void
+    reject: (err: any) => void
+    type: string
+    startedAt: number
+  }>()
   private resourcesPath: string | null = null
   private userDataPath: string | null = null
   private logEnabled = false
   private monitorListener: ((type: string, json: string) => void) | null = null
+  private shuttingDown = false
+  private queueHighWatermark = 0
+  private queueRejectedCount = 0
+  private queueLastRejectedAt = ''
+  private queueLastRejectedType = ''
+  private monitorDeliveryFailures = 0
+  private monitorDeliveryLastErrorAt = ''
+  private monitorDeliveryLastError = ''
+  private monitorDeliveryLastSuccessAt = ''
+  private unexpectedWorkerExitCount = 0
+  private workerLastExitAt = ''
+  private workerLastExitCode: number | null = null
+  private workerLastExitRejectedRequests = 0
 
   constructor() {}
+
+  private deliverMonitorEvent(payload: unknown): void {
+    if (!this.monitorListener) return
+    try {
+      const event = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+      this.monitorListener(
+        String(event.type || 'update').slice(0, 80),
+        String(event.json || '')
+      )
+      this.monitorDeliveryLastSuccessAt = new Date().toISOString()
+      this.monitorDeliveryFailures = 0
+      this.monitorDeliveryLastErrorAt = ''
+      this.monitorDeliveryLastError = ''
+    } catch (monitorError) {
+      this.monitorDeliveryFailures = Math.min(1_000_000, this.monitorDeliveryFailures + 1)
+      this.monitorDeliveryLastErrorAt = new Date().toISOString()
+      this.monitorDeliveryLastError = sanitizeDiagnosticText(monitorError).slice(0, 500)
+      console.warn('[WCDB Monitor] 上层事件回调异常:', this.monitorDeliveryLastError)
+    }
+  }
+
+  private handleWorkerExit(code: number): void {
+    const unexpected = !this.shuttingDown
+    if (unexpected) {
+      const rejected = this.pending.size
+      this.unexpectedWorkerExitCount = Math.min(1_000_000, this.unexpectedWorkerExitCount + 1)
+      this.workerLastExitAt = new Date().toISOString()
+      this.workerLastExitCode = Number.isFinite(code) ? Math.trunc(code) : -1
+      this.workerLastExitRejectedRequests = rejected
+      const errorMessage = `WCDB Worker 意外退出（退出码 ${this.workerLastExitCode}），${rejected} 个请求已安全结束，可直接重试`
+      console.warn(errorMessage)
+      for (const pending of this.pending.values()) pending.reject(new Error(errorMessage))
+      this.pending.clear()
+    }
+    this.worker = null
+  }
 
   /**
    * 初始化 Worker 线程
    */
   private initWorker() {
-    if (this.worker) return
+    if (this.worker || this.shuttingDown) return
 
     const isDev = process.env.NODE_ENV === 'development'
     const workerPath = isDev
@@ -50,9 +107,7 @@ export class WcdbService {
         const { id, result, error, type, payload } = msg
 
         if (type === 'monitor') {
-          if (this.monitorListener) {
-            this.monitorListener(payload.type, payload.json)
-          }
+          this.deliverMonitorEvent(payload)
           return
         }
 
@@ -66,8 +121,8 @@ export class WcdbService {
 
       this.worker.on('error', (err) => {
         // Worker 发生错误，需要 reject 所有 pending promises
-        console.error('WCDB Worker 错误:', err)
-        const errorMsg = err instanceof Error ? err.message : String(err)
+        const errorMsg = sanitizeDiagnosticText(err)
+        console.error('WCDB Worker 错误:', errorMsg)
         for (const [id, p] of this.pending) {
           p.reject(new Error(`Worker 错误: ${errorMsg}`))
         }
@@ -75,16 +130,7 @@ export class WcdbService {
       })
 
       this.worker.on('exit', (code) => {
-        // Worker 退出，需要 reject 所有 pending promises
-        if (code !== 0) {
-          console.error('WCDB Worker 异常退出，退出码:', code)
-          const errorMsg = `Worker 异常退出 (退出码: ${code})。可能是数据服务加载失败，请检查是否安装了 Visual C++ Redistributable。`
-          for (const [id, p] of this.pending) {
-            p.reject(new Error(errorMsg))
-          }
-          this.pending.clear()
-        }
-        this.worker = null
+        this.handleWorkerExit(code)
       })
 
       // 如果已有路径配置，重新发送给新的 worker
@@ -105,14 +151,72 @@ export class WcdbService {
    * 发送消息到 Worker 并等待响应
    */
   private callWorker<T>(type: string, payload: any = {}): Promise<T> {
+    if (this.shuttingDown) return Promise.reject(new Error('WCDB Worker 正在退出'))
     if (!this.worker) this.initWorker()
     if (!this.worker) return Promise.reject(new Error('WCDB Worker 不可用'))
+    if (type !== 'close' && this.pending.size >= WCDB_MAX_PENDING_REQUESTS) {
+      this.queueRejectedCount += 1
+      this.queueLastRejectedAt = new Date().toISOString()
+      this.queueLastRejectedType = String(type || 'unknown').slice(0, 80)
+      return Promise.reject(new Error(
+        `WCDB Worker 请求队列已达到 ${WCDB_MAX_PENDING_REQUESTS} 项，请稍后重试`
+      ))
+    }
 
     return new Promise((resolve, reject) => {
       const id = ++this.messageId
-      this.pending.set(id, { resolve, reject })
+      this.pending.set(id, { resolve, reject, type: String(type || 'unknown'), startedAt: Date.now() })
+      this.queueHighWatermark = Math.max(this.queueHighWatermark, this.pending.size)
       this.worker!.postMessage({ id, type, payload })
     })
+  }
+
+  getQueueHealth(): {
+    pending: number
+    capacity: number
+    currentlyBackpressured: boolean
+    highWatermark: number
+    rejectedCount: number
+    lastRejectedAt: string
+    lastRejectedType: string
+    monitorDelivery: {
+      failures: number
+      lastErrorAt: string
+      lastError: string
+      lastSuccessAt: string
+    }
+    workerLifecycle: {
+      unexpectedExitCount: number
+      lastExitAt: string
+      lastExitCode: number | null
+      lastExitRejectedRequests: number
+      awaitingRestart: boolean
+      workerActive: boolean
+    }
+  } {
+    return {
+      pending: this.pending.size,
+      capacity: WCDB_MAX_PENDING_REQUESTS,
+      currentlyBackpressured: this.pending.size >= WCDB_MAX_PENDING_REQUESTS,
+      highWatermark: this.queueHighWatermark,
+      rejectedCount: this.queueRejectedCount,
+      lastRejectedAt: this.queueLastRejectedAt,
+      lastRejectedType: this.queueLastRejectedType,
+      monitorDelivery: {
+        failures: this.monitorDeliveryFailures,
+        lastErrorAt: this.monitorDeliveryLastErrorAt,
+        lastError: this.monitorDeliveryLastError,
+        lastSuccessAt: this.monitorDeliveryLastSuccessAt
+      },
+      workerLifecycle: {
+        unexpectedExitCount: this.unexpectedWorkerExitCount,
+        lastExitAt: this.workerLastExitAt,
+        lastExitCode: this.workerLastExitCode,
+        lastExitRejectedRequests: this.workerLastExitRejectedRequests,
+        awaitingRestart: this.unexpectedWorkerExitCount > 0 && this.worker === null && !this.shuttingDown,
+        workerActive: this.worker !== null && !this.shuttingDown
+      }
+    }
   }
 
   /**
@@ -128,8 +232,12 @@ export class WcdbService {
    * 启用/禁用日志
    */
   setLogEnabled(enabled: boolean): void {
+    void this.setLogEnabledAndWait(enabled)
+  }
+
+  async setLogEnabledAndWait(enabled: boolean): Promise<void> {
     this.logEnabled = enabled
-    this.callWorker('setLogEnabled', { enabled }).catch(() => { })
+    await this.callWorker('setLogEnabled', { enabled })
   }
 
   /**
@@ -181,11 +289,94 @@ export class WcdbService {
   /**
    * 关闭服务
    */
-  async shutdown(): Promise<void> {
-    try { await this.close() } catch {}
-    if (this.worker) {
-      try { await this.worker.terminate() } catch {}
-      this.worker = null
+  async shutdown(): Promise<{
+    gracefulClose: boolean
+    workerTerminated: boolean
+    workerDetached?: boolean
+    shutdownStrategy?: 'no_worker' | 'process_exit_detach' | 'forced_terminate'
+    boundedFallback: boolean
+    pendingBeforeClose?: number
+    pendingTypes?: string[]
+    oldestPendingMs?: number
+  }> {
+    if (this.shuttingDown) {
+      return {
+        gracefulClose: false,
+        workerTerminated: false,
+        workerDetached: false,
+        shutdownStrategy: 'forced_terminate',
+        boundedFallback: true
+      }
+    }
+    const worker = this.worker
+    if (!worker) {
+      this.shuttingDown = true
+      return {
+        gracefulClose: true,
+        workerTerminated: true,
+        workerDetached: false,
+        shutdownStrategy: 'no_worker',
+        boundedFallback: false
+      }
+    }
+    const settleWithin = async (promise: Promise<unknown>, timeoutMs: number): Promise<boolean> =>
+      await new Promise(resolve => {
+        let settled = false
+        const timer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          resolve(false)
+        }, timeoutMs)
+        promise.then(
+          () => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve(true)
+          },
+          () => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve(false)
+          }
+        )
+      })
+
+    // A native WCDB call can be non-cancellable. Queue a JS-only quiesce behind
+    // every accepted request and, once acknowledged, detach the read-only worker
+    // for process exit instead of entering wcdb_shutdown(), whose native thread
+    // join can itself hang. If an earlier native request is stuck, retain the
+    // bounded terminate fallback. Recovery diagnostics distinguish both paths.
+    const pendingBeforeClose = this.pending.size
+    const pendingSnapshot = [...this.pending.values()]
+    const pendingTypes = [...new Set(pendingSnapshot.map(item => item.type))]
+      .sort()
+      .slice(0, 12)
+    const oldestPendingMs = pendingSnapshot.length
+      ? Math.max(0, Date.now() - Math.min(...pendingSnapshot.map(item => item.startedAt)))
+      : 0
+    const closePromise = this.callWorker('prepareForProcessExit')
+    this.shuttingDown = true
+    const gracefulClose = await settleWithin(closePromise, 2_000)
+    const workerTerminated = gracefulClose
+      ? false
+      : await settleWithin(worker.terminate(), 1_500)
+    worker.unref()
+    if (this.worker === worker) this.worker = null
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error('WCDB Worker 已在应用退出时停止'))
+    }
+    this.pending.clear()
+    return {
+      gracefulClose,
+      workerTerminated,
+      workerDetached: gracefulClose,
+      shutdownStrategy: gracefulClose ? 'process_exit_detach' : 'forced_terminate',
+      boundedFallback: !gracefulClose,
+      pendingBeforeClose,
+      pendingTypes,
+      oldestPendingMs
     }
   }
 

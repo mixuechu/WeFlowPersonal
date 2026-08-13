@@ -3,11 +3,25 @@ import path from 'path'
 import https from 'https'
 import http from 'http'
 import { URL } from 'url'
-import { app } from 'electron'
 import { randomUUID, createHash } from 'crypto'
 import { ConfigService } from './config'
 import { chatService, type Message } from './chatService'
 import { wcdbService } from './wcdbService'
+import { readBoundedIncomingMessage } from './boundedNodeResponse.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import { loadInsightProfileCache, writeInsightProfileCache } from './insightProfileCache.ts'
+import {
+  cachePersistenceRetryDelayMs,
+  emptyCachePersistenceRetry,
+  planCachePersistenceRetry
+} from './cachePersistenceRetry.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 const API_TIMEOUT_MS = 45_000
 const API_TEMPERATURE = 0.7
@@ -290,26 +304,29 @@ function callProfileApi(
       }
 
       const requestFn = urlObj.protocol === 'https:' ? https.request : http.request
-      const req = requestFn(requestOptions, (res) => {
+      const req = requestFn(requestOptions, async (res) => {
         let data = ''
-        res.on('data', (chunk) => { data += chunk })
-        res.on('end', () => {
-          try {
-            if (res.statusCode && res.statusCode >= 400) {
-              reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
-              return
-            }
-            const parsed = JSON.parse(data)
-            const content = parsed?.choices?.[0]?.message?.content
-            if (typeof content === 'string' && content.trim()) {
-              resolve(content.trim())
-            } else {
-              reject(new Error(`API 返回格式异常: ${data.slice(0, 200)}`))
-            }
-          } catch {
-            reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
+        try {
+          data = await readBoundedIncomingMessage(res)
+        } catch (error) {
+          reject(error)
+          return
+        }
+        try {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new ApiRequestError(`API 请求失败 (${res.statusCode}): ${data.slice(0, 200)}`, res.statusCode, data))
+            return
           }
-        })
+          const parsed = JSON.parse(data)
+          const content = parsed?.choices?.[0]?.message?.content
+          if (typeof content === 'string' && content.trim()) {
+            resolve(content.trim())
+          } else {
+            reject(new Error(`API 返回格式异常: ${data.slice(0, 200)}`))
+          }
+        } catch {
+          reject(new Error(`JSON 解析失败: ${data.slice(0, 200)}`))
+        }
       })
 
       const onAbort = () => {
@@ -364,10 +381,22 @@ class InsightProfileService {
   private records: InsightProfileRecord[] = []
   private activeTask: ActiveProfileTask | null = null
   private failedStatus = new Map<string, { error: string; updatedAt: number }>()
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private persistTimer: NodeJS.Timeout | null = null
+
+  constructor() {
+    electronApp?.once?.('will-quit', () => this.flushPendingPersistence())
+  }
+
+  private encryptionKey(): string {
+    return ConfigService.getInstance().getOrCreateLocalCacheEncryptionKey()
+  }
 
   private resolveFilePath(): string {
     if (this.filePath) return this.filePath
-    const userDataPath = app?.getPath?.('userData') || process.cwd()
+    const workerUserDataPath = String(process.env.WEFLOW_USER_DATA_PATH || process.env.WEFLOW_CONFIG_CWD || '').trim()
+    const userDataPath = workerUserDataPath || electronApp?.getPath?.('userData') || process.cwd()
     fs.mkdirSync(userDataPath, { recursive: true })
     this.filePath = path.join(userDataPath, 'weflow-insight-profiles.json')
     return this.filePath
@@ -378,22 +407,85 @@ class InsightProfileService {
     this.loaded = true
     try {
       const filePath = this.resolveFilePath()
-      if (!fs.existsSync(filePath)) return
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+      const loaded = loadInsightProfileCache<any>(filePath, this.encryptionKey())
+      this.privacy = loaded.privacy
+      const parsed = loaded.value
       const records = Array.isArray(parsed) ? parsed : parsed?.records
       if (Array.isArray(records)) {
         this.records = records.filter((item) => item && typeof item === 'object') as InsightProfileRecord[]
       }
-    } catch {
+    } catch (error) {
       this.records = []
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
-  private persist(): void {
+  private persist(delayMs = 0): void {
+    if (this.persistTimer) return
+    if (delayMs > 0) {
+      this.persistTimer = setTimeout(() => {
+        this.persistTimer = null
+        this.persistNow()
+      }, delayMs)
+      this.persistTimer.unref?.()
+      return
+    }
+    this.persistNow()
+  }
+
+  private persistNow(): void {
     try {
-      fs.writeFileSync(this.resolveFilePath(), JSON.stringify({ version: 1, records: this.records }, null, 2), 'utf-8')
-    } catch {
-      // Profile generation should not crash when local persistence fails.
+      if (!this.privacy.writable) return
+      this.privacy = writeInsightProfileCache(
+        this.resolveFilePath(),
+        this.records,
+        this.encryptionKey()
+      )
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
+      this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
+    }
+  }
+
+  private flushPendingPersistence(): void {
+    if (!this.persistTimer) return
+    clearTimeout(this.persistTimer)
+    this.persistTimer = null
+    try {
+      if (!this.privacy.writable) return
+      this.privacy = writeInsightProfileCache(
+        this.resolveFilePath(),
+        this.records,
+        this.encryptionKey()
+      )
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
+    }
+  }
+
+  migratePrivacy(): void {
+    this.ensureLoaded()
+  }
+
+  getPrivacyStatus(): SensitiveCachePrivacy & {
+    exists: boolean
+    mode: string | null
+    bytes: number
+    entries: number
+  } {
+    this.ensureLoaded()
+    const inspected = inspectSensitiveCacheFile(this.resolveFilePath())
+    return {
+      ...this.privacy,
+      ...inspected,
+      entries: this.records.length,
+      persistenceRetry: { ...this.persistenceRetry }
     }
   }
 

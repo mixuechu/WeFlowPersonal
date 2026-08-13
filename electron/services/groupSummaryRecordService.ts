@@ -1,8 +1,26 @@
-import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
-import { ConfigService } from './config'
+import { ConfigService } from './config.ts'
+import {
+  modelTraceContainsSensitivePayload,
+  sanitizePersistedModelTrace
+} from '../../shared/modelTracePrivacy.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import {
+  cachePersistenceRetryDelayMs,
+  emptyCachePersistenceRetry,
+  planCachePersistenceRetry
+} from './cachePersistenceRetry.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 export type GroupSummaryTriggerType = 'auto' | 'manual'
 
@@ -32,6 +50,8 @@ export interface GroupSummaryLog {
   responseFormatFallback?: boolean
   responseFormatFallbackReason?: string
   parsedTopics?: GroupSummaryTopic[]
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
 }
 
 export interface GroupSummaryRecord {
@@ -98,10 +118,22 @@ class GroupSummaryRecordService {
   private logDir: string | null = null
   private loaded = false
   private records: GroupSummaryIndexRecord[] = []
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private persistTimer: NodeJS.Timeout | null = null
+  private pendingLogs = new Map<string, GroupSummaryLog>()
+
+  constructor() {
+    electronApp?.once?.('will-quit', () => this.flushPendingPersistence())
+  }
+
+  private encryptionKey(): string {
+    return ConfigService.getInstance().getOrCreateLocalCacheEncryptionKey()
+  }
 
   private resolveUserDataPath(): string {
     const workerUserDataPath = String(process.env.WEFLOW_USER_DATA_PATH || process.env.WEFLOW_CONFIG_CWD || '').trim()
-    const userDataPath = workerUserDataPath || app?.getPath?.('userData') || process.cwd()
+    const userDataPath = workerUserDataPath || electronApp?.getPath?.('userData') || process.cwd()
     fs.mkdirSync(userDataPath, { recursive: true })
     return userDataPath
   }
@@ -115,7 +147,7 @@ class GroupSummaryRecordService {
   private resolveLogDir(): string {
     if (this.logDir) return this.logDir
     this.logDir = path.join(this.resolveUserDataPath(), 'weflow-group-summary-logs')
-    fs.mkdirSync(this.logDir, { recursive: true })
+    fs.mkdirSync(this.logDir, { recursive: true, mode: 0o700 })
     return this.logDir
   }
 
@@ -135,13 +167,22 @@ class GroupSummaryRecordService {
   }
 
   private writeLogFile(recordId: string, log: GroupSummaryLog, rawOutput: string): string | undefined {
+    const fileName = this.safeLogFileName(recordId)
+    const sanitized = sanitizePersistedModelTrace({ ...log, rawOutput }) as GroupSummaryLog
     try {
-      const fileName = this.safeLogFileName(recordId)
       const logPath = path.join(this.resolveLogDir(), fileName)
-      fs.writeFileSync(logPath, JSON.stringify({ version: 1, rawOutput, log }, null, 2), 'utf-8')
+      writeEncryptedSensitiveCache(
+        logPath,
+        { version: 3, rawOutput: '', log: sanitized },
+        this.encryptionKey()
+      )
+      this.pendingLogs.delete(fileName)
       return fileName
-    } catch {
-      return undefined
+    } catch (error) {
+      this.pendingLogs.set(fileName, sanitized)
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
+      this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
+      return fileName
     }
   }
 
@@ -150,12 +191,20 @@ class GroupSummaryRecordService {
     try {
       const logPath = path.join(this.resolveLogDir(), this.safeLogFileName(fileName.replace(/\.json$/i, '')))
       if (!fs.existsSync(logPath)) return null
-      const parsed = JSON.parse(fs.readFileSync(logPath, 'utf-8'))
+      const parsed = loadEncryptedSensitiveCache<any>(logPath, this.encryptionKey()).value
       const log = parsed?.log
       if (!log || typeof log !== 'object') return null
+      const sanitized = sanitizePersistedModelTrace(log as GroupSummaryLog)
+      if (Number(parsed?.version || 0) < 3 || modelTraceContainsSensitivePayload(log)) {
+        writeEncryptedSensitiveCache(
+          logPath,
+          { version: 3, rawOutput: '', log: sanitized },
+          this.encryptionKey()
+        )
+      }
       return {
-        rawOutput: typeof parsed?.rawOutput === 'string' ? parsed.rawOutput : String(log.rawOutput || ''),
-        log: log as GroupSummaryLog
+        rawOutput: '',
+        log: sanitized as GroupSummaryLog
       }
     } catch {
       return null
@@ -167,17 +216,20 @@ class GroupSummaryRecordService {
     this.loaded = true
     const filePath = this.resolveFilePath()
     try {
-      if (!fs.existsSync(filePath)) return
-      const raw = fs.readFileSync(filePath, 'utf-8')
-      const parsed = JSON.parse(raw)
+      if (!fs.existsSync(filePath)) {
+        this.sanitizeStoredLogFiles()
+        this.removeLegacyPlaintextBackups()
+        this.removeOrphanLogFiles()
+        return
+      }
+      const loaded = loadEncryptedSensitiveCache<any>(filePath, this.encryptionKey())
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       const records = Array.isArray(parsed) ? parsed : parsed?.records
       if (!Array.isArray(records)) return
 
       const legacyRecords = records.filter((item) => item && typeof item === 'object') as LegacyGroupSummaryRecord[]
       const needsMigration = legacyRecords.some((record) => Boolean(record.log || record.rawOutput))
-      if (needsMigration) {
-        this.backupLegacyFile(filePath)
-      }
 
       this.records = legacyRecords.map((record) => {
         const id = String(record.id || randomUUID())
@@ -205,28 +257,118 @@ class GroupSummaryRecordService {
       if (needsMigration) {
         this.persist()
       }
-    } catch {
+      this.sanitizeStoredLogFiles()
+      this.removeLegacyPlaintextBackups()
+      this.removeOrphanLogFiles()
+    } catch (error) {
       this.records = []
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
-  private backupLegacyFile(filePath: string): void {
+  private removeLegacyPlaintextBackups(): void {
     try {
-      const backupPath = `${filePath}.legacy-${Date.now()}.bak`
-      if (!fs.existsSync(backupPath)) {
-        fs.copyFileSync(filePath, backupPath)
+      const userDataPath = this.resolveUserDataPath()
+      for (const name of fs.readdirSync(userDataPath)) {
+        if (/^weflow-group-summary-records\.json\.legacy-\d+\.bak$/.test(name)) {
+          fs.unlinkSync(path.join(userDataPath, name))
+        }
       }
     } catch {
-      // Backup failure should not block reading existing records.
+      // Privacy migration is best effort; the primary record remains readable.
     }
   }
 
-  private persist(): void {
+  private sanitizeStoredLogFiles(): void {
     try {
-      const filePath = this.resolveFilePath()
-      fs.writeFileSync(filePath, JSON.stringify({ version: 2, records: this.records }, null, 2), 'utf-8')
+      const directory = this.resolveLogDir()
+      for (const name of fs.readdirSync(directory)) {
+        if (!/^[a-zA-Z0-9_-]+\.json$/.test(name)) continue
+        const logPath = path.join(directory, name)
+        try {
+          const parsed = loadEncryptedSensitiveCache<any>(logPath, this.encryptionKey()).value
+          const log = parsed?.log
+          if (!log || typeof log !== 'object') continue
+          const sanitized = sanitizePersistedModelTrace(log)
+          writeEncryptedSensitiveCache(
+            logPath,
+            { version: 3, rawOutput: '', log: sanitized },
+            this.encryptionKey()
+          )
+        } catch {}
+      }
+      fs.chmodSync(directory, 0o700)
     } catch {
-      // Summary generation should not fail because local record persistence failed.
+      // Summary listing should survive an unreadable diagnostics directory.
+    }
+  }
+
+  private persist(delayMs = 0): void {
+    if (this.persistTimer) return
+    if (delayMs > 0) {
+      this.persistTimer = setTimeout(() => {
+        this.persistTimer = null
+        this.persistNow()
+      }, delayMs)
+      this.persistTimer.unref?.()
+      return
+    }
+    this.persistNow()
+  }
+
+  private writePendingLogs(): void {
+    for (const [fileName, log] of this.pendingLogs) {
+      writeEncryptedSensitiveCache(
+        path.join(this.resolveLogDir(), fileName),
+        { version: 3, rawOutput: '', log },
+        this.encryptionKey()
+      )
+      this.pendingLogs.delete(fileName)
+    }
+  }
+
+  private persistNow(): void {
+    try {
+      if (!this.privacy.writable) return
+      this.writePendingLogs()
+      const filePath = this.resolveFilePath()
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(
+          filePath,
+          { version: 3, records: this.records },
+          this.encryptionKey()
+        ),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
+      this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
+    }
+  }
+
+  private flushPendingPersistence(): void {
+    if (!this.persistTimer) return
+    clearTimeout(this.persistTimer)
+    this.persistTimer = null
+    try {
+      if (!this.privacy.writable) return
+      this.writePendingLogs()
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(
+          this.resolveFilePath(),
+          { version: 3, records: this.records },
+          this.encryptionKey()
+        ),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     }
   }
 
@@ -307,6 +449,7 @@ class GroupSummaryRecordService {
       .sort((a, b) => b.createdAt - a.createdAt)
     const keepIds = new Set(scopedRecords.slice(0, this.maxRecordsPerScope).map((item) => item.id))
     this.records = this.records.filter((item) => item.accountScope !== scope || keepIds.has(item.id))
+    this.removeOrphanLogFiles()
     this.persist()
     return this.toSummary(record)
   }
@@ -374,10 +517,57 @@ class GroupSummaryRecordService {
   }
 
   clearRuntimeCache(): void {
+    this.flushPendingPersistence()
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer)
+      this.persistTimer = null
+    }
+    this.pendingLogs.clear()
+    this.persistenceRetry = emptyCachePersistenceRetry()
     this.loaded = false
     this.records = []
     this.filePath = null
     this.logDir = null
+  }
+
+  migratePrivacy(): void {
+    this.ensureLoaded()
+  }
+
+  getPrivacyStatus(): unknown {
+    this.ensureLoaded()
+    const logFiles = (() => {
+      try {
+        return fs.readdirSync(this.resolveLogDir())
+          .filter(name => /^[a-zA-Z0-9_-]+\.json$/.test(name))
+      } catch { return [] }
+    })()
+    const logAudits = logFiles.map(name =>
+      inspectSensitiveCacheFile(path.join(this.resolveLogDir(), name)))
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.resolveFilePath()),
+      entries: this.records.length,
+      logFiles: logFiles.length,
+      logsEncrypted: logAudits.every(item => item.encrypted && item.mode === '600'),
+      pendingLogFiles: this.pendingLogs.size,
+      persistenceRetry: { ...this.persistenceRetry },
+      content: 'group_summary_index_and_sanitized_model_logs'
+    }
+  }
+
+  private removeOrphanLogFiles(): void {
+    try {
+      const referenced = new Set(this.records.map(record => record.logFile).filter(Boolean))
+      for (const name of this.pendingLogs.keys()) {
+        if (!referenced.has(name)) this.pendingLogs.delete(name)
+      }
+      for (const name of fs.readdirSync(this.resolveLogDir())) {
+        if (/^[a-zA-Z0-9_-]+\.json$/.test(name) && !referenced.has(name)) {
+          fs.unlinkSync(path.join(this.resolveLogDir(), name))
+        }
+      }
+    } catch {}
   }
 }
 

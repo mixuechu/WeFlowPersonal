@@ -1,8 +1,17 @@
 import { join, dirname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
-import { writeFile } from 'fs/promises'
-import { app } from 'electron'
-import { ConfigService } from './config'
+import { existsSync, mkdirSync, rmSync } from 'fs'
+import { ConfigService } from './config.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 const CACHE_VERSION = 1
 const MAX_GROUP_ENTRIES_PER_SCOPE = 3000
@@ -44,19 +53,23 @@ export class GroupMyMessageCountCacheService {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private encryptionKey: Buffer | string
   private store: GroupMyMessageCountCacheStore = {
     version: CACHE_VERSION,
     scopes: {}
   }
 
-  constructor(cacheBasePath?: string) {
+  constructor(cacheBasePath?: string, encryptionKey: Buffer | string = '') {
+    this.encryptionKey = encryptionKey
     const basePath = cacheBasePath && cacheBasePath.trim().length > 0
       ? cacheBasePath
       : ConfigService.getInstance().getCacheBasePath()
     this.cacheFilePath = join(basePath, 'group-my-message-counts.json')
     this.ensureCacheDir()
     this.load()
-    app?.once('will-quit', () => this.flushSync())
+    electronApp?.once?.('will-quit', () => this.flushSync())
   }
 
   private ensureCacheDir(): void {
@@ -67,10 +80,13 @@ export class GroupMyMessageCountCacheService {
   }
 
   private load(): void {
-    if (!existsSync(this.cacheFilePath)) return
     try {
-      const raw = readFileSync(this.cacheFilePath, 'utf8')
-      const parsed = JSON.parse(raw) as unknown
+      const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(
+        this.cacheFilePath,
+        this.encryptionKey
+      )
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       if (!parsed || typeof parsed !== 'object') {
         this.store = { version: CACHE_VERSION, scopes: {} }
         return
@@ -104,6 +120,11 @@ export class GroupMyMessageCountCacheService {
     } catch (error) {
       console.error('GroupMyMessageCountCacheService: 载入缓存失败', error)
       this.store = { version: CACHE_VERSION, scopes: {} }
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
@@ -175,6 +196,30 @@ export class GroupMyMessageCountCacheService {
     }
   }
 
+  getPrivacyStatus(): unknown {
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.cacheFilePath),
+      entries: Object.values(this.store.scopes).reduce((total, scope) => total + Object.keys(scope).length, 0),
+      persistenceRetry: { ...this.persistenceRetry }
+    }
+  }
+
+  initializeEncryption(encryptionKey: Buffer | string): void {
+    if (!encryptionKey || (this.encryptionKey && this.privacy.writable)) return
+    const pending = this.store
+    this.encryptionKey = encryptionKey
+    this.store = { version: CACHE_VERSION, scopes: {} }
+    this.privacy = emptySensitiveCachePrivacy()
+    this.load()
+    let pendingEntries = 0
+    for (const [scopeKey, scope] of Object.entries(pending.scopes)) {
+      this.store.scopes[scopeKey] = { ...(this.store.scopes[scopeKey] || {}), ...scope }
+      pendingEntries += Object.keys(scope).length
+    }
+    if (pendingEntries > 0 && this.privacy.writable) this.persist()
+  }
+
   private trimScope(scopeKey: string): void {
     const scope = this.store.scopes[scopeKey]
     if (!scope) return
@@ -205,12 +250,12 @@ export class GroupMyMessageCountCacheService {
   }
 
   /** 防抖异步落盘：批量刷新群统计时避免连续同步写盘阻塞主线程 */
-  private persist(): void {
+  private persist(delayMs = 1000): void {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persistNow()
-    }, 1000)
+    }, Math.max(0, delayMs))
     this.persistTimer.unref?.()
   }
 
@@ -221,14 +266,21 @@ export class GroupMyMessageCountCacheService {
     }
     this.persistInFlight = true
     try {
-      await writeFile(this.cacheFilePath, JSON.stringify(this.store), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.store, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('GroupMyMessageCountCacheService: 保存缓存失败', error)
+      this.persistDirty = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistDirty) {
         this.persistDirty = false
-        void this.persistNow()
+        this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
     }
   }
@@ -239,7 +291,11 @@ export class GroupMyMessageCountCacheService {
     clearTimeout(this.persistTimer)
     this.persistTimer = null
     try {
-      writeFileSync(this.cacheFilePath, JSON.stringify(this.store), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.store, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
     } catch (error) {
       console.error('GroupMyMessageCountCacheService: 保存缓存失败', error)
     }

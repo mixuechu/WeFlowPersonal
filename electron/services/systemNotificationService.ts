@@ -1,5 +1,9 @@
 import { Notification } from "electron";
 import { avatarFileCache } from "./avatarFileCacheService";
+import { buildSystemNotificationActionPayload } from "./systemNotificationNavigationPolicy";
+import { showAndConfirmSystemNotification } from "./systemNotificationDeliveryPolicy";
+import { sanitizeDiagnosticText } from "./diagnosticRedaction";
+import { formatSystemNotificationShown } from "./runtimeConsolePrivacy";
 
 // 系统通知服务（Linux / macOS）：走各自系统的通知中心（Linux 底层为
 // D-Bus/libnotify，macOS 为通知中心），Windows 使用特制的液态玻璃通知窗口。
@@ -46,7 +50,7 @@ function triggerNotificationCallback(payload: unknown): void {
     try {
       callback(payload);
     } catch (error) {
-      console.error("[SystemNotification] Callback error:", error);
+      console.error("[SystemNotification] Callback error:", sanitizeDiagnosticText(error));
     }
   }
 }
@@ -79,26 +83,11 @@ export async function showSystemNotification(
     activeNotifications.set(notificationId, notification);
 
     notification.on("click", () => {
-      if (data.channel === "ai-insight" && data.insightRecordId) {
-        triggerNotificationCallback({
-          sessionId: data.sessionId,
-          channel: data.channel,
-          insightRecordId: data.insightRecordId,
-          targetRoute: data.targetRoute,
-        });
-        return;
-      }
-      if (data.sessionId) {
-        triggerNotificationCallback(data.sessionId);
-      }
+      const payload = buildSystemNotificationActionPayload(data);
+      if (payload !== null) triggerNotificationCallback(payload);
     });
 
     notification.on("close", () => {
-      clearNotificationState(notificationId);
-    });
-
-    notification.on("failed", (_, error) => {
-      console.error("[SystemNotification] Notification failed:", error);
       clearNotificationState(notificationId);
     });
 
@@ -116,15 +105,18 @@ export async function showSystemNotification(
       closeTimers.set(notificationId, timer);
     }
 
-    notification.show();
+    const display = await showAndConfirmSystemNotification(notification);
+    if (!display.shown) {
+      console.error("[SystemNotification] Notification failed:", sanitizeDiagnosticText(display.error));
+      clearNotificationState(notificationId);
+      return null;
+    }
 
-    console.log(
-      `[SystemNotification] Shown notification ${notificationId}: ${data.title}`,
-    );
+    console.log(formatSystemNotificationShown(notificationId));
 
     return notificationId;
   } catch (error) {
-    console.error("[SystemNotification] Failed to show notification:", error);
+    console.error("[SystemNotification] Failed to show notification:", sanitizeDiagnosticText(error));
     return null;
   }
 }

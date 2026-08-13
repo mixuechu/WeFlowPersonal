@@ -20,6 +20,16 @@ import { voiceTranscribeService } from './voiceTranscribeService'
 import { ImageDecryptService } from './imageDecryptService'
 import { CONTACT_REGION_LOOKUP_DATA } from './contactRegionLookupData'
 import { LRUCache } from '../utils/LRUCache.js'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import { detectSupportedRasterExtension, fetchPublicRemoteBuffer } from './publicRemoteFetchService.ts'
+
+const CHAT_EMOJI_MAX_BYTES = 12 * 1024 * 1024
 
 export interface ChatSession {
   username: string
@@ -381,6 +391,8 @@ class ChatService {
   private transcriptCacheLoaded = false
   private transcriptCacheDirty = false
   private transcriptFlushTimer: ReturnType<typeof setTimeout> | null = null
+  private transcriptCacheEncryptionKey: Buffer | string = ''
+  private transcriptCachePrivacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
   private mediaDbsCache: string[] | null = null
   private mediaDbsCacheTime = 0
   private readonly mediaDbsCacheTtl = 300000 // 5分钟
@@ -459,12 +471,13 @@ class ChatService {
 
   constructor() {
     this.configService = new ConfigService()
-    this.contactCacheService = new ContactCacheService(this.configService.getCacheBasePath())
+    const localCacheKey = this.configService.getOrCreateLocalCacheEncryptionKey()
+    this.contactCacheService = new ContactCacheService(this.configService.getCacheBasePath(), localCacheKey)
     const persisted = this.contactCacheService.getAllEntries()
     this.avatarCache = new Map(Object.entries(persisted))
-    this.messageCacheService = new MessageCacheService(this.configService.getCacheBasePath())
-    this.sessionStatsCacheService = new SessionStatsCacheService(this.configService.getCacheBasePath())
-    this.groupMyMessageCountCacheService = new GroupMyMessageCountCacheService(this.configService.getCacheBasePath())
+    this.messageCacheService = new MessageCacheService(this.configService.getCacheBasePath(), localCacheKey)
+    this.sessionStatsCacheService = new SessionStatsCacheService(this.configService.getCacheBasePath(), localCacheKey)
+    this.groupMyMessageCountCacheService = new GroupMyMessageCountCacheService(this.configService.getCacheBasePath(), localCacheKey)
     this.imageDecryptService = new ImageDecryptService()
     // 初始化LRU缓存，限制大小防止内存泄漏
     this.voiceWavCache = new LRUCache(this.voiceWavCacheMaxEntries)
@@ -473,6 +486,29 @@ class ChatService {
 
   setRuntimeConfig(config: { dbPath?: string; decryptKey?: string; myWxid?: string; resourcesPath?: string; appPath?: string; isPackaged?: boolean }): void {
     this.runtimeConfig = config
+  }
+
+  initializeRuntimeCacheEncryption(encryptionKey: Buffer | string): void {
+    this.contactCacheService.initializeEncryption(encryptionKey)
+    this.messageCacheService.initializeEncryption(encryptionKey)
+    this.sessionStatsCacheService.initializeEncryption(encryptionKey)
+    this.groupMyMessageCountCacheService.initializeEncryption(encryptionKey)
+  }
+
+  initializeTranscriptCacheEncryption(encryptionKey: Buffer | string): void {
+    this.transcriptCacheEncryptionKey = encryptionKey
+    if (this.transcriptCacheLoaded) {
+      if (!this.transcriptCachePrivacy.writable) {
+        this.transcriptCacheLoaded = false
+        this.transcriptCachePrivacy = emptySensitiveCachePrivacy()
+        this.loadTranscriptCacheIfNeeded()
+        return
+      }
+      this.transcriptCacheDirty = true
+      this.flushTranscriptCache()
+      return
+    }
+    this.loadTranscriptCacheIfNeeded()
   }
 
   /**
@@ -765,6 +801,17 @@ class ChatService {
     } catch (e) {
       console.error('ChatService: 关闭数据库失败:', e)
     }
+    this.connected = false
+    this.monitorSetup = false
+  }
+
+  /**
+   * App shutdown owns the native WCDB teardown. Clear only JS-side cursor and
+   * connection state here so we do not enqueue many fire-and-forget close calls
+   * immediately before WcdbService sends its single ordered shutdown request.
+   */
+  prepareForAppShutdown(): void {
+    this.messageCursors.clear()
     this.connected = false
     this.monitorSetup = false
   }
@@ -8096,9 +8143,10 @@ class ChatService {
 
     // 检查内存缓存
     const cached = emojiCache.get(cacheKey)
-    if (cached && existsSync(cached)) {
+    if (cached && await this.validateEmojiCacheFile(cached)) {
       return { success: true, localPath: cached }
     }
+    if (cached) emojiCache.delete(cacheKey)
 
     // 检查是否正在下载
     const downloading = emojiDownloading.get(cacheKey)
@@ -8113,14 +8161,15 @@ class ChatService {
     // 确保缓存目录存在
     const cacheDir = this.getEmojiCacheDir()
     if (!existsSync(cacheDir)) {
-      mkdirSync(cacheDir, { recursive: true })
+      mkdirSync(cacheDir, { recursive: true, mode: 0o700 })
     }
+    await fsPromises.chmod(cacheDir, 0o700).catch(() => {})
 
     // 检查本地是否已有缓存文件
     const extensions = ['.gif', '.png', '.webp', '.jpg', '.jpeg']
     for (const ext of extensions) {
       const filePath = join(cacheDir, `${cacheKey}${ext}`)
-      if (existsSync(filePath)) {
+      if (await this.validateEmojiCacheFile(filePath)) {
         emojiCache.set(cacheKey, filePath)
         return { success: true, localPath: filePath }
       }
@@ -8139,10 +8188,10 @@ class ChatService {
         return { success: true, localPath }
       }
       return { success: false, error: '下载失败' }
-    } catch (e) {
-      console.error(`[ChatService] 表情包下载异常: url=${cdnUrl}, md5=${md5}`, e)
+    } catch {
+      console.error('[ChatService] 表情包下载失败')
       emojiDownloading.delete(cacheKey)
-      return { success: false, error: String(e) }
+      return { success: false, error: '下载失败' }
     }
   }
 
@@ -8170,81 +8219,53 @@ class ChatService {
   /**
    * 执行表情包下载
    */
-  private doDownloadEmoji(url: string, cacheKey: string, cacheDir: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      const protocol = url.startsWith('https') ? https : http
-
-      const request = protocol.get(url, (response) => {
-        // 处理重定向
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          const redirectUrl = response.headers.location
-          if (redirectUrl) {
-            this.doDownloadEmoji(redirectUrl, cacheKey, cacheDir).then(resolve)
-            return
-          }
-        }
-
-        if (response.statusCode !== 200) {
-          resolve(null)
-          return
-        }
-
-        const chunks: Buffer[] = []
-        response.on('data', (chunk) => chunks.push(chunk))
-        response.on('end', () => {
-          const buffer = Buffer.concat(chunks)
-          if (buffer.length === 0) {
-            resolve(null)
-            return
-          }
-
-          // 检测文件类型
-          const ext = this.detectImageExtension(buffer) || this.getExtFromUrl(url) || '.gif'
-          const filePath = join(cacheDir, `${cacheKey}${ext}`)
-
-          try {
-            writeFileSync(filePath, buffer)
-            resolve(filePath)
-          } catch {
-            resolve(null)
-          }
-        })
-        response.on('error', () => resolve(null))
-      })
-
-      request.on('error', () => resolve(null))
-      request.setTimeout(10000, () => {
-        request.destroy()
-        resolve(null)
-      })
-    })
+  private async validateEmojiCacheFile(filePath: string): Promise<boolean> {
+    try {
+      const stat = await fsPromises.stat(filePath)
+      if (!stat.isFile() || stat.size <= 0 || stat.size > CHAT_EMOJI_MAX_BYTES) {
+        await fsPromises.rm(filePath, { force: true }).catch(() => {})
+        return false
+      }
+      const buffer = await fsPromises.readFile(filePath)
+      if (!detectSupportedRasterExtension(buffer)) {
+        await fsPromises.rm(filePath, { force: true }).catch(() => {})
+        return false
+      }
+      await fsPromises.chmod(filePath, 0o600)
+      return true
+    } catch {
+      return false
+    }
   }
 
-  /**
-   * 检测图片格式
-   */
-  private detectImageExtension(buffer: Buffer): string | null {
-    if (buffer.length < 12) return null
-
-    // GIF
-    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
-      return '.gif'
+  private async doDownloadEmoji(url: string, cacheKey: string, cacheDir: string): Promise<string | null> {
+    try {
+      const result = await fetchPublicRemoteBuffer(url, {
+        maxBytes: CHAT_EMOJI_MAX_BYTES,
+        timeoutMs: 10_000,
+        headers: {
+          Accept: 'image/png,image/jpeg,image/gif,image/webp',
+          'User-Agent': 'MicroMessenger Client'
+        }
+      })
+      if (result.body.length === 0) return null
+      const ext = detectSupportedRasterExtension(result.body)
+      if (!ext || !['.gif', '.png', '.webp', '.jpg', '.jpeg'].includes(ext)) return null
+      const filePath = join(cacheDir, `${cacheKey}${ext}`)
+      const temporaryPath = `${filePath}.${process.pid}.tmp`
+      try {
+        await fsPromises.writeFile(temporaryPath, result.body, { mode: 0o600 })
+        await fsPromises.chmod(temporaryPath, 0o600)
+        await fsPromises.rename(temporaryPath, filePath)
+        await fsPromises.chmod(filePath, 0o600)
+        return filePath
+      } catch {
+        await fsPromises.rm(temporaryPath, { force: true }).catch(() => {})
+        return null
+      }
+    } catch {
+      return null
     }
-    // PNG
-    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-      return '.png'
-    }
-    // JPEG
-    if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-      return '.jpg'
-    }
-    // WEBP
-    if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-      return '.webp'
-    }
-
-    return null
   }
 
   /**
@@ -9820,14 +9841,23 @@ class ChatService {
     try {
       const filePath = this.getTranscriptCachePath()
       if (existsSync(filePath)) {
-        const raw = readFileSync(filePath, 'utf-8')
-        const data = JSON.parse(raw) as Record<string, string>
+        const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(
+          filePath,
+          this.transcriptCacheEncryptionKey
+        )
+        const data = loaded.value
+        this.transcriptCachePrivacy = loaded.privacy
         for (const [k, v] of Object.entries(data)) {
           if (typeof v === 'string') this.voiceTranscriptCache.set(k, v)
         }
         console.log(`[Transcribe] 从磁盘加载了 ${this.voiceTranscriptCache.size} 条转写缓存`)
       }
     } catch (e) {
+      this.transcriptCachePrivacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(e instanceof Error ? e.message : e)
+      }
       console.error('[Transcribe] 加载转写缓存失败:', e)
     }
   }
@@ -9843,17 +9873,36 @@ class ChatService {
 
   /** 立即写入转写缓存到磁盘 */
   flushTranscriptCache(): void {
-    if (!this.transcriptCacheDirty) return
+    if (!this.transcriptCacheDirty || !this.transcriptCachePrivacy.writable) return
     try {
       const filePath = this.getTranscriptCachePath()
       const dir = dirname(filePath)
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       const obj: Record<string, string> = {}
       for (const [k, v] of this.voiceTranscriptCache) obj[k] = v
-      writeFileSync(filePath, JSON.stringify(obj), 'utf-8')
+      this.transcriptCachePrivacy = {
+        ...writeEncryptedSensitiveCache(filePath, obj, this.transcriptCacheEncryptionKey),
+        migratedPlaintext: this.transcriptCachePrivacy.migratedPlaintext
+      }
       this.transcriptCacheDirty = false
     } catch (e) {
       console.error('[Transcribe] 写入转写缓存失败:', e)
+    }
+  }
+
+  getTranscriptCachePrivacyStatus(): any {
+    return {
+      ...this.transcriptCachePrivacy,
+      ...inspectSensitiveCacheFile(this.getTranscriptCachePath()),
+      entries: this.voiceTranscriptCache.size
+    }
+  }
+
+  getRuntimeCachePrivacyStatus(): any {
+    return {
+      contacts: this.contactCacheService.getPrivacyStatus(),
+      sessionMessages: this.messageCacheService.getPrivacyStatus(),
+      sessionStats: this.sessionStatsCacheService.getPrivacyStatus(),
+      groupMyMessageCounts: this.groupMyMessageCountCacheService.getPrivacyStatus()
     }
   }
 

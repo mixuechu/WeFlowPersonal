@@ -1,6 +1,11 @@
-import { BrowserWindow, desktopCapturer, ipcMain, screen } from "electron";
+import { BrowserWindow, desktopCapturer, ipcMain, screen, WebContents } from "electron";
 import { join } from "path";
 import { ConfigService } from "../services/config";
+import { sanitizeDiagnosticText } from "../services/diagnosticRedaction";
+import {
+  formatNotificationRendererLoad,
+  formatSystemNotificationNavigation,
+} from "../services/runtimeConsolePrivacy";
 
 // 通知交付分流：Windows 走特制液态玻璃通知窗口；
 // Linux / macOS 走系统通知中心（systemNotificationService）
@@ -36,6 +41,10 @@ export function setNotificationNavigateHandler(
 }
 
 let notificationWindow: BrowserWindow | null = null;
+
+export const isNotificationRenderer = (contents: WebContents | null): boolean => Boolean(
+  contents && notificationWindow && !notificationWindow.isDestroyed() && notificationWindow.webContents === contents
+);
 let closeTimer: NodeJS.Timeout | null = null;
 
 // 空闲销毁：隐藏的通知窗口（含渲染进程）常驻占用 ~120MB 工作集，
@@ -154,7 +163,7 @@ function refreshDesktopSourceId(): Promise<void> {
     } catch (error) {
       console.warn(
         "[NotificationWindow] Failed to refresh desktop source id:",
-        error,
+        sanitizeDiagnosticText(error),
       );
     } finally {
       sourceIdRefreshing = null;
@@ -175,7 +184,7 @@ export function destroyNotificationWindow() {
   // Linux/macOS：关闭系统通知服务并清理缓存（fire-and-forget，不阻塞退出）
   if (usesSystemNotifications && systemNotificationService) {
     systemNotificationService.shutdownSystemNotificationService().catch((error) => {
-      console.warn("[NotificationWindow] Failed to shutdown system notification service:", error);
+      console.warn("[NotificationWindow] Failed to shutdown system notification service:", sanitizeDiagnosticText(error));
     });
     systemNotificationService = null;
   }
@@ -191,7 +200,7 @@ export function destroyNotificationWindow() {
   try {
     win.destroy();
   } catch (error) {
-    console.warn("[NotificationWindow] Failed to destroy window:", error);
+    console.warn("[NotificationWindow] Failed to destroy window:", sanitizeDiagnosticText(error));
   }
 }
 
@@ -262,7 +271,7 @@ export function createNotificationWindow() {
     ? `${process.env.VITE_DEV_SERVER_URL}#/notification-window`
     : `file://${join(__dirname, "../dist/index.html")}#/notification-window`;
 
-  console.log("[NotificationWindow] Loading URL:", loadUrl);
+  console.log(formatNotificationRendererLoad(isDev));
   notificationWindow.loadURL(loadUrl);
 
   // Chromium 会按 file:// 域持久化页面缩放（主窗口与通知窗口同域）：
@@ -344,7 +353,7 @@ async function showViaSystemNotification(data: any) {
     } catch (error) {
       console.error(
         "[NotificationWindow] Failed to load system notification service:",
-        error,
+        sanitizeDiagnosticText(error),
       );
       return;
     }
@@ -455,10 +464,7 @@ export async function registerNotificationHandlers() {
 
       // 注册通知点击回调（导航到会话/洞察）
       systemNotificationModule.onNotificationAction((payload: unknown) => {
-        console.log(
-          "[NotificationWindow] System notification clicked, payload:",
-          payload,
-        );
+        console.log(formatSystemNotificationNavigation(payload));
         // 如果设置了导航处理程序，则使用该处理程序；否则，回退到ipcMain方法。
         if (onNotificationNavigate) {
           onNotificationNavigate(payload);
@@ -477,7 +483,7 @@ export async function registerNotificationHandlers() {
     } catch (error) {
       console.error(
         "[NotificationWindow] Failed to initialize system notification service:",
-        error,
+        sanitizeDiagnosticText(error),
       );
     }
   }

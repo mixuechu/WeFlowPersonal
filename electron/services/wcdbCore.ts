@@ -1,9 +1,12 @@
 import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync } from 'fs'
-import { appendFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import * as fzstd from 'fzstd'
 import { expandHomePath } from '../utils/pathUtils'
+import { pinNativeLibraryForProcessLifetime } from './nativeLibraryLifetime'
+import { appendSensitiveLogFile, shouldWriteSensitiveLog } from './sensitiveLogPolicy'
+import { unsupportedWcdbQueryParameterReason } from './wcdbQueryPolicy'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
 
 //数据服务初始化错误信息，用于帮助用户诊断问题
 let lastDllInitError: string | null = null
@@ -48,6 +51,7 @@ export class WcdbCore {
   private logEnabled = false
   private lib: any = null
   private koffi: any = null
+  private processLifetimeLibraryPins = new Map<string, { runtime: any; handle: any }>()
   private initialized = false
   private handle: number | null = null
   private currentPath: string | null = null
@@ -154,6 +158,13 @@ export class WcdbCore {
   private monitorCallback: ((type: string, json: string) => void) | null = null
   private monitorReconnectTimer: any = null
   private monitorPipePath: string = ''
+  private monitorDispatch(type: string, json: string): void {
+    try {
+      this.monitorCallback?.(String(type || 'update').slice(0, 80), String(json || ''))
+    } catch (error) {
+      this.writeLog(`monitor callback failed: ${sanitizeDiagnosticText(error).slice(0, 240)}`, true)
+    }
+  }
 
 
   private displayNameCache: Map<string, { displayName: string; updatedAt: number }> = new Map()
@@ -185,7 +196,7 @@ export class WcdbCore {
   setPaths(resourcesPath: string, userDataPath: string): void {
     this.resourcesPath = resourcesPath
     this.userDataPath = userDataPath
-    this.writeLog(`[bootstrap] setPaths resourcesPath=${resourcesPath} userDataPath=${userDataPath}`, true)
+    this.writeLog('[bootstrap] runtime paths configured')
   }
 
   getLastInitError(): string | null {
@@ -194,11 +205,14 @@ export class WcdbCore {
 
   setLogEnabled(enabled: boolean): void {
     this.logEnabled = enabled
-    this.writeLog(`[bootstrap] setLogEnabled=${enabled ? '1' : '0'} env.WCDB_LOG_ENABLED=${process.env.WCDB_LOG_ENABLED || ''}`, true)
+    this.writeLog(`[bootstrap] diagnostic logging enabled=${this.isLogEnabled() ? '1' : '0'}`)
     if (this.isLogEnabled() && this.initialized) {
       this.startLogPolling()
     } else {
       this.stopLogPolling()
+      if (this.logFlushTimer) clearTimeout(this.logFlushTimer)
+      this.logFlushTimer = null
+      this.pendingLogLines = []
     }
   }
 
@@ -242,11 +256,11 @@ export class WcdbCore {
 
     setTimeout(() => {
       if (!this.monitorCallback) return
+      try {
+        this.monitorPipeClient = net.createConnection(this.monitorPipePath, () => { })
 
-      this.monitorPipeClient = net.createConnection(this.monitorPipePath, () => { })
-
-      let buffer = ''
-      this.monitorPipeClient.on('data', (data: Buffer) => {
+        let buffer = ''
+        this.monitorPipeClient.on('data', (data: Buffer) => {
         const rawChunk = data.toString('utf8')
         // macOS 侧可能使用 '\0' 或无换行分隔，统一归一化并兜底拆包
         const normalizedChunk = rawChunk
@@ -260,9 +274,9 @@ export class WcdbCore {
           if (line.trim()) {
             try {
               const parsed = JSON.parse(line)
-              this.monitorCallback?.(parsed.action || 'update', line)
+              this.monitorDispatch(parsed.action || 'update', line)
             } catch {
-              this.monitorCallback?.('update', line)
+              this.monitorDispatch('update', line)
             }
           }
         }
@@ -272,22 +286,27 @@ export class WcdbCore {
         if (tail.startsWith('{') && tail.endsWith('}')) {
           try {
             const parsed = JSON.parse(tail)
-            this.monitorCallback?.(parsed.action || 'update', tail)
+            this.monitorDispatch(parsed.action || 'update', tail)
             buffer = ''
           } catch {
             // 不可解析则继续等待下一块数据
           }
         }
-      })
+        })
 
-      this.monitorPipeClient.on('error', () => {
-        // 保持静默，与现有错误处理策略一致
-      })
+        this.monitorPipeClient.on('error', () => {
+          // 保持静默，与现有错误处理策略一致
+        })
 
-      this.monitorPipeClient.on('close', () => {
+        this.monitorPipeClient.on('close', () => {
+          this.monitorPipeClient = null
+          this.scheduleReconnect()
+        })
+      } catch (error) {
         this.monitorPipeClient = null
+        this.writeLog(`monitor connection failed: ${sanitizeDiagnosticText(error).slice(0, 240)}`, true)
         this.scheduleReconnect()
-      })
+      }
     }, 100)
   }
 
@@ -380,6 +399,22 @@ export class WcdbCore {
     return candidates[0] || libName
   }
 
+  /**
+   * Koffi automatically calls dlclose when a worker environment is finalized.
+   * The macOS WCDB bridge owns native background threads and static destructors,
+   * so unloading its image while the process is still tearing down can execute
+   * stale code and crash in Koffi's LibraryHandle finalizer. Hold one deliberate
+   * RTLD_NODELETE reference until process exit; wcdb_shutdown still releases all
+   * database resources, while dyld keeps the executable image mapped safely.
+   */
+  private pinDarwinLibraryForProcessLifetime(libraryPath: string): void {
+    if (process.platform !== 'darwin' || this.processLifetimeLibraryPins.has(libraryPath)) return
+    const pin = pinNativeLibraryForProcessLifetime(this.koffi, libraryPath)
+    if (!pin) return
+    this.processLifetimeLibraryPins.set(libraryPath, pin)
+    this.writeLog(`[bootstrap] pinned process-lifetime library path=${libraryPath}`, true)
+  }
+
   private formatInitProtectionError(code: number): string {
     const messages: Record<number, string> = {
       '-3001': '未找到数据库目录 (db_storage)，请确认已选择正确的微信数据目录（应包含以 wxid_ 开头的子文件夹）',
@@ -396,12 +431,12 @@ export class WcdbCore {
 
   private isLogEnabled(): boolean {
     // 移除 Worker 线程的日志禁用逻辑，允许在 Worker 中记录日志
-    if (process.env.WCDB_LOG_ENABLED === '1') return true
-    return this.logEnabled
+    return shouldWriteSensitiveLog(this.logEnabled)
   }
 
-  private writeLog(message: string, force = false): void {
-    if (!force && !this.isLogEnabled()) return
+  private writeLog(message: string, _force = false): void {
+    // `force` 只表示调用方认为该条诊断重要，绝不能绕过用户的日志开关。
+    if (!this.isLogEnabled()) return
     const line = `[${new Date().toISOString()}] ${message}\n`
     this.pendingLogLines.push(line)
     while (this.pendingLogLines.length > this.maxPendingLogLines) {
@@ -433,7 +468,8 @@ export class WcdbCore {
       try {
         const dir = dirname(filePath)
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-        await appendFile(filePath, lines, { encoding: 'utf8' })
+        const written = await appendSensitiveLogFile(filePath, lines)
+        if (!written) continue
         this.lastResolvedLogPath = filePath
         return
       } catch (e) {
@@ -810,6 +846,7 @@ export class WcdbCore {
       }
 
       this.writeLog(`[bootstrap] koffi.load begin path=${dllPath}`, true)
+      this.pinDarwinLibraryForProcessLifetime(dllPath)
       this.lib = this.koffi.load(dllPath)
       this.writeLog('[bootstrap] koffi.load ok', true)
 
@@ -1955,6 +1992,34 @@ export class WcdbCore {
       this.clearMediaStreamPageCache()
       this.stopLogPolling()
     }
+  }
+
+  /**
+   * Prepare the worker for process exit without entering wcdb_shutdown().
+   *
+   * The WCDB bridge is read-only in this process and its native shutdown can
+   * become non-cancellable while joining SDK-owned threads. During application
+   * exit the OS will reclaim the worker and its handles, so first remove every
+   * JavaScript handle that could keep the detached worker alive. User-initiated
+   * disconnects still use close() and perform the full native shutdown.
+   */
+  prepareForProcessExit(): void {
+    this.monitorCallback = null
+    if (this.monitorReconnectTimer) {
+      clearTimeout(this.monitorReconnectTimer)
+      this.monitorReconnectTimer = null
+    }
+    if (this.monitorPipeClient) {
+      this.monitorPipeClient.destroy()
+      this.monitorPipeClient = null
+    }
+    this.stopPeriodicPurge()
+    this.stopLogPolling()
+    if (this.logFlushTimer) {
+      clearTimeout(this.logFlushTimer)
+      this.logFlushTimer = null
+    }
+    this.pendingLogLines = []
   }
 
   /**
@@ -4025,11 +4090,12 @@ export class WcdbCore {
       const fallbackFlag = /fallback|diag|diagnostic/i.test(String(sql || ''))
       this.writeLog(`[audit:execQuery] kind=${kind} path=${path || ''} sql_len=${String(sql || '').length} fallback=${fallbackFlag ? 1 : 0}`)
 
-      // 如果提供了参数，使用参数化查询（需要 C++ 层支持）
-      // 注意：当前 wcdbExecQuery 可能不支持参数化，这是一个占位符实现
-      // TODO: 需要更新 C++ 层的 wcdb_exec_query 以支持参数绑定
-      if (params && params.length > 0) {
-        console.warn('[wcdbCore] execQuery: 参数化查询暂未在 C++ 层实现，将使用原始 SQL（可能存在注入风险）')
+      const unsupportedParameterReason = unsupportedWcdbQueryParameterReason(params)
+      if (unsupportedParameterReason) {
+        this.writeLog(
+          `[audit:execQuery] rejected kind=${kind} cost_ms=${Date.now() - startedAt} reason=unsupported_parameter_binding param_count=${params.length}`
+        )
+        return { success: false, error: unsupportedParameterReason }
       }
 
       const normalizedKind = String(kind || '').toLowerCase()

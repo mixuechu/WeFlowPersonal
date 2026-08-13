@@ -1,0 +1,77 @@
+.page-route-loading,
+.page-route-failure {
+  min-height: min(520px, calc(100vh - 110px));
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+.page-route-loading {
+  gap: 8px;
+  color: var(--text-secondary);
+
+  > span {
+    width: 24px;
+    height: 24px;
+    margin-bottom: 4px;
+    border: 2px solid color-mix(in srgb, var(--text-tertiary) 24%, transparent);
+    border-top-color: #3f755c;
+    border-radius: 50%;
+    animation: page-route-loading-spin .9s linear infinite;
+  }
+
+  strong { color: var(--text-primary); font-size: 13px; }
+  small { color: var(--text-tertiary); font-size: 10px; }
+}
+
+.page-route-failure {
+  width: min(620px, calc(100% - 48px));
+  min-height: 0;
+  margin: 48px auto;
+  padding: 42px;
+  border: 1px solid color-mix(in srgb, #a86758 28%, var(--border-color));
+  border-radius: 22px;
+  gap: 18px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-primary) 94%, #fff1eb);
+  box-shadow: 0 22px 64px rgba(55, 39, 33, .08);
+
+  .page-route-failure-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 16px;
+    display: grid;
+    place-items: center;
+    color: #985847;
+    background: color-mix(in srgb, #d98a73 16%, var(--bg-primary));
+  }
+
+  p {
+    margin: 0 0 7px;
+    color: #8f5b4c;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+  }
+
+  h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; }
+  div > span { color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+
+  footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  button {
+    padding: 9px 13px;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    cursor: pointer;
+  }
+  button.primary { border-color: #315f4a; color: #fff; background: #315f4a; }
+  button:focus-visible { outline: 2px solid #6f9882; outline-offset: 2px; }
+}
+
+@keyframes page-route-loading-spin { to { transform: rotate(360deg); } }

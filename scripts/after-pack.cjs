@@ -1,5 +1,5 @@
 const { execFileSync } = require('child_process')
-const { existsSync, readdirSync, rmSync, statSync } = require('fs')
+const { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } = require('fs')
 const { join } = require('path')
 
 const WCDB_FRAMEWORK_ID = '@rpath/WCDB.framework/Versions/2.1.15/WCDB'
@@ -40,12 +40,129 @@ function patchWcdbDylib(dylibPath) {
   return true
 }
 
+function findStableLocalSigningIdentity() {
+  // Local/demo builds must never discover a private key implicitly: codesign
+  // can then block on a Keychain password dialog that the app user cannot know.
+  // A release operator may opt in explicitly; otherwise use password-free
+  // ad-hoc signing, which is sufficient for this local-only distribution.
+  return String(process.env.WEFLOW_LOCAL_SIGN_IDENTITY || '').trim()
+}
+
 module.exports = async function afterPack(context) {
   if (context.electronPlatformName !== 'darwin') {
     return
   }
 
-  const resourcesDir = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+  const appPath = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
+  const resourcesDir = join(appPath, 'Contents', 'Resources')
+  const encryptedSqliteModule = 'better-sqlite3-multiple-ciphers'
+  const targetArch = context.arch === 3 || String(context.appOutDir).includes('arm64') ? 'arm64'
+    : context.arch === 1 || String(context.appOutDir).includes('x64') ? 'x64'
+      : process.arch
+  const electronVersion = String(context.packager.config.electronVersion || require('electron/package.json').version)
+  const electronRebuild = join(process.cwd(), 'node_modules', '.bin', 'electron-rebuild')
+  const encryptedSqliteSource = join(
+    process.cwd(), 'node_modules', encryptedSqliteModule, 'build', 'Release', 'better_sqlite3.node'
+  )
+  const encryptedSqliteTarget = join(
+    resourcesDir, 'app.asar.unpacked', 'node_modules', encryptedSqliteModule,
+    'build', 'Release', 'better_sqlite3.node'
+  )
+  execFileSync(electronRebuild, [
+    '-v', electronVersion,
+    '-a', targetArch,
+    '-w', encryptedSqliteModule,
+    '-f',
+  ], { stdio: 'inherit' })
+  if (!existsSync(encryptedSqliteSource)) throw new Error('SQLCipher 原生模块重编译后不存在')
+  mkdirSync(join(encryptedSqliteTarget, '..'), { recursive: true })
+  // electron-builder may populate app.asar.unpacked with a hard link to the
+  // workspace addon. Break that link before copying the Electron ABI build;
+  // otherwise the post-build Node ABI restore mutates the packaged addon too.
+  rmSync(encryptedSqliteTarget, { force: true })
+  copyFileSync(encryptedSqliteSource, encryptedSqliteTarget)
+  chmodSync(encryptedSqliteTarget, 0o755)
+  console.log(`[afterPack] Rebuilt SQLCipher addon for Electron ${electronVersion}/${targetArch}`)
+  const imageSemanticSource = join(process.cwd(), 'electron', 'helpers', 'ImageSemanticHelper.swift')
+  const imageSemanticDir = join(resourcesDir, 'resources')
+  const imageSemanticExecutable = join(imageSemanticDir, 'image-semantic-helper')
+  if (existsSync(imageSemanticSource)) {
+    try {
+      mkdirSync(imageSemanticDir, { recursive: true })
+      execFileSync('xcrun', ['swiftc', '-O', imageSemanticSource, '-o', imageSemanticExecutable], { stdio: 'inherit' })
+      chmodSync(imageSemanticExecutable, 0o755)
+      console.log(`[afterPack] Compiled local Apple Vision helper at ${imageSemanticExecutable}`)
+    } catch (error) {
+      console.warn(`[afterPack] Apple Vision helper unavailable: ${error?.message || error}`)
+    }
+  }
+  if (existsSync(imageSemanticExecutable)) {
+    const helperIdentity = findStableLocalSigningIdentity()
+    execFileSync('codesign', [
+      '--force',
+      '--timestamp=none',
+      '--sign',
+      helperIdentity || '-',
+      imageSemanticExecutable,
+    ], { stdio: 'inherit' })
+    console.log(`[afterPack] Signed Apple Vision helper with ${helperIdentity || 'ad-hoc fallback'}`)
+  }
+  const calendarSource = join(process.cwd(), 'electron', 'helpers', 'CalendarHelper.swift')
+  const calendarInfo = join(process.cwd(), 'electron', 'helpers', 'CalendarHelper-Info.plist')
+  const calendarExecutable = join(imageSemanticDir, 'calendar-helper')
+  if (existsSync(calendarSource) && existsSync(calendarInfo)) {
+    try {
+      mkdirSync(imageSemanticDir, { recursive: true })
+      execFileSync('xcrun', [
+        'swiftc', '-O', calendarSource,
+        '-Xlinker', '-sectcreate',
+        '-Xlinker', '__TEXT',
+        '-Xlinker', '__info_plist',
+        '-Xlinker', calendarInfo,
+        '-o', calendarExecutable,
+      ], { stdio: 'inherit' })
+      chmodSync(calendarExecutable, 0o755)
+      const helperIdentity = findStableLocalSigningIdentity()
+      execFileSync('codesign', [
+        '--force',
+        '--timestamp=none',
+        '--sign',
+        helperIdentity || '-',
+        calendarExecutable,
+      ], { stdio: 'inherit' })
+      console.log(`[afterPack] Compiled and signed EventKit helper with ${helperIdentity || 'ad-hoc fallback'}`)
+    } catch (error) {
+      console.warn(`[afterPack] EventKit helper unavailable: ${error?.message || error}`)
+    }
+  }
+  const mailSource = join(process.cwd(), 'electron', 'helpers', 'MailHelper.swift')
+  const mailInfo = join(process.cwd(), 'electron', 'helpers', 'MailHelper-Info.plist')
+  const mailExecutable = join(imageSemanticDir, 'mail-helper')
+  if (existsSync(mailSource) && existsSync(mailInfo)) {
+    try {
+      mkdirSync(imageSemanticDir, { recursive: true })
+      execFileSync('xcrun', [
+        'swiftc', '-O', mailSource,
+        '-Xlinker', '-sectcreate',
+        '-Xlinker', '__TEXT',
+        '-Xlinker', '__info_plist',
+        '-Xlinker', mailInfo,
+        '-o', mailExecutable,
+      ], { stdio: 'inherit' })
+      chmodSync(mailExecutable, 0o755)
+      const helperIdentity = findStableLocalSigningIdentity()
+      execFileSync('codesign', [
+        '--force',
+        '--timestamp=none',
+        '--sign',
+        helperIdentity || '-',
+        mailExecutable,
+      ], { stdio: 'inherit' })
+      console.log(`[afterPack] Compiled and signed Mail automation helper with ${helperIdentity || 'ad-hoc fallback'}`)
+    } catch (error) {
+      console.warn(`[afterPack] Mail automation helper unavailable: ${error?.message || error}`)
+    }
+  }
   const dylibs = walk(resourcesDir)
 
   for (const dylibPath of dylibs) {
@@ -66,4 +183,7 @@ module.exports = async function afterPack(context) {
       console.log(`[afterPack] Removed invalid framework bundle ${frameworkPath}`)
     }
   }
+
+  // The final bundle is signed in afterSign. electron-builder still mutates the
+  // bundle after afterPack, so signing it here leaves a stale resource seal.
 }

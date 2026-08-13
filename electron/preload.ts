@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   app: {
     getDownloadsPath: () => ipcRenderer.invoke('app:getDownloadsPath'),
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
+    reportRendererPageIncident: (payload: unknown) =>
+      ipcRenderer.invoke('app:reportRendererPageIncident', payload),
     getLaunchAtStartupStatus: () => ipcRenderer.invoke('app:getLaunchAtStartupStatus'),
     setLaunchAtStartup: (enabled: boolean) => ipcRenderer.invoke('app:setLaunchAtStartup', enabled),
     checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
@@ -611,6 +613,309 @@ contextBridge.exposeInMainWorld('electronAPI', {
     start: (port?: number, host?: string) => ipcRenderer.invoke('http:start', port, host),
     stop: () => ipcRenderer.invoke('http:stop'),
     status: () => ipcRenderer.invoke('http:status')
+  },
+
+  aiAssistant: {
+    status: () => ipcRenderer.invoke('ai-assistant:status'),
+    dashboard: () => ipcRenderer.invoke('ai-assistant:dashboard'),
+    getBriefingArchivePage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getBriefingArchivePage', options),
+    getGraphReviewPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphReviewPage', options),
+    getGraphReviewEvidencePage: (reviewId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getGraphReviewEvidencePage', reviewId, options),
+    getGraphWorkspace: (options?: any) => ipcRenderer.invoke('ai-assistant:getGraphWorkspace', options),
+    getTrustedEntityDirectory: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTrustedEntityDirectory', options),
+    getEntityTaskPage: (entityId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityTaskPage', entityId, options),
+    getEntityAuditPage: (entityId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityAuditPage', entityId, options),
+    getMemoryItemAuditPage: (kind: string, itemId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemoryItemAuditPage', kind, itemId, options),
+    getEventCorrectionParticipantSnapshotPage: (
+      correctionId: number,
+      phase: string,
+      options?: any
+    ) => ipcRenderer.invoke(
+      'ai-assistant:getEventCorrectionParticipantSnapshotPage',
+      correctionId,
+      phase,
+      options
+    ),
+    getProjectDirectory: (options?: any) => ipcRenderer.invoke('ai-assistant:getProjectDirectory', options),
+    getProjectWorkspace: (projectId: string) => ipcRenderer.invoke('ai-assistant:getProjectWorkspace', projectId),
+    getProjectMemberPage: (projectId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getProjectMemberPage', projectId, options),
+    getProjectTaskPage: (projectId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getProjectTaskPage', projectId, options),
+    getProjectRiskPage: (projectId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getProjectRiskPage', projectId, options),
+    getTaskWorkspace: (taskId: string) => ipcRenderer.invoke('ai-assistant:getTaskWorkspace', taskId),
+    getTaskHistoryPage: (taskId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskHistoryPage', taskId, options),
+    getTaskReminderPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskReminderPage', options),
+    getTaskDependencyCandidates: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskDependencyCandidates', options),
+    getActiveTaskWorkset: (options?: any) => ipcRenderer.invoke('ai-assistant:getActiveTaskWorkset', options),
+    getTaskCalendarPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskCalendarPage', options),
+    getTaskArchive: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskArchive', options),
+    getTaskArchiveProjects: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskArchiveProjects', options),
+    getTaskOwnershipReviews: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskOwnershipReviews', options),
+    getTaskReviewDecisionPage: (options?: any) => ipcRenderer.invoke('ai-assistant:getTaskReviewDecisionPage', options),
+    getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getTaskReviewDecisionDossier', evidenceFingerprint, options),
+    getMemoryDeletionAuditPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemoryDeletionAuditPage', options),
+    getMemoryMaintenanceAuditPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemoryMaintenanceAuditPage', options),
+    retryMemoryMaintenanceAuditDelivery: () =>
+      ipcRenderer.invoke('ai-assistant:retryMemoryMaintenanceAuditDelivery'),
+    getMemoryChangeLogPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemoryChangeLogPage', options),
+    getMemoryChangeOriginDossier: (changeId: number, expectedRevision: string) =>
+      ipcRenderer.invoke(
+        'ai-assistant:getMemoryChangeOriginDossier',
+        changeId,
+        expectedRevision
+      ),
+    getMergeHistoryPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMergeHistoryPage', options),
+    sync: () => ipcRenderer.invoke('ai-assistant:sync'),
+    cancelSync: () => ipcRenderer.invoke('ai-assistant:cancelSync'),
+    auditActiveTaskLifecycles: () => ipcRenderer.invoke('ai-assistant:auditActiveTaskLifecycles'),
+    getSettings: () => ipcRenderer.invoke('ai-assistant:getSettings'),
+    setSettings: (input: any) => ipcRenderer.invoke('ai-assistant:setSettings', input),
+    updateTask: (id: string, patch: any, mutationToken?: string) =>
+      ipcRenderer.invoke('ai-assistant:updateTask', id, patch, mutationToken),
+    reviewMineTaskOwnership: (
+      id: string,
+      decision: 'mine' | 'rejected',
+      mutationToken?: string,
+      sampleContext?: { revision: string; strategy: string },
+      reasonCode?: string
+    ) => ipcRenderer.invoke(
+      'ai-assistant:reviewMineTaskOwnership', id, decision, mutationToken, sampleContext,
+      reasonCode
+    ),
+    updateTasks: (updates: any[]) => ipcRenderer.invoke('ai-assistant:updateTasks', updates),
+    previewTaskFromMemory: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:previewTaskFromMemory', input),
+    createTaskFromMemory: (input: any) => ipcRenderer.invoke('ai-assistant:createTaskFromMemory', input),
+    updateTaskReview: (
+      id: string, decision: 'mine' | 'rejected', expectedRevision?: string, reasonCode?: string
+    ) => ipcRenderer.invoke(
+      'ai-assistant:updateTaskReview', id, decision, expectedRevision, reasonCode
+    ),
+    revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:revertTaskReview', evidenceFingerprint, expectedRevision),
+    updateReminderPreference: (input: any) => ipcRenderer.invoke('ai-assistant:updateReminderPreference', input),
+    retryNotificationOutbox: () => ipcRenderer.invoke('ai-assistant:retryNotificationOutbox'),
+    updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: {
+      expectedRevision?: string
+      mergeTargetEntityId?: string
+      correctedCanonicalName?: string
+      correctedSummaryText?: string
+      correctedAliasText?: string
+      relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+      reasonCode?: string
+    }) => ipcRenderer.invoke('ai-assistant:updateGraphReview', id, decision, options),
+    previewRestoreRejectedEntity: (id: string, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:previewRestoreRejectedEntity', id, expectedRevision),
+    restoreRejectedEntity: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:restoreRejectedEntity', id, input),
+    previewRevertMerge: (id: number, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:previewRevertMerge', id, expectedRevision),
+    revertMerge: (id: number, input?: any) => ipcRenderer.invoke('ai-assistant:revertMerge', id, input),
+    updateMemoryItemStatus: (
+      kind: 'claim' | 'event',
+      id: string,
+      status: 'confirmed' | 'rejected',
+      expectedRevision?: string,
+      reasonCode?: string
+    ) => ipcRenderer.invoke(
+      'ai-assistant:updateMemoryItemStatus', kind, id, status, expectedRevision, reasonCode
+    ),
+    previewDeleteMemoryItem: (
+      kind: 'claim' | 'event' | 'relation',
+      id: string,
+      reason?: 'manual_delete' | 'not_important'
+    ) => ipcRenderer.invoke('ai-assistant:previewDeleteMemoryItem', kind, id, reason),
+    deleteMemoryItem: (kind: 'claim' | 'event' | 'relation', id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemoryItem', kind, id, input),
+    ignoreMemoryItem: (kind: 'claim' | 'event', id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:ignoreMemoryItem', kind, id, input),
+    previewDeleteMemoryResource: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDeleteMemoryResource', id),
+    getResourceArchive: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getResourceArchive', options),
+    retryResourceEnrichment: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:retryResourceEnrichment', input),
+    previewResourceEnrichmentBatch: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:previewResourceEnrichmentBatch', input),
+    retryResourceEnrichmentBatch: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:retryResourceEnrichmentBatch', input),
+    cancelResourceEnrichmentBatch: () =>
+      ipcRenderer.invoke('ai-assistant:cancelResourceEnrichmentBatch'),
+    getResourceDossier: (id: string, expectedRevision: string) =>
+      ipcRenderer.invoke('ai-assistant:getResourceDossier', id, expectedRevision),
+    getCurrentResourceDossier: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:getCurrentResourceDossier', id),
+    getStructuredMemoryDossier: (kind: string, id: string, expectedSearchRevision: string) =>
+      ipcRenderer.invoke(
+        'ai-assistant:getStructuredMemoryDossier',
+        kind,
+        id,
+        expectedSearchRevision
+      ),
+    getCurrentStructuredMemoryDossier: (kind: string, id: string) =>
+      ipcRenderer.invoke('ai-assistant:getCurrentStructuredMemoryDossier', kind, id),
+    getEventDossierParticipantPage: (eventId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEventDossierParticipantPage', eventId, options),
+    getRelationDossierAuditPage: (relationId: string, kind: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getRelationDossierAuditPage', relationId, kind, options),
+    getResourceTrashArchive: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getResourceTrashArchive', options),
+    deleteMemoryResource: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemoryResource', id, input),
+    restoreMemoryResource: (id: string, expectedMutationToken: string) =>
+      ipcRenderer.invoke('ai-assistant:restoreMemoryResource', id, expectedMutationToken),
+    previewPurgeMemoryResourceTrash: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewPurgeMemoryResourceTrash', id),
+    purgeMemoryResourceTrash: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:purgeMemoryResourceTrash', id, input),
+    previewRelationCorrectionFromMemoryDocument: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:previewRelationCorrectionFromMemoryDocument', id, input),
+    reviewMemoryDocument: (
+      kind: 'relation' | 'claim' | 'event', id: string,
+      decision: 'confirmed' | 'rejected' | 'corrected', input?: any
+    ) => ipcRenderer.invoke('ai-assistant:reviewMemoryDocument', kind, id, decision, input),
+    previewForgetEntity: (id: string) => ipcRenderer.invoke('ai-assistant:previewForgetEntity', id),
+    forgetEntity: (id: string, input?: any) => ipcRenderer.invoke('ai-assistant:forgetEntity', id, input),
+    searchMemory: (query: string, options?: any) => ipcRenderer.invoke('ai-assistant:searchMemory', query, options),
+    searchMemoryPage: (query: string, options?: any, pagination?: any) =>
+      ipcRenderer.invoke('ai-assistant:searchMemoryPage', query, options, pagination),
+    updateMemorySearchFeedback: (input: any) =>
+      ipcRenderer.invoke('ai-assistant:updateMemorySearchFeedback', input),
+    getMemorySearchFeedbackArchive: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemorySearchFeedbackArchive', options),
+    deleteMemorySearchFeedback: (input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemorySearchFeedback', input),
+    getMemoryEvidencePage: (documentType: string, sourceId: string, pagination?: any) =>
+      ipcRenderer.invoke('ai-assistant:getMemoryEvidencePage', documentType, sourceId, pagination),
+    indexMemoryVectors: () => ipcRenderer.invoke('ai-assistant:indexMemoryVectors'),
+    findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:findGraphPath', fromId, toId, maxDepth, entityDirectoryRevision),
+    findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string, pagination?: any) =>
+      ipcRenderer.invoke('ai-assistant:findCommonNeighbors', fromId, toId, entityDirectoryRevision, pagination),
+    getMemoryDiagnostics: (options?: { forceIntegrityCheck?: boolean }) =>
+      ipcRenderer.invoke('ai-assistant:getMemoryDiagnostics', options),
+    repairMemorySearchIndexes: () => ipcRenderer.invoke('ai-assistant:repairMemorySearchIndexes'),
+    getIngestionRunPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getIngestionRunPage', options),
+    getIngestionRunDossier: (runId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getIngestionRunDossier', runId, options),
+    getIngestionRecoveryPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getIngestionRecoveryPage', options),
+    retryPreparedIngestion: () => ipcRenderer.invoke('ai-assistant:retryPreparedIngestion'),
+    getCrossStoreRecoveryPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getCrossStoreRecoveryPage', options),
+    getCrossStoreRecoveryArchivePage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getCrossStoreRecoveryArchivePage', options),
+    retryCrossStoreRecovery: () => ipcRenderer.invoke('ai-assistant:retryCrossStoreRecovery'),
+    previewAbandonCrossStoreRecovery: (kind: 'task' | 'source', commitId: string) =>
+      ipcRenderer.invoke('ai-assistant:previewAbandonCrossStoreRecovery', kind, commitId),
+    abandonCrossStoreRecovery: (
+      kind: 'task' | 'source', commitId: string, input?: any
+    ) => ipcRenderer.invoke('ai-assistant:abandonCrossStoreRecovery', kind, commitId, input),
+    createMemoryBackup: () => ipcRenderer.invoke('ai-assistant:createMemoryBackup'),
+    inspectMemoryBackup: (path: string) => ipcRenderer.invoke('ai-assistant:inspectMemoryBackup', path),
+    restoreMemoryBackup: (path: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:restoreMemoryBackup', path, input),
+    previewDeleteMemoryBackup: (path: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDeleteMemoryBackup', path),
+    deleteMemoryBackup: (path: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteMemoryBackup', path, input),
+    previewDiscardImportedBackupStagingConflict: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDiscardImportedBackupStagingConflict', id),
+    discardImportedBackupStagingConflict: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:discardImportedBackupStagingConflict', id, input),
+    previewResolveMemoryBackupTrashConflict: (id: string, action: 'restore' | 'discard') =>
+      ipcRenderer.invoke('ai-assistant:previewResolveMemoryBackupTrashConflict', id, action),
+    resolveMemoryBackupTrashConflict: (
+      id: string,
+      action: 'restore' | 'discard',
+      input?: any
+    ) => ipcRenderer.invoke('ai-assistant:resolveMemoryBackupTrashConflict', id, action, input),
+    exportMemoryBundle: (path: string, passphrase: string) =>
+      ipcRenderer.invoke('ai-assistant:exportMemoryBundle', path, passphrase),
+    inspectMemoryBundle: (path: string, passphrase?: string) =>
+      ipcRenderer.invoke('ai-assistant:inspectMemoryBundle', path, passphrase),
+    importMemoryBundle: (path: string, passphrase?: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:importMemoryBundle', path, passphrase, input),
+    correctClaim: (id: string, input: any, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:correctClaim', id, input, expectedRevision),
+    correctEvent: (id: string, input: any, expectedRevision?: string) =>
+      ipcRenderer.invoke('ai-assistant:correctEvent', id, input, expectedRevision),
+    getMemoryClaim: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryClaim', id),
+    getMemoryEvent: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryEvent', id),
+    getEventCorrectionParticipantPage: (eventId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEventCorrectionParticipantPage', eventId, options),
+    getMemoryRelation: (id: string) => ipcRenderer.invoke('ai-assistant:getMemoryRelation', id),
+    previewRelationCorrection: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:previewRelationCorrection', id, input),
+    correctRelation: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:correctRelation', id, input),
+    rejectRelation: (id: string, expectedRevision: string) =>
+      ipcRenderer.invoke('ai-assistant:rejectRelation', id, expectedRevision),
+    restoreRelation: (id: string, expectedRevision: string) =>
+      ipcRenderer.invoke('ai-assistant:restoreRelation', id, expectedRevision),
+    askMemory: (question: string, conversationId?: string, options?: any) => ipcRenderer.invoke('ai-assistant:askMemory', question, conversationId, options),
+    getAssistantConversations: (options?: any) => ipcRenderer.invoke('ai-assistant:getAssistantConversations', options),
+    getAssistantModelRequestAudits: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getAssistantModelRequestAudits', options),
+    getAssistantAnswerReviews: (options?: any) => ipcRenderer.invoke('ai-assistant:getAssistantAnswerReviews', options),
+    reviewAssistantAnswer: (
+      messageId: string,
+      action: 'acknowledged' | 'reopened',
+      expectedMutationToken: string
+    ) => ipcRenderer.invoke(
+      'ai-assistant:reviewAssistantAnswer',
+      messageId,
+      action,
+      expectedMutationToken
+    ),
+    getAssistantAnswerReviewDecisions: (messageId: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getAssistantAnswerReviewDecisions', messageId, options),
+    getAssistantConversation: (id: string, options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getAssistantConversation', id, options),
+    previewDeleteAssistantConversation: (id: string) =>
+      ipcRenderer.invoke('ai-assistant:previewDeleteAssistantConversation', id),
+    deleteAssistantConversation: (id: string, input?: any) =>
+      ipcRenderer.invoke('ai-assistant:deleteAssistantConversation', id, input),
+    getConversationSources: (options?: any) => ipcRenderer.invoke('ai-assistant:getConversationSources', options),
+    getDataSources: () => ipcRenderer.invoke('ai-assistant:getDataSources'),
+    getEventTimeline: (options?: any) => ipcRenderer.invoke('ai-assistant:getEventTimeline', options),
+    getEntityRelationPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityRelationPage', options),
+    getEntityIdentityAnchorPage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityIdentityAnchorPage', options),
+    getEntityEvidencePage: (options?: any) =>
+      ipcRenderer.invoke('ai-assistant:getEntityEvidencePage', options),
+    getClaimArchive: (options?: any) => ipcRenderer.invoke('ai-assistant:getClaimArchive', options),
+    getCalendarAuthorization: () => ipcRenderer.invoke('ai-assistant:getCalendarAuthorization'),
+    requestCalendarAccess: () => ipcRenderer.invoke('ai-assistant:requestCalendarAccess'),
+    listCalendars: () => ipcRenderer.invoke('ai-assistant:listCalendars'),
+    getMailAuthorization: () => ipcRenderer.invoke('ai-assistant:getMailAuthorization'),
+    requestMailAccess: () => ipcRenderer.invoke('ai-assistant:requestMailAccess'),
+    listMailboxes: () => ipcRenderer.invoke('ai-assistant:listMailboxes'),
+    setDataSourceEnabled: (sourceId: string, enabled: boolean, expectedMutationToken: string) =>
+      ipcRenderer.invoke('ai-assistant:setDataSourceEnabled', sourceId, enabled, expectedMutationToken),
+    configureDataSource: (sourceId: string, input: any) =>
+      ipcRenderer.invoke('ai-assistant:configureDataSource', sourceId, input),
+    setConversationSource: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSource', input),
+    setConversationSourcesBulk: (input: any) => ipcRenderer.invoke('ai-assistant:setConversationSourcesBulk', input)
   },
 
   // AI 见解

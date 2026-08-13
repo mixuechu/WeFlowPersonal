@@ -1,0 +1,249 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { AppRunRecoveryService } from '../electron/services/appRunRecoveryService.ts'
+
+const withTempDirectory = (run: (directory: string) => void) => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-run-recovery-'))
+  try {
+    run(directory)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+test('an unfinished session is classified as an interruption on the next start', () => withTempDirectory(directory => {
+  const first = new AppRunRecoveryService(directory)
+  first.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  first.markReady(new Date('2026-07-29T20:00:02.000Z'))
+  first.markServicesReady(new Date('2026-07-29T20:00:03.000Z'))
+  first.dispose()
+
+  const restarted = new AppRunRecoveryService(directory)
+  restarted.start('5.1.0', new Date('2026-07-29T20:10:00.000Z'))
+  const diagnostics = restarted.getDiagnostics()
+  assert.equal(diagnostics.recoveredFromInterruption, true)
+  assert.equal(diagnostics.previous?.exitReason, 'unknown_interruption')
+  assert.equal(diagnostics.previous?.cleanExit, false)
+  assert.match(diagnostics.recoveryMessage, /checkpoint/)
+  restarted.dispose()
+}))
+
+test('a graceful shutdown is retained as a clean historical run', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-29T20:05:00.000Z'))
+  service.finishShutdown(undefined, new Date('2026-07-29T20:05:01.000Z'))
+
+  const next = new AppRunRecoveryService(directory)
+  next.start('5.1.0', new Date('2026-07-29T20:06:00.000Z'))
+  const diagnostics = next.getDiagnostics()
+  assert.equal(diagnostics.recoveredFromInterruption, false)
+  assert.equal(diagnostics.previous?.exitReason, 'normal')
+  assert.equal(diagnostics.previous?.cleanExit, true)
+  next.dispose()
+}))
+
+test('shutdown steps retain the running phase when a later forced exit interrupts cleanup', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-30T00:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-30T00:01:00.000Z'))
+  service.startShutdownStep('http-server-stop', new Date('2026-07-30T00:01:01.000Z'))
+  service.finishShutdownStep('http-server-stop', 'completed', undefined, new Date('2026-07-30T00:01:01.250Z'))
+  service.startShutdownStep('wcdb-worker-stop', new Date('2026-07-30T00:01:02.000Z'))
+  service.finishShutdown('forced_timeout', new Date('2026-07-30T00:01:10.000Z'))
+  const previous = service.getDiagnostics().previous
+  assert.deepEqual(previous?.shutdownSteps, [
+    {
+      name: 'http-server-stop',
+      status: 'completed',
+      startedAt: '2026-07-30T00:01:01.000Z',
+      endedAt: '2026-07-30T00:01:01.250Z',
+      durationMs: 250
+    },
+    {
+      name: 'wcdb-worker-stop',
+      status: 'running',
+      startedAt: '2026-07-30T00:01:02.000Z'
+    }
+  ])
+}))
+
+test('a persisted shutdown intent remains interrupted until async cleanup actually finishes', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-29T20:05:00.000Z'))
+  service.dispose()
+
+  const next = new AppRunRecoveryService(directory)
+  next.start('5.1.0', new Date('2026-07-29T20:06:00.000Z'))
+  const diagnostics = next.getDiagnostics()
+  assert.equal(diagnostics.previous?.cleanExit, false)
+  assert.equal(diagnostics.previous?.exitReason, 'shutdown_interrupted')
+  assert.equal(diagnostics.recoveredFromInterruption, true)
+  assert.equal(diagnostics.recoveryMessage, '上次安全退出未完成，已按持久化 checkpoint 恢复')
+  next.dispose()
+}))
+
+test('an interrupted shutdown preserves the last completed and running cleanup steps', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.beginShutdown('normal', new Date('2026-07-29T20:05:00.000Z'))
+  service.startShutdownStep('http-server-stop', new Date('2026-07-29T20:05:00.100Z'))
+  service.finishShutdownStep(
+    'http-server-stop', 'completed', undefined,
+    new Date('2026-07-29T20:05:00.200Z')
+  )
+  service.startShutdownStep('wcdb-worker-stop', new Date('2026-07-29T20:05:00.300Z'))
+  service.dispose()
+
+  const next = new AppRunRecoveryService(directory)
+  next.start('5.1.0', new Date('2026-07-29T20:06:00.000Z'))
+  const previous = next.getDiagnostics().previous
+  assert.equal(previous?.exitReason, 'shutdown_interrupted')
+  assert.deepEqual(previous?.shutdownSteps?.map(step => [step.name, step.status]), [
+    ['http-server-stop', 'completed'],
+    ['wcdb-worker-stop', 'running']
+  ])
+  next.dispose()
+}))
+
+test('runtime incidents are redacted and ledger permissions are private', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.recordIncident(
+    'renderer_gone',
+    'wxid_secret crashed with sk-secret-value-12345678 at /Users/private/worker',
+    false,
+    new Date('2026-07-29T20:00:04.000Z')
+  )
+  const detail = service.getDiagnostics().current?.incidents[0]?.detail || ''
+  assert.equal(detail.includes('wxid_secret'), false)
+  assert.equal(detail.includes('sk-secret-value-12345678'), false)
+  assert.equal(detail.includes('/Users/private'), false)
+
+  const ledgerPath = join(directory, 'diagnostics', 'app-run-recovery.json')
+  assert.equal(statSync(ledgerPath).mode & 0o777, 0o600)
+  assert.doesNotThrow(() => JSON.parse(readFileSync(ledgerPath, 'utf8')))
+  service.dispose()
+}))
+
+test('persisted recovery data is validated, bounded and redacted again on read', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.dispose()
+  const ledgerPath = join(directory, 'diagnostics', 'app-run-recovery.json')
+  const unsafeIncident = {
+    at: '2026-07-29T20:00:04.000Z',
+    kind: 'renderer_gone',
+    detail: 'wxid_secret sk-secret-value-12345678 /Users/private/worker',
+    fatal: true
+  }
+  writeFileSync(ledgerPath, JSON.stringify({
+    schemaVersion: 1,
+    current: {
+      id: 'current-run',
+      version: '5.1.0',
+      startedAt: '2026-07-29T20:00:00.000Z',
+      lastHeartbeatAt: '2026-07-29T20:00:03.000Z',
+      stage: 'services_ready',
+      cleanExit: false,
+      incidents: Array.from({ length: 25 }, () => unsafeIncident),
+      shutdownSteps: [{ name: 'x'.repeat(200), status: 'completed', startedAt: 'invalid' }]
+    },
+    history: [{ id: 'broken' }]
+  }))
+
+  const restarted = new AppRunRecoveryService(directory)
+  restarted.start('5.1.0', new Date('2026-07-29T20:10:00.000Z'))
+  const previous = restarted.getDiagnostics().previous
+  assert.equal(previous?.incidents.length, 20)
+  assert.equal(previous?.shutdownSteps, undefined)
+  assert.equal(previous?.incidents.some(item => /wxid_secret|sk-secret-value|\/Users\/private/.test(item.detail)), false)
+  assert.doesNotThrow(() => restarted.recordIncident('unhandled_rejection', 'later failure'))
+  restarted.dispose()
+}))
+
+test('a malformed persisted current session is discarded without poisoning the next run', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-07-29T20:00:00.000Z'))
+  service.dispose()
+  const ledgerPath = join(directory, 'diagnostics', 'app-run-recovery.json')
+  writeFileSync(ledgerPath, JSON.stringify({
+    schemaVersion: 1,
+    current: { id: 'partial', stage: 'services_ready', incidents: 'not-an-array' },
+    history: [null, [], { id: 'also-partial' }]
+  }))
+
+  const restarted = new AppRunRecoveryService(directory)
+  assert.doesNotThrow(() => restarted.start('5.1.0', new Date('2026-07-29T20:10:00.000Z')))
+  const diagnostics = restarted.getDiagnostics()
+  assert.equal(diagnostics.previous, null)
+  assert.equal(diagnostics.current?.incidents.length, 0)
+  restarted.dispose()
+}))
+
+test('heartbeat persistence failure is contained and rolls back the in-memory ledger', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-08-13T01:00:00.000Z'))
+  const internal = service as any
+  const originalWrite = internal.trimAndWrite.bind(service)
+  internal.trimAndWrite = () => { throw new Error('disk unavailable at /Users/private') }
+
+  assert.doesNotThrow(() => internal.heartbeatSafely(new Date('2026-08-13T01:00:30.000Z')))
+  let diagnostics = service.getDiagnostics()
+  assert.equal(diagnostics.current?.lastHeartbeatAt, '2026-08-13T01:00:00.000Z')
+  assert.equal(diagnostics.ledgerPersistence.failureCount, 1)
+  assert.equal(diagnostics.ledgerPersistence.lastError.includes('/Users/private'), false)
+  assert.equal(diagnostics.ledgerPersistence.lastErrorAt, '2026-08-13T01:00:30.000Z')
+
+  internal.trimAndWrite = originalWrite
+  internal.heartbeatSafely(new Date('2026-08-13T01:01:00.000Z'))
+  diagnostics = service.getDiagnostics()
+  assert.equal(diagnostics.current?.lastHeartbeatAt, '2026-08-13T01:01:00.000Z')
+  assert.equal(diagnostics.ledgerPersistence.failureCount, 0)
+  assert.equal(diagnostics.ledgerPersistence.lastError, '')
+  assert.equal(diagnostics.ledgerPersistence.lastSuccessAt, '2026-08-13T01:01:00.000Z')
+  service.dispose()
+}))
+
+test('heartbeat timer uses its contained persistence boundary and exposes UI health', () => {
+  const recovery = readFileSync(
+    new URL('../electron/services/appRunRecoveryService.ts', import.meta.url),
+    'utf8'
+  )
+  const page = readFileSync(new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8')
+  assert.match(recovery, /setInterval\(\(\) => this\.heartbeatSafely\(\), 30_000\)/)
+  assert.match(recovery, /const previousLedger = this\.ledger[\s\S]*persistLedgerSafely\(previousLedger/)
+  assert.match(recovery, /if \(previousLedger\) this\.ledger = previousLedger[\s\S]*return false/)
+  assert.match(page, /应用运行恢复账本暂未持久化/)
+  assert.match(page, /内存账本已回滚到最近一次成功落盘状态/)
+})
+
+test('diagnostic storage cannot block application startup, incidents, or shutdown', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  const internal = service as any
+  const originalWrite = internal.trimAndWrite.bind(service)
+  internal.trimAndWrite = () => { throw new Error('diagnostic disk is read only') }
+
+  assert.doesNotThrow(() => service.start('5.1.0', new Date('2026-08-13T02:00:00.000Z')))
+  assert.equal(service.getDiagnostics().current?.stage, 'starting')
+  assert.equal(service.getDiagnostics().ledgerPersistence.failureCount, 1)
+  assert.doesNotThrow(() => service.recordIncident(
+    'uncaught_exception', 'original application fault', true,
+    new Date('2026-08-13T02:00:01.000Z')
+  ))
+  assert.equal(service.getDiagnostics().current?.incidents.length, 0)
+  assert.doesNotThrow(() => service.beginShutdown('normal', new Date('2026-08-13T02:00:02.000Z')))
+  assert.equal(service.getDiagnostics().current?.stage, 'starting')
+
+  internal.trimAndWrite = originalWrite
+  service.markReady(new Date('2026-08-13T02:00:03.000Z'))
+  assert.equal(service.getDiagnostics().current?.stage, 'ready')
+  assert.equal(service.getDiagnostics().ledgerPersistence.failureCount, 0)
+  assert.doesNotThrow(() => service.finishShutdown(undefined, new Date('2026-08-13T02:00:04.000Z')))
+  assert.equal(service.getDiagnostics().previous?.cleanExit, true)
+  service.dispose()
+}))

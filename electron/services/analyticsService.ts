@@ -1,9 +1,11 @@
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
-import { join } from 'path'
-import { readFile, writeFile, rm } from 'fs/promises'
-import { app } from 'electron'
 import { createHash } from 'crypto'
+import {
+  emptyAnalyticsCachePrivacyStatus,
+  removeLegacyAnalyticsCacheFile,
+  type AnalyticsCachePrivacyStatus
+} from './analyticsCachePrivacy.ts'
 
 export interface ChatStatistics {
   totalMessages: number
@@ -54,6 +56,7 @@ class AnalyticsService {
   private aggregateCache: { key: string; data: any; updatedAt: number } | null = null
   private selfSentDailyCache: { key: string; data: SelfSentDailyDistribution; updatedAt: number } | null = null
   private aggregatePromise: { key: string; promise: Promise<{ success: boolean; data?: any; source?: string; error?: string }> } | null = null
+  private cachePrivacy = emptyAnalyticsCachePrivacyStatus()
 
   constructor() {
     this.configService = new ConfigService()
@@ -468,15 +471,6 @@ class AnalyticsService {
       }
     }
 
-    // 尝试从文件加载缓存
-    if (!force) {
-      const fileCache = await this.loadCacheFromFile()
-      if (fileCache && fileCache.key === cacheKey) {
-        this.aggregateCache = fileCache
-        return { success: true, data: fileCache.data, source: 'file-cache' }
-      }
-    }
-
     if (this.aggregatePromise && this.aggregatePromise.key === cacheKey) {
       return this.aggregatePromise.promise
     }
@@ -506,12 +500,7 @@ class AnalyticsService {
 
     this.aggregatePromise = { key: cacheKey, promise }
     try {
-      const result = await promise
-      // 如果计算成功，同时写入此文件缓存
-      if (result.success && result.data && result.source !== 'cache') {
-        this.saveCacheToFile({ key: cacheKey, data: this.aggregateCache?.data, updatedAt: Date.now() })
-      }
-      return result
+      return await promise
     } finally {
       if (this.aggregatePromise && this.aggregatePromise.key === cacheKey) {
         this.aggregatePromise = null
@@ -519,23 +508,12 @@ class AnalyticsService {
     }
   }
 
-  private getCacheFilePath(): string {
-    return join(app.getPath('documents'), 'WeFlow', 'analytics_cache.json')
+  async migrateLegacyCachePrivacy(filePath: string): Promise<void> {
+    this.cachePrivacy = await removeLegacyAnalyticsCacheFile(filePath)
   }
 
-  private async loadCacheFromFile(): Promise<{ key: string; data: any; updatedAt: number } | null> {
-    try {
-      const raw = await readFile(this.getCacheFilePath(), 'utf-8')
-      return JSON.parse(raw)
-    } catch { return null }
-  }
-
-  private async saveCacheToFile(data: any) {
-    try {
-      await writeFile(this.getCacheFilePath(), JSON.stringify(data))
-    } catch (e) {
-      console.error('保存统计缓存失败:', e)
-    }
+  getCachePrivacyStatus(): AnalyticsCachePrivacyStatus {
+    return { ...this.cachePrivacy }
   }
 
   private normalizeAggregateSessions(
@@ -836,12 +814,7 @@ class AnalyticsService {
     this.fallbackAggregateCache = null
     this.selfSentDailyCache = null
     this.aggregatePromise = null
-    try {
-      await rm(this.getCacheFilePath(), { force: true })
-      return { success: true }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
+    return { success: true }
   }
 }
 

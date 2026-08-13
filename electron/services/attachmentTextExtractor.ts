@@ -1,0 +1,1040 @@
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { extname, posix } from 'node:path'
+import { spawn } from 'node:child_process'
+import JSZip from 'jszip'
+import ExcelJS from 'exceljs'
+
+export type SpreadsheetSheetStructure = {
+  name: string
+  rowCount: number
+  columnCount: number
+  indexedRows: number
+  indexedCells: number
+  headers: string[]
+  chartCount: number
+  charts: ChartAttachmentStructure[]
+  truncated: boolean
+}
+
+export type ChartAttachmentStructure = {
+  index: number
+  title: string
+  chartType: 'bar' | 'line' | 'pie' | 'doughnut' | 'area' | 'scatter' | 'radar' | 'bubble' | 'unknown'
+  seriesCount: number
+  pointCount: number
+  truncated: boolean
+  series: Array<{
+    name: string
+    categories: string[]
+    values: string[]
+  }>
+}
+
+export type SpreadsheetAttachmentStructure = {
+  kind: 'spreadsheet'
+  sheetCount: number
+  indexedSheetCount: number
+  indexedCells: number
+  chartCount: number
+  truncated: boolean
+  sheets: SpreadsheetSheetStructure[]
+}
+
+export type DocumentAttachmentStructure = {
+  kind: 'document'
+  paragraphCount: number
+  headingCount: number
+  listItemCount: number
+  tableCount: number
+  headerFooterCount: number
+  chartCount: number
+  truncated: boolean
+  headings: Array<{ level: number, text: string }>
+  tables: Array<{ index: number, rowCount: number, columnCount: number, layout: 'grid' | 'key-value', headers: string[] }>
+  charts: ChartAttachmentStructure[]
+}
+
+export type PresentationAttachmentStructure = {
+  kind: 'presentation'
+  slideCount: number
+  indexedSlideCount: number
+  textBlockCount: number
+  tableCount: number
+  chartCount: number
+  truncated: boolean
+  slides: Array<{
+    number: number
+    title: string
+    titleSource: 'placeholder' | 'layout-inference' | 'none'
+    titleConfidence: number
+    textBlockCount: number
+    tableCount: number
+    chartCount: number
+    charts: ChartAttachmentStructure[]
+  }>
+}
+
+export type PdfAttachmentStructure = {
+  kind: 'pdf'
+  pageCount: number
+  indexedPageCount: number
+  blockCount: number
+  multiColumnPageCount: number
+  readingOrder: 'bbox-layout'
+  truncated: boolean
+  pages: Array<{
+    number: number
+    width: number
+    height: number
+    columnCount: 1 | 2
+    columnConfidence: number
+    blockCount: number
+  }>
+}
+
+export type AttachmentStructure =
+  | SpreadsheetAttachmentStructure
+  | DocumentAttachmentStructure
+  | PresentationAttachmentStructure
+  | PdfAttachmentStructure
+
+export type AttachmentTextResult = {
+  success: boolean
+  text: string
+  format: string
+  status: 'indexed' | 'unsupported' | 'too_large' | 'empty' | 'ocr_required' | 'dependency_missing' | 'failed'
+  error?: string
+  structure?: AttachmentStructure
+}
+
+const MAX_FILE_BYTES = 8 * 1024 * 1024
+const MAX_TEXT_CHARS = 16_000
+const MAX_SPREADSHEET_SHEETS = 20
+const MAX_SPREADSHEET_ROWS_PER_SHEET = 500
+const MAX_SPREADSHEET_CELLS = 8_000
+const MAX_SPREADSHEET_CELL_CHARS = 500
+const MAX_DOCUMENT_BLOCKS = 800
+const MAX_DOCUMENT_TABLES = 40
+const MAX_PRESENTATION_SLIDES = 80
+const MAX_PRESENTATION_TEXT_BLOCKS = 800
+const MAX_ATTACHMENT_CHARTS = 40
+const MAX_CHART_SERIES = 12
+const MAX_CHART_POINTS = 100
+const PLAIN_TEXT_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.xml',
+  '.html', '.htm', '.log', '.yaml', '.yml', '.ini', '.conf'
+])
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/<w:tab\/>/g, '\t')
+    .replace(/<w:br\/>|<a:br\/>/g, '\n')
+    .replace(/<\/w:p>|<\/a:p>|<\/row>/g, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+}
+
+function xmlRunText(xml: string, namespace: 'w' | 'a'): string {
+  const pieces: string[] = []
+  const tokenPattern = new RegExp(
+    `<${namespace}:t\\b[^>]*>([\\s\\S]*?)<\\/${namespace}:t>|<${namespace}:(?:tab|br)\\b[^>]*\\/?>`,
+    'gi'
+  )
+  for (const match of xml.matchAll(tokenPattern)) {
+    pieces.push(match[1] === undefined
+      ? (/<[^>]*tab/i.test(match[0]) ? '\t' : '\n')
+      : decodeXmlEntities(match[1]))
+  }
+  return normalizeText(pieces.join(''))
+}
+
+function normalizeText(value: string): string {
+  return value
+    .replace(/\u0000/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+    .slice(0, MAX_TEXT_CHARS)
+}
+
+function relationshipTargets(xml: string, relationshipKind: 'chart' | 'drawing'): string[] {
+  return [...xml.matchAll(/<Relationship\b[^>]*\/?>/gi)]
+    .filter(match => new RegExp(`/relationships/${relationshipKind}"`, 'i').test(match[0]))
+    .map(match => xmlAttribute(match[0], 'Target'))
+    .filter(Boolean)
+}
+
+function resolveArchiveRelationship(ownerPath: string, target: string): string {
+  return posix.normalize(posix.join(posix.dirname(ownerPath), target.replace(/^\/+/, '')))
+}
+
+function ownerRelationshipsPath(ownerPath: string): string {
+  return posix.join(posix.dirname(ownerPath), '_rels', `${posix.basename(ownerPath)}.rels`)
+}
+
+function chartPointValues(xml: string): string[] {
+  const points = [...xml.matchAll(/<c:pt\b[^>]*>([\s\S]*?)<\/c:pt>/gi)]
+    .map(point => normalizeText(decodeXmlText(point[1].match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i)?.[1] || '')))
+    .filter(Boolean)
+  if (points.length) return points.slice(0, MAX_CHART_POINTS + 1)
+  return [...xml.matchAll(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/gi)]
+    .map(value => normalizeText(decodeXmlText(value[1])))
+    .filter(Boolean)
+    .slice(0, MAX_CHART_POINTS + 1)
+}
+
+function chartTypeFromXml(xml: string): ChartAttachmentStructure['chartType'] {
+  const mapping: Array<[RegExp, ChartAttachmentStructure['chartType']]> = [
+    [/<c:barChart\b/i, 'bar'],
+    [/<c:lineChart\b/i, 'line'],
+    [/<c:pieChart\b/i, 'pie'],
+    [/<c:doughnutChart\b/i, 'doughnut'],
+    [/<c:areaChart\b/i, 'area'],
+    [/<c:scatterChart\b/i, 'scatter'],
+    [/<c:radarChart\b/i, 'radar'],
+    [/<c:bubbleChart\b/i, 'bubble']
+  ]
+  return mapping.find(([pattern]) => pattern.test(xml))?.[1] || 'unknown'
+}
+
+function parseChartXml(xml: string, index: number): ChartAttachmentStructure {
+  const titleXml = xml.match(/<c:title\b[^>]*>([\s\S]*?)<\/c:title>/i)?.[1] || ''
+  const title = normalizeText([
+    ...titleXml.matchAll(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi),
+    ...titleXml.matchAll(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/gi)
+  ].map(match => decodeXmlText(match[1])).join(' ')).slice(0, 300)
+  let pointCount = 0
+  let truncated = false
+  const series = [...xml.matchAll(/<c:ser\b[^>]*>([\s\S]*?)<\/c:ser>/gi)]
+    .slice(0, MAX_CHART_SERIES)
+    .map((match, seriesIndex) => {
+      const seriesXml = match[1]
+      const nameXml = seriesXml.match(/<c:tx\b[^>]*>([\s\S]*?)<\/c:tx>/i)?.[1] || ''
+      const name = normalizeText(decodeXmlText(
+        nameXml.match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/i)?.[1]
+        || nameXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/i)?.[1]
+        || ''
+      )).slice(0, 200) || `系列 ${seriesIndex + 1}`
+      const categoriesXml = seriesXml.match(/<c:(?:cat|xVal)\b[^>]*>([\s\S]*?)<\/c:(?:cat|xVal)>/i)?.[1] || ''
+      const valuesXml = seriesXml.match(/<c:(?:val|yVal|bubbleSize)\b[^>]*>([\s\S]*?)<\/c:(?:val|yVal|bubbleSize)>/i)?.[1] || ''
+      const rawCategories = chartPointValues(categoriesXml)
+      const rawValues = chartPointValues(valuesXml)
+      const remaining = Math.max(0, MAX_CHART_POINTS - pointCount)
+      const seriesPointCount = Math.min(remaining, Math.max(rawCategories.length, rawValues.length))
+      const categories = rawCategories.slice(0, seriesPointCount)
+      const values = rawValues.slice(0, seriesPointCount)
+      pointCount += seriesPointCount
+      if (seriesPointCount < Math.max(rawCategories.length, rawValues.length)) truncated = true
+      return { name, categories, values }
+    })
+  if ([...xml.matchAll(/<c:ser\b/gi)].length > MAX_CHART_SERIES) truncated = true
+  return {
+    index,
+    title,
+    chartType: chartTypeFromXml(xml),
+    seriesCount: series.length,
+    pointCount,
+    truncated,
+    series
+  }
+}
+
+async function extractOwnerCharts(
+  archive: JSZip,
+  ownerPath: string,
+  startIndex = 1,
+  maxCharts = MAX_ATTACHMENT_CHARTS
+): Promise<ChartAttachmentStructure[]> {
+  if (maxCharts <= 0) return []
+  const relationshipsXml = await archive.file(ownerRelationshipsPath(ownerPath))?.async('string') || ''
+  const chartPaths = relationshipTargets(relationshipsXml, 'chart')
+    .map(target => resolveArchiveRelationship(ownerPath, target))
+  const drawingPaths = relationshipTargets(relationshipsXml, 'drawing')
+    .map(target => resolveArchiveRelationship(ownerPath, target))
+  for (const drawingPath of drawingPaths) {
+    const drawingRelationships = await archive.file(ownerRelationshipsPath(drawingPath))?.async('string') || ''
+    chartPaths.push(...relationshipTargets(drawingRelationships, 'chart')
+      .map(target => resolveArchiveRelationship(drawingPath, target)))
+  }
+  const uniquePaths = [...new Set(chartPaths)].slice(0, Math.min(MAX_ATTACHMENT_CHARTS, maxCharts))
+  const charts: ChartAttachmentStructure[] = []
+  for (const [offset, chartPath] of uniquePaths.entries()) {
+    const xml = await archive.file(chartPath)?.async('string') || ''
+    if (xml) charts.push(parseChartXml(xml, startIndex + offset))
+  }
+  return charts
+}
+
+function chartTypeLabel(type: ChartAttachmentStructure['chartType']): string {
+  return {
+    bar: '柱状图',
+    line: '折线图',
+    pie: '饼图',
+    doughnut: '环形图',
+    area: '面积图',
+    scatter: '散点图',
+    radar: '雷达图',
+    bubble: '气泡图',
+    unknown: '图表'
+  }[type]
+}
+
+function chartTextLines(chart: ChartAttachmentStructure, scope = ''): string[] {
+  const lines = [`[${scope ? `${scope} · ` : ''}图表 ${chart.index}${chart.title ? `：${chart.title}` : ''}]`, `类型：${chartTypeLabel(chart.chartType)}`]
+  chart.series.forEach(series => {
+    lines.push(`系列：${series.name}`)
+    const count = Math.max(series.categories.length, series.values.length)
+    if (count) lines.push(`数据：${Array.from({ length: count }, (_, index) =>
+      `${series.categories[index] || `第 ${index + 1} 项`}=${series.values[index] || '值缺失'}`).join(' | ')}`)
+  })
+  return lines
+}
+
+async function extractOfficeXml(buffer: Buffer, extension: string): Promise<string> {
+  const archive = await JSZip.loadAsync(buffer)
+  const names = Object.keys(archive.files).filter(name => {
+    if (extension === '.docx') return /^word\/(?:document|header\d+|footer\d+)\.xml$/i.test(name)
+    if (extension === '.pptx') return /^ppt\/slides\/slide\d+\.xml$/i.test(name)
+    return /^xl\/(?:sharedStrings|worksheets\/sheet\d+)\.xml$/i.test(name)
+  }).sort()
+  const parts: string[] = []
+  for (const name of names.slice(0, 80)) {
+    const xml = await archive.file(name)?.async('string')
+    if (xml) parts.push(decodeXmlText(xml))
+    if (parts.join('\n').length >= MAX_TEXT_CHARS) break
+  }
+  return normalizeText(parts.join('\n'))
+}
+
+async function extractDocument(buffer: Buffer): Promise<AttachmentTextResult> {
+  const archive = await JSZip.loadAsync(buffer)
+  const documentXml = await archive.file('word/document.xml')?.async('string') || ''
+  const output: string[] = []
+  const headings: Array<{ level: number, text: string }> = []
+  const tables: DocumentAttachmentStructure['tables'] = []
+  let paragraphCount = 0
+  let listItemCount = 0
+  let blockCount = 0
+  let truncated = false
+
+  for (const block of documentXml.matchAll(/<w:(p|tbl)\b[^>]*>[\s\S]*?<\/w:\1>/gi)) {
+    if (blockCount >= MAX_DOCUMENT_BLOCKS || output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    if (block[1].toLowerCase() === 'p') {
+      const text = xmlRunText(block[0], 'w')
+      if (!text) continue
+      const style = block[0].match(/<w:pStyle\b[^>]*w:val="([^"]+)"/i)?.[1] || ''
+      const headingMatch = style.match(/^(?:Heading|标题)\s*([1-9])/i)
+      const isTitle = /^(?:Title|标题)$|^Subtitle$/i.test(style)
+      const isList = /<w:numPr\b/i.test(block[0])
+      if (headingMatch || isTitle) {
+        const level = headingMatch ? Number(headingMatch[1]) : 1
+        headings.push({ level, text: text.slice(0, 300) })
+        output.push(`${'#'.repeat(Math.min(6, level))} ${text}`)
+      } else {
+        output.push(isList ? `- ${text}` : text)
+      }
+      paragraphCount += 1
+      if (isList) listItemCount += 1
+    } else if (tables.length < MAX_DOCUMENT_TABLES) {
+      const rows = [...block[0].matchAll(/<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/gi)]
+      const parsedRows = rows.map(row =>
+        [...row[1].matchAll(/<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/gi)]
+          .map(cell => xmlRunText(cell[1], 'w').slice(0, MAX_SPREADSHEET_CELL_CHARS))
+      ).filter(row => row.some(Boolean))
+      if (parsedRows.length) {
+        const tableIndex = tables.length + 1
+        const columnCount = Math.max(...parsedRows.map(row => row.length))
+        const firstRowPopulated = parsedRows[0].filter(Boolean).length
+        const keyValueRows = columnCount === 2 && parsedRows.filter(row => row[0]).length >= Math.ceil(parsedRows.length * 0.7)
+        const layout = keyValueRows && firstRowPopulated < 2 ? 'key-value' : 'grid'
+        const headers = layout === 'grid'
+          ? parsedRows[0].map((value, index) => safeSpreadsheetLabel(value, spreadsheetColumnLabel(index + 1)))
+          : ['字段', '值']
+        tables.push({ index: tableIndex, rowCount: parsedRows.length, columnCount, layout, headers })
+        output.push(`[表格 ${tableIndex}]`)
+        parsedRows.forEach((row, index) => {
+          output.push(layout === 'key-value'
+            ? `字段：${row[0] || ''}${row[1] ? ` = ${row[1]}` : ''}`
+            : index === 0
+            ? `表头：${row.map((value, column) => `${spreadsheetColumnLabel(column + 1)}=${value}`).join(' | ')}`
+            : `第 ${index + 1} 行：${row.map((value, column) => `${headers[column] || spreadsheetColumnLabel(column + 1)}=${value}`).join(' | ')}`)
+        })
+      }
+    } else {
+      truncated = true
+    }
+    blockCount += 1
+  }
+
+  let headerFooterCount = 0
+  const auxiliaryNames = Object.keys(archive.files)
+    .filter(name => /^word\/(?:header|footer)\d+\.xml$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  for (const name of auxiliaryNames) {
+    const text = xmlRunText(await archive.file(name)?.async('string') || '', 'w')
+    if (!text) continue
+    headerFooterCount += 1
+    output.push(`[${name.includes('header') ? '页眉' : '页脚'}] ${text}`)
+  }
+  const charts = await extractOwnerCharts(archive, 'word/document.xml')
+  charts.forEach(chart => output.push(...chartTextLines(chart, '文档')))
+  const text = normalizeText(output.join('\n'))
+  const structure: DocumentAttachmentStructure = {
+    kind: 'document',
+    paragraphCount,
+    headingCount: headings.length,
+    listItemCount,
+    tableCount: tables.length,
+    headerFooterCount,
+    chartCount: charts.length,
+    truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
+    headings,
+    tables,
+    charts
+  }
+  return text
+    ? { success: true, text, format: '.docx', status: 'indexed', structure }
+    : { success: false, text: '', format: '.docx', status: 'empty', structure }
+}
+
+async function extractPresentation(buffer: Buffer): Promise<AttachmentTextResult> {
+  const archive = await JSZip.loadAsync(buffer)
+  const slideNames = Object.keys(archive.files)
+    .filter(name => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  const output: string[] = []
+  const slides: PresentationAttachmentStructure['slides'] = []
+  let textBlockCount = 0
+  let tableCount = 0
+  let chartCount = 0
+  let truncated = slideNames.length > MAX_PRESENTATION_SLIDES
+
+  for (const [index, name] of slideNames.slice(0, MAX_PRESENTATION_SLIDES).entries()) {
+    if (textBlockCount >= MAX_PRESENTATION_TEXT_BLOCKS || output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    const xml = await archive.file(name)?.async('string') || ''
+    const shapes = [...xml.matchAll(/<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/gi)]
+    const shapeDetails = shapes.map(shape => {
+      const text = xmlRunText(shape[0], 'a')
+      const sizes = [...shape[0].matchAll(/<(?:a:rPr|a:defRPr)\b[^>]*sz="(\d+)"/gi)].map(match => Number(match[1]))
+      return {
+        shape,
+        text,
+        placeholderTitle: /<p:ph\b[^>]*type="(?:title|ctrTitle)"/i.test(shape[0]),
+        fontSize: sizes.length ? Math.max(...sizes) : 0,
+        y: Number(shape[0].match(/<a:off\b[^>]*y="(\d+)"/i)?.[1] || Number.MAX_SAFE_INTEGER)
+      }
+    }).filter(shape => shape.text)
+    const explicitTitle = shapeDetails.find(shape => shape.placeholderTitle)
+    const inferredTitle = explicitTitle || [...shapeDetails]
+      .filter(shape => shape.text.length <= 120 && !/^\s*[\d.%+/-]+\s*$/.test(shape.text))
+      .sort((a, b) => {
+        const score = (shape: typeof a) =>
+          shape.fontSize - (Number.isFinite(shape.y) ? shape.y / 1000 : 0) - shape.text.length * 5 -
+          (/【[^】]+】|公司名称|LOGO/i.test(shape.text) ? 10_000 : 0)
+        return score(b) - score(a)
+      })[0]
+    const title = inferredTitle?.text.slice(0, 300) || ''
+    const titleSource = explicitTitle ? 'placeholder' : inferredTitle ? 'layout-inference' : 'none'
+    const titleConfidence = explicitTitle ? 0.95 : inferredTitle ? 0.65 : 0
+    const blocks: string[] = []
+    for (const shape of shapeDetails) {
+      const text = shape.text
+      if (title && shape === inferredTitle) continue
+      blocks.push(text.slice(0, 1500))
+      textBlockCount += 1
+      if (textBlockCount >= MAX_PRESENTATION_TEXT_BLOCKS) break
+    }
+    const tableMatches = [...xml.matchAll(/<a:tbl\b[^>]*>([\s\S]*?)<\/a:tbl>/gi)]
+    const slideTableCount = tableMatches.length
+    const slideCharts = await extractOwnerCharts(
+      archive,
+      name,
+      chartCount + 1,
+      MAX_ATTACHMENT_CHARTS - chartCount
+    )
+    output.push(`[幻灯片 ${index + 1}${title ? `：${title}` : ''}]`)
+    blocks.forEach(block => output.push(block))
+    for (const [tableIndex, table] of tableMatches.entries()) {
+      const rows = [...table[1].matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/gi)]
+        .map(row => [...row[1].matchAll(/<a:tc\b[^>]*>([\s\S]*?)<\/a:tc>/gi)]
+          .map(cell => xmlRunText(cell[1], 'a').slice(0, MAX_SPREADSHEET_CELL_CHARS)))
+      output.push(`[幻灯片 ${index + 1} · 表格 ${tableIndex + 1}]`)
+      rows.forEach((row, rowIndex) => output.push(`${rowIndex === 0 ? '表头' : `第 ${rowIndex + 1} 行`}：${row.join(' | ')}`))
+    }
+    slideCharts.forEach(chart => output.push(...chartTextLines(chart, `幻灯片 ${index + 1}`)))
+    tableCount += slideTableCount
+    chartCount += slideCharts.length
+    slides.push({
+      number: index + 1,
+      title,
+      titleSource,
+      titleConfidence,
+      textBlockCount: blocks.length,
+      tableCount: slideTableCount,
+      chartCount: slideCharts.length,
+      charts: slideCharts
+    })
+  }
+  const text = normalizeText(output.join('\n'))
+  const structure: PresentationAttachmentStructure = {
+    kind: 'presentation',
+    slideCount: slideNames.length,
+    indexedSlideCount: slides.length,
+    textBlockCount,
+    tableCount,
+    chartCount,
+    truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
+    slides
+  }
+  return text
+    ? { success: true, text, format: '.pptx', status: 'indexed', structure }
+    : { success: false, text: '', format: '.pptx', status: 'empty', structure }
+}
+
+function spreadsheetCellText(value: ExcelJS.CellValue): string {
+  if (value === null || value === undefined) return ''
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return String(value)
+    return String(Number(value.toPrecision(15)))
+  }
+  if (typeof value === 'object') {
+    if ('formula' in value || 'sharedFormula' in value) {
+      const formula = String(('formula' in value ? value.formula : value.sharedFormula) || '').trim()
+      const result = spreadsheetCellText(value.result as ExcelJS.CellValue)
+      return result ? `${result}（公式：${formula}）` : `公式：${formula}`
+    }
+    if ('hyperlink' in value) {
+      const text = String(value.text || '').trim()
+      const hyperlink = String(value.hyperlink || '').trim()
+      return text && text !== hyperlink ? `${text}（${hyperlink}）` : hyperlink
+    }
+    if ('richText' in value) return value.richText.map(part => part.text).join('')
+    if ('error' in value) return String(value.error || '')
+  }
+  return String(value)
+}
+
+function spreadsheetColumnLabel(column: number): string {
+  let current = column
+  let label = ''
+  while (current > 0) {
+    current -= 1
+    label = String.fromCharCode(65 + (current % 26)) + label
+    current = Math.floor(current / 26)
+  }
+  return label
+}
+
+function safeSpreadsheetLabel(value: string, fallback: string): string {
+  const label = normalizeText(value).replace(/\n/g, ' ').slice(0, 80)
+  return label || fallback
+}
+
+function xmlAttribute(tag: string, name: string): string {
+  const match = tag.match(new RegExp(`\\b${name}="([^"]*)"`, 'i'))
+  return match ? decodeXmlText(match[1]).trim() : ''
+}
+
+function spreadsheetColumnNumber(reference: string): number {
+  const letters = reference.match(/^[A-Z]+/i)?.[0]?.toUpperCase() || ''
+  return [...letters].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0)
+}
+
+function excelSerialDate(value: number): string {
+  const timestamp = Date.UTC(1899, 11, 30) + value * 86_400_000
+  const date = new Date(timestamp)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString()
+}
+
+async function extractSpreadsheetXmlFallback(buffer: Buffer): Promise<AttachmentTextResult> {
+  const archive = await JSZip.loadAsync(buffer)
+  const workbookXml = await archive.file('xl/workbook.xml')?.async('string') || ''
+  const relationshipsXml = await archive.file('xl/_rels/workbook.xml.rels')?.async('string') || ''
+  const sharedStringsXml = await archive.file('xl/sharedStrings.xml')?.async('string') || ''
+  const stylesXml = await archive.file('xl/styles.xml')?.async('string') || ''
+  const sharedStrings = [...sharedStringsXml.matchAll(/<(?:\w+:)?si\b[^>]*>([\s\S]*?)<\/(?:\w+:)?si>/gi)]
+    .map(match => normalizeText(decodeXmlText(match[1])))
+  const relationships = new Map(
+    [...relationshipsXml.matchAll(/<Relationship\b[^>]*\/?>/gi)].map(match => [
+      xmlAttribute(match[0], 'Id'),
+      xmlAttribute(match[0], 'Target').replace(/^\/?xl\//, '')
+    ])
+  )
+  const customDateFormatIds = new Set(
+    [...stylesXml.matchAll(/<(?:\w+:)?numFmt\b[^>]*\/?>/gi)]
+      .filter(match => /[ymdhis]/i.test(xmlAttribute(match[0], 'formatCode').replace(/\[[^\]]+\]/g, '')))
+      .map(match => Number(xmlAttribute(match[0], 'numFmtId')))
+      .filter(Number.isFinite)
+  )
+  const builtInDateFormatIds = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
+  const cellXfsXml = stylesXml.match(/<(?:\w+:)?cellXfs\b[^>]*>([\s\S]*?)<\/(?:\w+:)?cellXfs>/i)?.[1] || ''
+  const dateStyleIndexes = new Set(
+    [...cellXfsXml.matchAll(/<(?:\w+:)?xf\b[^>]*\/?>/gi)]
+      .map((match, index) => ({ index, numberFormat: Number(xmlAttribute(match[0], 'numFmtId')) }))
+      .filter(item => builtInDateFormatIds.has(item.numberFormat) || customDateFormatIds.has(item.numberFormat))
+      .map(item => item.index)
+  )
+  const sheetDescriptors = [...workbookXml.matchAll(/<(?:\w+:)?sheet\b[^>]*\/?>/gi)].map(match => ({
+    name: xmlAttribute(match[0], 'name') || '未命名工作表',
+    path: relationships.get(xmlAttribute(match[0], 'r:id')) || ''
+  }))
+  const output: string[] = []
+  const sheets: SpreadsheetSheetStructure[] = []
+  let indexedCells = 0
+  let truncated = sheetDescriptors.length > MAX_SPREADSHEET_SHEETS
+
+  for (const descriptor of sheetDescriptors.slice(0, MAX_SPREADSHEET_SHEETS)) {
+    if (!descriptor.path || indexedCells >= MAX_SPREADSHEET_CELLS) {
+      truncated = true
+      continue
+    }
+    const normalizedPath = descriptor.path.startsWith('worksheets/') ? `xl/${descriptor.path}` : `xl/${descriptor.path.replace(/^\/+/, '')}`
+    const worksheetXml = await archive.file(normalizedPath)?.async('string') || ''
+    const rowMatches = [...worksheetXml.matchAll(/<(?:\w+:)?row\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?row>/gi)]
+    const sheet: SpreadsheetSheetStructure = {
+      name: descriptor.name,
+      rowCount: rowMatches.length,
+      columnCount: 0,
+      indexedRows: 0,
+      indexedCells: 0,
+      headers: [],
+      chartCount: 0,
+      charts: [],
+      truncated: rowMatches.length > MAX_SPREADSHEET_ROWS_PER_SHEET
+    }
+    const lines = [`[工作表：${descriptor.name}]`]
+    const headers = new Map<number, string>()
+    for (const rowMatch of rowMatches.slice(0, MAX_SPREADSHEET_ROWS_PER_SHEET)) {
+      if (indexedCells >= MAX_SPREADSHEET_CELLS || output.join('\n').length + lines.join('\n').length >= MAX_TEXT_CHARS) {
+        sheet.truncated = true
+        truncated = true
+        break
+      }
+      const rowNumber = Number(xmlAttribute(rowMatch[0], 'r')) || sheet.indexedRows + 1
+      const cells: Array<{ column: number, value: string }> = []
+      for (const cellMatch of rowMatch[2].matchAll(/<(?:\w+:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:\w+:)?c>)/gi)) {
+        if (indexedCells + cells.length >= MAX_SPREADSHEET_CELLS) break
+        const cellTag = `<c ${cellMatch[1]}>`
+        const column = spreadsheetColumnNumber(xmlAttribute(cellTag, 'r'))
+        if (!column) continue
+        const type = xmlAttribute(cellTag, 't')
+        const styleIndex = Number(xmlAttribute(cellTag, 's'))
+        const cellBody = cellMatch[2] || ''
+        const rawValue = cellBody.match(/<(?:\w+:)?v\b[^>]*>([\s\S]*?)<\/(?:\w+:)?v>/i)?.[1] || ''
+        const formula = normalizeText(decodeXmlText(cellBody.match(/<(?:\w+:)?f\b[^>]*>([\s\S]*?)<\/(?:\w+:)?f>/i)?.[1] || ''))
+        let value = type === 's'
+          ? sharedStrings[Number(rawValue)] || ''
+          : type === 'inlineStr'
+            ? normalizeText(decodeXmlText(cellBody))
+            : normalizeText(decodeXmlText(rawValue))
+        if (type === 'n' && value && Number.isFinite(Number(value))) value = String(Number(Number(value).toPrecision(15)))
+        if (type === 'n' && value && dateStyleIndexes.has(styleIndex)) value = excelSerialDate(Number(value))
+        if (formula) value = value ? `${value}（公式：${formula}）` : `公式：${formula}`
+        value = value.slice(0, MAX_SPREADSHEET_CELL_CHARS)
+        if (value) cells.push({ column, value })
+      }
+      if (!cells.length) continue
+      sheet.columnCount = Math.max(sheet.columnCount, ...cells.map(cell => cell.column))
+      if (!sheet.indexedRows) {
+        for (const cell of cells) headers.set(cell.column, safeSpreadsheetLabel(cell.value, spreadsheetColumnLabel(cell.column)))
+        sheet.headers = cells.map(cell => safeSpreadsheetLabel(cell.value, spreadsheetColumnLabel(cell.column)))
+        lines.push(`表头（第 ${rowNumber} 行）：${cells.map(cell => `${spreadsheetColumnLabel(cell.column)}=${cell.value}`).join(' | ')}`)
+      } else {
+        lines.push(`第 ${rowNumber} 行：${cells.map(cell => `${headers.get(cell.column) || spreadsheetColumnLabel(cell.column)}=${cell.value}`).join(' | ')}`)
+      }
+      sheet.indexedRows += 1
+      sheet.indexedCells += cells.length
+      indexedCells += cells.length
+    }
+    sheet.charts = await extractOwnerCharts(
+      archive,
+      normalizedPath,
+      sheets.reduce((total, item) => total + item.chartCount, 0) + 1,
+      MAX_ATTACHMENT_CHARTS - sheets.reduce((total, item) => total + item.chartCount, 0)
+    )
+    sheet.chartCount = sheet.charts.length
+    sheet.charts.forEach(chart => lines.push(...chartTextLines(chart, `工作表 ${descriptor.name}`)))
+    if (sheet.truncated) truncated = true
+    sheets.push(sheet)
+    output.push(lines.join('\n'))
+  }
+  const text = normalizeText(output.join('\n\n'))
+  const structure: SpreadsheetAttachmentStructure = {
+    kind: 'spreadsheet',
+    sheetCount: sheetDescriptors.length,
+    indexedSheetCount: sheets.length,
+    indexedCells,
+    chartCount: sheets.reduce((total, sheet) => total + sheet.chartCount, 0),
+    truncated,
+    sheets
+  }
+  return text
+    ? { success: true, text, format: '.xlsx', status: 'indexed', structure }
+    : { success: false, text: '', format: '.xlsx', status: 'empty', structure }
+}
+
+async function extractSpreadsheet(buffer: Buffer): Promise<AttachmentTextResult> {
+  const workbook = new ExcelJS.Workbook()
+  const archive = await JSZip.loadAsync(buffer)
+  try {
+    await workbook.xlsx.load(buffer)
+  } catch {
+    return extractSpreadsheetXmlFallback(buffer)
+  }
+  const output: string[] = []
+  const sheets: SpreadsheetSheetStructure[] = []
+  const workbookXml = await archive.file('xl/workbook.xml')?.async('string') || ''
+  const relationshipsXml = await archive.file('xl/_rels/workbook.xml.rels')?.async('string') || ''
+  const worksheetRelationships = new Map(
+    [...relationshipsXml.matchAll(/<Relationship\b[^>]*\/?>/gi)].map(match => [
+      xmlAttribute(match[0], 'Id'),
+      xmlAttribute(match[0], 'Target').replace(/^\/?xl\//, '')
+    ])
+  )
+  const worksheetPaths = new Map(
+    [...workbookXml.matchAll(/<(?:\w+:)?sheet\b[^>]*\/?>/gi)].map(match => [
+      xmlAttribute(match[0], 'name'),
+      worksheetRelationships.get(xmlAttribute(match[0], 'r:id')) || ''
+    ])
+  )
+  let indexedCells = 0
+  let truncated = workbook.worksheets.length > MAX_SPREADSHEET_SHEETS
+
+  for (const worksheet of workbook.worksheets.slice(0, MAX_SPREADSHEET_SHEETS)) {
+    if (indexedCells >= MAX_SPREADSHEET_CELLS || output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    const actualRows = worksheet.actualRowCount || worksheet.rowCount
+    const actualColumns = worksheet.actualColumnCount || worksheet.columnCount
+    const sheet: SpreadsheetSheetStructure = {
+      name: worksheet.name,
+      rowCount: actualRows,
+      columnCount: actualColumns,
+      indexedRows: 0,
+      indexedCells: 0,
+      headers: [],
+      chartCount: 0,
+      charts: [],
+      truncated: actualRows > MAX_SPREADSHEET_ROWS_PER_SHEET
+    }
+    const lines: string[] = [`[工作表：${worksheet.name}]`]
+    let headerRowNumber = 0
+    const headers = new Map<number, string>()
+
+    for (let rowNumber = 1; rowNumber <= Math.min(worksheet.rowCount, MAX_SPREADSHEET_ROWS_PER_SHEET); rowNumber += 1) {
+      if (indexedCells >= MAX_SPREADSHEET_CELLS || output.join('\n').length + lines.join('\n').length >= MAX_TEXT_CHARS) {
+        sheet.truncated = true
+        truncated = true
+        break
+      }
+      const row = worksheet.getRow(rowNumber)
+      const cells: Array<{ column: number, value: string }> = []
+      row.eachCell({ includeEmpty: false }, cell => {
+        if (indexedCells + cells.length >= MAX_SPREADSHEET_CELLS) return
+        if (cell.isMerged && cell.address !== cell.master.address) return
+        const value = normalizeText(spreadsheetCellText(cell.value)).slice(0, MAX_SPREADSHEET_CELL_CHARS)
+        if (value) cells.push({ column: cell.col, value })
+      })
+      if (!cells.length) continue
+      if (!headerRowNumber) {
+        headerRowNumber = rowNumber
+        for (const cell of cells) headers.set(cell.column, safeSpreadsheetLabel(cell.value, spreadsheetColumnLabel(cell.column)))
+        sheet.headers = cells.map(cell => safeSpreadsheetLabel(cell.value, spreadsheetColumnLabel(cell.column)))
+        lines.push(`表头（第 ${rowNumber} 行）：${cells.map(cell => `${spreadsheetColumnLabel(cell.column)}=${cell.value}`).join(' | ')}`)
+      } else {
+        const values = cells.map(cell => {
+          const label = headers.get(cell.column) || spreadsheetColumnLabel(cell.column)
+          return `${label}=${cell.value}`
+        })
+        lines.push(`第 ${rowNumber} 行：${values.join(' | ')}`)
+      }
+      sheet.indexedRows += 1
+      sheet.indexedCells += cells.length
+      indexedCells += cells.length
+    }
+    const worksheetPath = worksheetPaths.get(worksheet.name) || ''
+    if (worksheetPath) {
+      const normalizedPath = worksheetPath.startsWith('worksheets/')
+        ? `xl/${worksheetPath}`
+        : `xl/${worksheetPath.replace(/^\/+/, '')}`
+      sheet.charts = await extractOwnerCharts(
+        archive,
+        normalizedPath,
+        sheets.reduce((total, item) => total + item.chartCount, 0) + 1,
+        MAX_ATTACHMENT_CHARTS - sheets.reduce((total, item) => total + item.chartCount, 0)
+      )
+      sheet.chartCount = sheet.charts.length
+      sheet.charts.forEach(chart => lines.push(...chartTextLines(chart, `工作表 ${worksheet.name}`)))
+    }
+    if (sheet.truncated) truncated = true
+    sheets.push(sheet)
+    output.push(lines.join('\n'))
+  }
+
+  const text = normalizeText(output.join('\n\n'))
+  const structure: SpreadsheetAttachmentStructure = {
+    kind: 'spreadsheet',
+    sheetCount: workbook.worksheets.length,
+    indexedSheetCount: sheets.length,
+    indexedCells,
+    chartCount: sheets.reduce((total, sheet) => total + sheet.chartCount, 0),
+    truncated,
+    sheets
+  }
+  return text
+    ? { success: true, text, format: '.xlsx', status: 'indexed', structure }
+    : { success: false, text: '', format: '.xlsx', status: 'empty', structure }
+}
+
+function resolvePdfTextBinary(): string {
+  return ['/opt/homebrew/bin/pdftotext', '/usr/local/bin/pdftotext', '/usr/bin/pdftotext']
+    .find(existsSync) || ''
+}
+
+type PdfLayoutBlock = {
+  xMin: number
+  yMin: number
+  xMax: number
+  yMax: number
+  text: string
+}
+
+function decodeHtmlText(value: string): string {
+  return decodeXmlEntities(value)
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+}
+
+function pdfNumberAttribute(tag: string, name: string): number {
+  const value = Number(tag.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'))?.[1])
+  return Number.isFinite(value) ? value : 0
+}
+
+function parsePdfLayoutBlock(xml: string): PdfLayoutBlock | null {
+  const opening = xml.match(/^<block\b[^>]*>/i)?.[0] || ''
+  const lines: Array<{ y: number, x: number, text: string }> = []
+  for (const line of xml.matchAll(/<line\b([^>]*)>([\s\S]*?)<\/line>/gi)) {
+    const words = [...line[2].matchAll(/<word\b[^>]*>([\s\S]*?)<\/word>/gi)]
+      .map(word => normalizeText(decodeHtmlText(word[1])))
+      .filter(Boolean)
+    if (!words.length) continue
+    lines.push({
+      y: pdfNumberAttribute(line[0], 'yMin'),
+      x: pdfNumberAttribute(line[0], 'xMin'),
+      text: words.join(' ')
+    })
+  }
+  lines.sort((a, b) => a.y - b.y || a.x - b.x)
+  const text = normalizeText(lines.map(line => line.text).join('\n'))
+  if (!text) return null
+  return {
+    xMin: pdfNumberAttribute(opening, 'xMin'),
+    yMin: pdfNumberAttribute(opening, 'yMin'),
+    xMax: pdfNumberAttribute(opening, 'xMax'),
+    yMax: pdfNumberAttribute(opening, 'yMax'),
+    text
+  }
+}
+
+function blocksOverlapVertically(a: PdfLayoutBlock, b: PdfLayoutBlock): boolean {
+  return Math.min(a.yMax, b.yMax) - Math.max(a.yMin, b.yMin) > 0
+}
+
+function orderPdfPageBlocks(blocks: PdfLayoutBlock[], pageWidth: number): {
+  blocks: PdfLayoutBlock[]
+  columnCount: 1 | 2
+  columnConfidence: number
+} {
+  const center = pageWidth / 2
+  const margin = pageWidth * 0.035
+  const left = blocks.filter(block => block.xMax < center + margin)
+  const right = blocks.filter(block => block.xMin > center - margin)
+  const overlappingPairs = left.reduce((count, leftBlock) =>
+    count + right.filter(rightBlock => blocksOverlapVertically(leftBlock, rightBlock)).length, 0)
+  const isTwoColumn = left.length > 0 && right.length > 0 && overlappingPairs > 0
+  if (!isTwoColumn) {
+    return {
+      blocks: [...blocks].sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin),
+      columnCount: 1,
+      columnConfidence: 1
+    }
+  }
+
+  const spanning = blocks
+    .filter(block => block.xMin < center - margin && block.xMax > center + margin)
+    .sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin)
+  const nonSpanning = blocks.filter(block => !spanning.includes(block))
+  const ordered: PdfLayoutBlock[] = []
+  let bandTop = Number.NEGATIVE_INFINITY
+  const appendBand = (bandBottom: number) => {
+    const band = nonSpanning.filter(block => {
+      const centerY = (block.yMin + block.yMax) / 2
+      return centerY >= bandTop && centerY < bandBottom
+    })
+    ordered.push(
+      ...band.filter(block => (block.xMin + block.xMax) / 2 <= center)
+        .sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin),
+      ...band.filter(block => (block.xMin + block.xMax) / 2 > center)
+        .sort((a, b) => a.yMin - b.yMin || a.xMin - b.xMin)
+    )
+  }
+  for (const separator of spanning) {
+    appendBand(separator.yMin)
+    ordered.push(separator)
+    bandTop = separator.yMax
+  }
+  appendBand(Number.POSITIVE_INFINITY)
+  return {
+    blocks: ordered,
+    columnCount: 2,
+    columnConfidence: Math.min(0.95, 0.7 + Math.min(left.length, right.length) * 0.05)
+  }
+}
+
+export function parsePdfLayout(xml: string): { text: string, structure: PdfAttachmentStructure } {
+  const output: string[] = []
+  const pages: PdfAttachmentStructure['pages'] = []
+  let blockCount = 0
+  let truncated = false
+  const pageMatches = [...xml.matchAll(/<page\b([^>]*)>([\s\S]*?)<\/page>/gi)]
+  for (const [index, pageMatch] of pageMatches.entries()) {
+    if (output.join('\n').length >= MAX_TEXT_CHARS) {
+      truncated = true
+      break
+    }
+    const pageTag = pageMatch[0].match(/^<page\b[^>]*>/i)?.[0] || ''
+    const width = pdfNumberAttribute(pageTag, 'width')
+    const height = pdfNumberAttribute(pageTag, 'height')
+    const blocks = [...pageMatch[2].matchAll(/<block\b[^>]*>[\s\S]*?<\/block>/gi)]
+      .map(match => parsePdfLayoutBlock(match[0]))
+      .filter((block): block is PdfLayoutBlock => Boolean(block))
+    if (!blocks.length) continue
+    const ordered = orderPdfPageBlocks(blocks, width || 612)
+    output.push(`[PDF 第 ${index + 1} 页${ordered.columnCount === 2 ? ' · 双栏阅读顺序' : ''}]`)
+    ordered.blocks.forEach(block => output.push(block.text))
+    blockCount += blocks.length
+    pages.push({
+      number: index + 1,
+      width,
+      height,
+      columnCount: ordered.columnCount,
+      columnConfidence: ordered.columnConfidence,
+      blockCount: blocks.length
+    })
+  }
+  const text = normalizeText(output.join('\n'))
+  return {
+    text,
+    structure: {
+      kind: 'pdf',
+      pageCount: pageMatches.length,
+      indexedPageCount: pages.length,
+      blockCount,
+      multiColumnPageCount: pages.filter(page => page.columnCount === 2).length,
+      readingOrder: 'bbox-layout',
+      truncated: truncated || output.join('\n').length > MAX_TEXT_CHARS,
+      pages
+    }
+  }
+}
+
+async function extractPdfText(filePath: string): Promise<AttachmentTextResult> {
+  const binary = resolvePdfTextBinary()
+  if (!binary) return { success: false, text: '', format: '.pdf', status: 'dependency_missing' }
+  return new Promise(resolve => {
+    const child = spawn(binary, ['-bbox-layout', '-enc', 'UTF-8', filePath, '-'], {
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    const chunks: Buffer[] = []
+    let total = 0
+    let settled = false
+    const finish = (result: AttachmentTextResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish({ success: false, text: '', format: '.pdf', status: 'failed', error: 'timeout' })
+    }, 10_000)
+    child.stdout.on('data', chunk => {
+      total += chunk.length
+      if (total > 256 * 1024) {
+        child.kill('SIGKILL')
+        finish({ success: false, text: '', format: '.pdf', status: 'too_large' })
+      } else {
+        chunks.push(Buffer.from(chunk))
+      }
+    })
+    child.on('error', error => finish({ success: false, text: '', format: '.pdf', status: 'failed', error: error.message }))
+    child.on('close', code => {
+      if (settled) return
+      if (code !== 0) {
+        finish({ success: false, text: '', format: '.pdf', status: 'failed', error: `pdftotext_exit_${code}` })
+        return
+      }
+      const parsed = parsePdfLayout(Buffer.concat(chunks).toString('utf8'))
+      const text = parsed.text
+      finish(text
+        ? { success: true, text, format: '.pdf', status: 'indexed', structure: parsed.structure }
+        : { success: false, text: '', format: '.pdf', status: 'ocr_required', structure: parsed.structure })
+    })
+  })
+}
+
+export async function extractAttachmentText(
+  filePath: string,
+  declaredSize = 0
+): Promise<AttachmentTextResult> {
+  const extension = extname(filePath).toLowerCase()
+  const supported = PLAIN_TEXT_EXTENSIONS.has(extension) || ['.docx', '.pptx', '.xlsx', '.pdf'].includes(extension)
+  if (!supported) return { success: false, text: '', format: extension, status: 'unsupported' }
+  if (declaredSize > MAX_FILE_BYTES) return { success: false, text: '', format: extension, status: 'too_large' }
+  try {
+    if (extension === '.pdf') return await extractPdfText(filePath)
+    const buffer = await readFile(filePath)
+    if (buffer.length > MAX_FILE_BYTES) return { success: false, text: '', format: extension, status: 'too_large' }
+    if (extension === '.xlsx') return await extractSpreadsheet(buffer)
+    if (extension === '.docx') return await extractDocument(buffer)
+    if (extension === '.pptx') return await extractPresentation(buffer)
+    const text = PLAIN_TEXT_EXTENSIONS.has(extension)
+      ? normalizeText(buffer.toString('utf8'))
+      : await extractOfficeXml(buffer, extension)
+    if (!text) return { success: false, text: '', format: extension, status: 'empty' }
+    return { success: true, text, format: extension, status: 'indexed' }
+  } catch (error: any) {
+    return { success: false, text: '', format: extension, status: 'failed', error: String(error?.message || error) }
+  }
+}
+
+export const ATTACHMENT_TEXT_LIMITS = {
+  maxFileBytes: MAX_FILE_BYTES,
+  maxTextChars: MAX_TEXT_CHARS,
+  maxSpreadsheetSheets: MAX_SPREADSHEET_SHEETS,
+  maxSpreadsheetRowsPerSheet: MAX_SPREADSHEET_ROWS_PER_SHEET,
+  maxSpreadsheetCells: MAX_SPREADSHEET_CELLS,
+  maxDocumentBlocks: MAX_DOCUMENT_BLOCKS,
+  maxPresentationSlides: MAX_PRESENTATION_SLIDES,
+  maxPresentationTextBlocks: MAX_PRESENTATION_TEXT_BLOCKS,
+  maxAttachmentCharts: MAX_ATTACHMENT_CHARTS,
+  maxChartSeries: MAX_CHART_SERIES,
+  maxChartPoints: MAX_CHART_POINTS
+}

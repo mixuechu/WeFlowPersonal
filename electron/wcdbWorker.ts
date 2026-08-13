@@ -1,10 +1,13 @@
 import { parentPort, workerData } from 'worker_threads'
 import { WcdbCore } from './services/wcdbCore'
+import { SerialWorkerRequestQueue } from './services/serialWorkerRequestQueue'
 
 const core = new WcdbCore()
+const requestQueue = new SerialWorkerRequestQueue()
 
 if (parentPort) {
-    parentPort.on('message', async (msg) => {
+    parentPort.on('message', (msg) => {
+      void requestQueue.enqueue(async () => {
         const { id, type, payload } = msg
 
         try {
@@ -22,11 +25,15 @@ if (parentPort) {
                 case 'setMonitor':
                     {
                     const monitorOk = core.setMonitor((type, json) => {
-                        parentPort!.postMessage({
-                            id: -1,
-                            type: 'monitor',
-                            payload: { type, json }
-                        })
+                        try {
+                            parentPort!.postMessage({
+                                id: -1,
+                                type: 'monitor',
+                                payload: { type, json }
+                            })
+                        } catch {
+                            // Parent shutdown must not escape the native monitor callback.
+                        }
                     })
                     result = { success: monitorOk }
                     break
@@ -43,6 +50,10 @@ if (parentPort) {
                 case 'close':
                     core.close()
                     result = { success: true }
+                    break
+                case 'prepareForProcessExit':
+                    core.prepareForProcessExit()
+                    result = { success: true, strategy: 'process_exit_detach' }
                     break
                 case 'isConnected':
                     result = core.isConnected()
@@ -304,5 +315,6 @@ if (parentPort) {
         } catch (e) {
             parentPort!.postMessage({ id, error: String(e) })
         }
+      }).catch(() => undefined)
     })
 }

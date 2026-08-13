@@ -111,6 +111,7 @@ export default defineConfig({
             rollupOptions: {
               external: [
                 'better-sqlite3',
+                'better-sqlite3-multiple-ciphers',
                 'koffi',
                 'fsevents',
                 'whisper-node',
@@ -119,6 +120,8 @@ export default defineConfig({
                 'node-llama-cpp',
                 '@vscode/sudo-prompt',
                 'silk-wasm',
+                // Transformers.js 依赖原始 ESM import.meta.url 定位 ONNX 运行时资源
+                '@huggingface/transformers',
                 // 原生 .node 二进制不可打包，运行时从 asarUnpack 目录解析
                 '@hicccc77/electron-liquid-glass'
               ]
@@ -208,6 +211,22 @@ export default defineConfig({
               ],
               output: {
                 entryFileNames: 'wcdbWorker.js',
+                codeSplitting: false
+              }
+            }
+          }
+        }
+      },
+      {
+        entry: 'electron/localEmbeddingWorker.ts',
+        onstart: handleElectronOnStart,
+        vite: {
+          build: {
+            outDir: 'dist-electron',
+            rollupOptions: {
+              external: ['@huggingface/transformers'],
+              output: {
+                entryFileNames: 'localEmbeddingWorker.js',
                 codeSplitting: false
               }
             }

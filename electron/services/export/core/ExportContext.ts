@@ -3,8 +3,6 @@ import { parallelLimit } from '../utils/parallelLimit';
 import { FILE_APP_LOCAL_TYPES, FILE_APP_LOCAL_TYPE_SET, MESSAGE_TYPE_MAP } from '../constants';
 import * as fs from 'fs'
 import * as path from 'path'
-import * as http from 'http'
-import * as https from 'https'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import ExcelJS from 'exceljs'
@@ -34,6 +32,8 @@ import { resolveGroupNicknameByCandidates, buildGroupNicknameIdCandidates, norma
 import { getAvatarFallback } from '../../export/contacts/avatarHelper';
 import { pathExists, ensureExportDir, copyFileOptimized, hardlinkOrCopyFile } from '../../export/media/fileCopy';
 import { getMediaFileStat } from '../../export/media/attachmentResolver';
+import { fetchPublicRemoteBuffer } from '../../publicRemoteFetchService.ts'
+import { detectExportAvatarMime, EXPORT_AVATAR_MAX_BYTES } from '../media/exportAvatarPolicy.ts'
 
 export class ExportContext {
     private configService: ConfigService;
@@ -2306,17 +2306,27 @@ export class ExportContext {
         }
 
         if (svridsToResolve.length === 0) return
-        const results = await Promise.allSettled(
-                  svridsToResolve.map(({ svrid }) => wcdbService.getMessageByServerId(sessionId, svrid))
-                );
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i]
-          const { msg } = svridsToResolve[i]
+        const resultBySvrid = new Map<string, Awaited<ReturnType<typeof wcdbService.getMessageByServerId>>>()
+        const uniqueSvrids = [...new Set(svridsToResolve.map(({ svrid }) => svrid))]
+        const chunkSize = 8
+        for (let offset = 0; offset < uniqueSvrids.length; offset += chunkSize) {
+          const chunk = uniqueSvrids.slice(offset, offset + chunkSize)
+          const results = await Promise.allSettled(
+            chunk.map(svrid => wcdbService.getMessageByServerId(sessionId, svrid))
+          )
+          results.forEach((result, index) => {
+            resultBySvrid.set(chunk[index], result.status === 'fulfilled'
+              ? result.value
+              : { success: false, error: String(result.reason || '查询失败') })
+          })
+        }
+        for (const { msg, svrid } of svridsToResolve) {
+          const result = resultBySvrid.get(svrid)
 
-          if (result.status === 'fulfilled' && result.value.success && result.value.row) {
-            const localType = parseInt(result.value.row.local_type || '0', 10)
-            const rawMessageContent = result.value.row.message_content
-            const rawCompressContent = result.value.row.compress_content
+          if (result?.success && result.row) {
+            const localType = parseInt(result.row.local_type || '0', 10)
+            const rawMessageContent = result.row.message_content
+            const rawCompressContent = result.row.compress_content
             const content = chatService['decodeMessageContent'](rawMessageContent, rawCompressContent)
 
             if (localType === 1) {
@@ -3007,7 +3017,7 @@ export class ExportContext {
                 const fallback = await chatService.getImageData(sessionId, String(localId))
                 if (fallback.success && fallback.data) {
                   const buffer = Buffer.from(fallback.data, 'base64')
-                  const mime = this.detectMimeType(buffer) || 'image/jpeg'
+                  const mime = detectExportAvatarMime(buffer) || 'image/jpeg'
                   return `data:${mime};base64,${fallback.data}`
                 }
               }
@@ -3777,13 +3787,23 @@ export class ExportContext {
         }
     }
 
-    private collectFileStorageCandidatesByName(rootDir: string, fileName: string, maxDepth = 3): string[] {
+    private collectFileStorageCandidatesByName(
+      rootDir: string,
+      fileName: string,
+      maxDepth = 3,
+      budget: { maxDirectories?: number; maxEntries?: number } = {}
+    ): string[] {
         const normalizedName = String(fileName || '').trim().toLowerCase();
         if (!rootDir || !normalizedName) return []
         const matches: string[] = [];
         const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
-        while (stack.length > 0) {
+        let directoryCount = 0
+        let entryCount = 0
+        const maxDirectories = Math.max(1, Number(budget.maxDirectories || Number.MAX_SAFE_INTEGER))
+        const maxEntries = Math.max(1, Number(budget.maxEntries || Number.MAX_SAFE_INTEGER))
+        while (stack.length > 0 && directoryCount < maxDirectories && entryCount < maxEntries) {
           const current = stack.pop()!
+          directoryCount += 1
           let entries: fs.Dirent[]
           try {
             entries = fs.readdirSync(current.dir, { withFileTypes: true })
@@ -3792,6 +3812,8 @@ export class ExportContext {
           }
 
           for (const entry of entries) {
+            entryCount += 1
+            if (entryCount > maxEntries) break
             const entryPath = path.join(current.dir, entry.name)
             if (entry.isFile() && entry.name.toLowerCase() === normalizedName) {
               matches.push(entryPath)
@@ -3830,7 +3852,10 @@ export class ExportContext {
         this.noteMediaTelemetry({ cacheMissFiles: 1 })
     }
 
-    private async resolveFileAttachmentCandidates(msg: any): Promise<FileExportCandidate[]> {
+    private async resolveFileAttachmentCandidates(
+      msg: any,
+      searchBudget: { maxDirectories?: number; maxEntries?: number } = {}
+    ): Promise<FileExportCandidate[]> {
         const fileName = String(msg?.fileName || '').trim();
         if (!fileName) return []
         const roots = this.resolveFileAttachmentSearchRoots();
@@ -3888,7 +3913,7 @@ export class ExportContext {
           }
 
           if (root.fileStorageRoot) {
-            for (const candidatePath of this.collectFileStorageCandidatesByName(root.fileStorageRoot, fileName, 3)) {
+            for (const candidatePath of this.collectFileStorageCandidatesByName(root.fileStorageRoot, fileName, 3, searchBudget)) {
               await appendCandidate(candidatePath)
             }
           }
@@ -3907,6 +3932,26 @@ export class ExportContext {
           return left.searchOrder - right.searchOrder
         })
         return candidates
+    }
+
+    public async resolveFileAttachmentForIndexing(msg: any): Promise<{
+      sourcePath: string
+      matchedBy: 'md5' | 'name'
+      size: number
+    } | null> {
+      const candidates = await this.resolveFileAttachmentCandidates(msg, {
+        maxDirectories: 160,
+        maxEntries: 4_000
+      })
+      const selected = candidates[0]
+      if (!selected) return null
+      try {
+        const stat = await fs.promises.stat(selected.sourcePath)
+        if (!stat.isFile()) return null
+        return { sourcePath: selected.sourcePath, matchedBy: selected.matchedBy, size: stat.size }
+      } catch {
+        return null
+      }
     }
 
     private async exportFileAttachment(msg: any, mediaRootDir: string, mediaRelativePrefix: string, maxFileSizeMb?: number, dirCache?: Set<string>, control?: ExportTaskControl, options?: Pick<ExportOptions, 'exportConflictStrategy'>): Promise<MediaExportItem | null> {
@@ -4148,53 +4193,6 @@ export class ExportContext {
           success: false,
           error: '检测到文件消息，但未找到可导出的源文件，请检查数据库路径或文件存储目录配置'
         }
-    }
-
-    /**
-     * 下载文件
-     */
-    private async downloadFile(url: string, destPath: string): Promise<boolean> {
-        return new Promise((resolve) => {
-          try {
-            const protocol = url.startsWith('https') ? https : http
-            const request = protocol.get(url, { timeout: 30000 }, (response) => {
-              if (response.statusCode === 301 || response.statusCode === 302) {
-                const redirectUrl = response.headers.location
-                if (redirectUrl) {
-                  this.downloadFile(redirectUrl, destPath).then(resolve)
-                  return
-                }
-              }
-              if (response.statusCode !== 200) {
-                resolve(false)
-                return
-              }
-              const fileStream = fs.createWriteStream(destPath)
-              response.pipe(fileStream)
-              fileStream.on('finish', () => {
-                fileStream.close()
-                resolve(true)
-              })
-              fileStream.on('error', (err) => {
-                // 确保在错误情况下销毁流，释放文件句柄
-                fileStream.destroy()
-                resolve(false)
-              })
-              response.on('error', (err) => {
-                // 确保在响应错误时也关闭文件句柄
-                fileStream.destroy()
-                resolve(false)
-              })
-            })
-            request.on('error', () => resolve(false))
-            request.on('timeout', () => {
-              request.destroy()
-              resolve(false)
-            })
-          } catch {
-            resolve(false)
-          }
-        })
     }
 
     private async collectMessagesFromWeliveRaw(sessionId: string, cleanedMyWxid: string, dateRange?: { start: number; end: number } | null, senderUsernameFilter?: string, targetMediaTypes?: Set<number>, control?: ExportTaskControl, onCollectProgress?: (payload: { fetched: number; done?: boolean }) => void): Promise<{ rows: any[]; memberSet: Map<string, { member: ChatLabMember; avatarUrl?: string }>; firstTime: number | null; lastTime: number | null; error?: string } | null> {
@@ -5078,72 +5076,47 @@ export class ExportContext {
         return result
     }
 
-    private resolveAvatarFile(avatarUrl?: string): { data?: Buffer; sourcePath?: string; sourceUrl?: string; ext: string; mime?: string } | null {
+    private resolveAvatarFile(avatarUrl?: string): { data?: Buffer; sourcePath?: string; sourceUrl?: string } | null {
         if (!avatarUrl) return null
         if (avatarUrl.startsWith('data:')) {
           const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/i.exec(avatarUrl)
           if (!match) return null
-          const mime = match[1].toLowerCase()
           const data = Buffer.from(match[2], 'base64')
-          const ext = mime.includes('png') ? '.png'
-            : mime.includes('gif') ? '.gif'
-              : mime.includes('webp') ? '.webp'
-                : '.jpg'
-          return { data, ext, mime }
+          if (data.length === 0 || data.length > EXPORT_AVATAR_MAX_BYTES) return null
+          return { data }
         }
 
         if (avatarUrl.startsWith('file://')) {
           try {
             const sourcePath = fileURLToPath(avatarUrl)
-            const ext = path.extname(sourcePath) || '.jpg'
-            return { sourcePath, ext }
+            return { sourcePath }
           } catch {
             return null
           }
         }
 
         if (avatarUrl.startsWith('http://') || avatarUrl.startsWith('https://')) {
-          const url = new URL(avatarUrl)
-          const ext = path.extname(url.pathname) || '.jpg'
-          return { sourceUrl: avatarUrl, ext }
+          return { sourceUrl: avatarUrl }
         }
 
-        const sourcePath = avatarUrl;
-        const ext = path.extname(sourcePath) || '.jpg';
-        return { sourcePath, ext }
+        return { sourcePath: avatarUrl }
     }
 
-    private async downloadToBuffer(url: string, remainingRedirects = 2): Promise<{ data: Buffer; mime?: string } | null> {
-        const client = url.startsWith('https:') ? https : http;
-        return new Promise((resolve) => {
-          const request = client.get(url, (res) => {
-            const status = res.statusCode || 0
-            if (status >= 300 && status < 400 && res.headers.location && remainingRedirects > 0) {
-              res.resume()
-              const redirectedUrl = new URL(res.headers.location, url).href
-              this.downloadToBuffer(redirectedUrl, remainingRedirects - 1)
-                .then(resolve)
-              return
+    private async downloadToBuffer(url: string): Promise<Buffer | null> {
+        try {
+          const result = await fetchPublicRemoteBuffer(url, {
+            maxBytes: EXPORT_AVATAR_MAX_BYTES,
+            timeoutMs: 15_000,
+            headers: {
+              Accept: 'image/png,image/jpeg,image/gif,image/webp,image/bmp',
+              'User-Agent': 'WeFlow-Personal-OS/5.1 (+local-export)'
             }
-            if (status < 200 || status >= 300) {
-              res.resume()
-              resolve(null)
-              return
-            }
-            const chunks: Buffer[] = []
-            res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-            res.on('end', () => {
-              const data = Buffer.concat(chunks)
-              const mime = typeof res.headers['content-type'] === 'string' ? res.headers['content-type'] : undefined
-              resolve({ data, mime })
-            })
           })
-          request.on('error', () => resolve(null))
-          request.setTimeout(15000, () => {
-            request.destroy()
-            resolve(null)
-          })
-        })
+          if (result.body.length === 0) return null
+          return result.body
+        } catch {
+          return null
+        }
     }
 
     public async exportAvatars(members: Array<{ username: string; avatarUrl?: string }>): Promise<Map<string, string>> {
@@ -5173,23 +5146,23 @@ export class ExportContext {
           if (!fileInfo) return
           try {
             let data: Buffer | null = null
-            let mime = fileInfo.mime
             if (fileInfo.data) {
               data = fileInfo.data
             } else if (fileInfo.sourcePath && fs.existsSync(fileInfo.sourcePath)) {
-              data = await fs.promises.readFile(fileInfo.sourcePath)
+              const sourceStat = await fs.promises.stat(fileInfo.sourcePath)
+              if (sourceStat.isFile() && sourceStat.size > 0 && sourceStat.size <= EXPORT_AVATAR_MAX_BYTES) {
+                data = await fs.promises.readFile(fileInfo.sourcePath)
+              }
             } else if (fileInfo.sourceUrl) {
               const downloaded = await this.downloadToBuffer(fileInfo.sourceUrl)
-              if (downloaded) {
-                data = downloaded.data
-                mime = downloaded.mime || mime
-              }
+              if (downloaded) data = downloaded
             }
-            if (!data) return
+            if (!data || data.length === 0 || data.length > EXPORT_AVATAR_MAX_BYTES) return
 
-            // 优先使用内容检测出的 MIME 类型
-            const detectedMime = this.detectMimeType(data)
-            const finalMime = detectedMime || mime || this.inferImageMime(fileInfo.ext)
+            // 所有来源均以文件魔数为准，声明 MIME 和扩展名不能让伪图片落盘。
+            const detectedMime = detectExportAvatarMime(data)
+            if (!detectedMime) return
+            const finalMime = detectedMime
 
             // 根据 MIME 类型确定文件扩展名
             const ext = this.getExtensionFromMime(finalMime)
@@ -5207,7 +5180,16 @@ export class ExportContext {
               await fs.promises.access(avatarPath)
             } catch {
               await this.recordCreatedFileBeforeWrite(avatarPath, control)
-              await fs.promises.writeFile(avatarPath, data)
+              const temporaryPath = `${avatarPath}.${process.pid}.tmp`
+              try {
+                await fs.promises.writeFile(temporaryPath, data, { mode: 0o600 })
+                await fs.promises.chmod(temporaryPath, 0o600)
+                await fs.promises.rename(temporaryPath, avatarPath)
+                await fs.promises.chmod(avatarPath, 0o600)
+              } catch (error) {
+                await fs.promises.rm(temporaryPath, { force: true }).catch(() => {})
+                throw error
+              }
             }
 
             // 返回相对路径
@@ -5232,48 +5214,6 @@ export class ExportContext {
           case 'image/jpeg':
           default:
             return '.jpg'
-        }
-    }
-
-    private detectMimeType(buffer: Buffer): string | null {
-        if (buffer.length < 4) return null
-        if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
-          return 'image/png'
-        }
-
-        if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
-          return 'image/jpeg'
-        }
-
-        if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) {
-          return 'image/gif'
-        }
-
-        if (buffer.length >= 12 &&
-          buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-          buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
-          return 'image/webp'
-        }
-
-        if (buffer[0] === 0x42 && buffer[1] === 0x4D) {
-          return 'image/bmp'
-        }
-
-        return null
-    }
-
-    private inferImageMime(ext: string): string {
-        switch (ext.toLowerCase()) {
-          case '.png':
-            return 'image/png'
-          case '.gif':
-            return 'image/gif'
-          case '.webp':
-            return 'image/webp'
-          case '.bmp':
-            return 'image/bmp'
-          default:
-            return 'image/jpeg'
         }
     }
 

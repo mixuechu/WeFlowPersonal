@@ -1,9 +1,9 @@
 ﻿import { join } from 'path'
-import { existsSync, readdirSync, statSync } from 'fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs'
 import crypto from 'crypto'
 import Store from 'electron-store'
-import { expandHomePath } from '../utils/pathUtils'
-import { CacheMapStore } from './cacheMapStore'
+import { expandHomePath } from '../utils/pathUtils.ts'
+import { CacheMapStore } from './cacheMapStore.ts'
 
 // 条件导入 electron（Worker 环境中不可用）
 let app: any = null
@@ -20,7 +20,8 @@ if (!isWorkerThread) {
 }
 
 // 加密前缀标记
-const SAFE_PREFIX = 'safe:'  // safeStorage 加密（普通模式）
+const SAFE_PREFIX = 'safe:'  // 仅读：旧版 safeStorage 数据迁移
+const LOCAL_PREFIX = 'local:v1:' // 本机密钥文件 + AES-256-GCM，不访问 macOS 钥匙串
 const isSafeStorageAvailable = (): boolean => {
   try {
     return typeof safeStorage?.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable()
@@ -38,6 +39,7 @@ interface ConfigSchema {
   onboardingDone: boolean
   imageXorKey: number
   imageAesKey: string
+  localCacheEncryptionKey: string
   wxidConfigs: Record<string, { decryptKey?: string; imageXorKey?: number; imageAesKey?: string; updatedAt?: number }>
   exportPath?: string;
   // 缓存相关
@@ -65,9 +67,9 @@ interface ConfigSchema {
 
   // 安全相关
   authEnabled: boolean
-  authPassword: string      // SHA-256 hash（safeStorage 加密）
+  authPassword: string      // SHA-256 hash（本机密钥加密）
   authUseHello: boolean
-  authHelloSecret: string   // 原始密码（safeStorage 加密，Hello 解锁时使用）
+  authHelloSecret: string   // 原始密码（本机密钥加密，Hello 解锁时使用）
 
   // 更新相关
   ignoredUpdateVersion: string
@@ -97,6 +99,27 @@ interface ConfigSchema {
   aiModelApiKey: string
   aiModelApiModel: string
   aiModelApiMaxTokens: number
+  aiAssistantEnabled: boolean
+  aiAssistantApiBaseUrl: string
+  aiAssistantApiKey: string
+  aiAssistantDatabaseKey: string
+  aiAssistantStateKey: string
+  aiAssistantApiModel: string
+  aiAssistantScheduleTime: string
+  aiAssistantQuietStart: string
+  aiAssistantQuietEnd: string
+  aiAssistantInputCostPerMillion: number
+  aiAssistantOutputCostPerMillion: number
+  aiAssistantInitialLookbackDays: number
+  aiAssistantOwnerName: string
+  aiAssistantOwnerAliases: string
+  aiAssistantOwnerBackground: string
+  aiAssistantOwnerEntityId: string
+  aiAssistantOcrImages: boolean
+  aiAssistantAnalyzeImages: boolean
+  aiAssistantIndexWebLinks: boolean
+  aiAssistantResourceTrashRetentionDays: number
+  aiAssistantSensitiveRedactionLevel: 'credentials' | 'standard' | 'strict'
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
@@ -146,13 +169,17 @@ interface ConfigSchema {
   autoDownloadWhitelist: string[]
 }
 
-// 需要 safeStorage 加密的字段（普通模式）
+  // 需要本机密钥文件加密的字段（普通模式）
 const ENCRYPTED_STRING_KEYS: Set<string> = new Set([
   'decryptKey',
   'imageAesKey',
+  'localCacheEncryptionKey',
   'authPassword',
   'httpApiToken',
   'aiModelApiKey',
+  'aiAssistantApiKey',
+  'aiAssistantDatabaseKey',
+  'aiAssistantStateKey',
   'aiInsightApiKey',
   'aiInsightWeiboCookie'
 ])
@@ -182,6 +209,8 @@ export class ConfigService {
 
   // 账号目录缓存
   private accountDirCache: Map<string, string> = new Map()
+  private localSecretKey: Buffer | null = null
+  private localSecretRecovery = { backupAvailable: false, recoveredThisStart: false, error: '' }
 
   static getInstance(): ConfigService {
     if (!ConfigService.instance) {
@@ -202,6 +231,7 @@ export class ConfigService {
       onboardingDone: false,
       imageXorKey: 0,
       imageAesKey: '',
+      localCacheEncryptionKey: '',
       wxidConfigs: {},
       cachePath: '',
       lastOpenedDb: '',
@@ -248,6 +278,27 @@ export class ConfigService {
       aiModelApiKey: '',
       aiModelApiModel: 'gpt-4o-mini',
       aiModelApiMaxTokens: 1024,
+      aiAssistantEnabled: true,
+      aiAssistantApiBaseUrl: 'https://api.deepseek.com',
+      aiAssistantApiKey: '',
+      aiAssistantDatabaseKey: '',
+      aiAssistantStateKey: '',
+      aiAssistantApiModel: 'deepseek-v4-flash',
+      aiAssistantScheduleTime: '20:00',
+      aiAssistantQuietStart: '22:00',
+      aiAssistantQuietEnd: '08:00',
+      aiAssistantInputCostPerMillion: 0,
+      aiAssistantOutputCostPerMillion: 0,
+      aiAssistantInitialLookbackDays: 3,
+      aiAssistantOwnerName: '',
+      aiAssistantOwnerAliases: '',
+      aiAssistantOwnerBackground: '',
+      aiAssistantOwnerEntityId: '',
+      aiAssistantOcrImages: false,
+      aiAssistantAnalyzeImages: true,
+      aiAssistantIndexWebLinks: false,
+      aiAssistantResourceTrashRetentionDays: 0,
+      aiAssistantSensitiveRedactionLevel: 'standard',
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',
@@ -315,17 +366,20 @@ export class ConfigService {
         throw error
       }
     }
-    this.migrateAuthFields()
-    this.migrateAiConfig()
+    this.localSecretKey = this.loadOrCreateLocalSecretKey()
+    this.migrateStartupConfiguration()
     if (!runningInWorker) {
-      this.cacheMapStore = new CacheMapStore(this.getUserDataPath())
+      this.cacheMapStore = new CacheMapStore(
+        this.getUserDataPath(),
+        this.getOrCreateLocalCacheEncryptionKey()
+      )
       this.migrateCacheMapKeys()
     }
   }
 
   /** 一次性迁移：把主配置中的 *CacheMap 大键搬到旁路存储，缩小配置文件 */
   private migrateCacheMapKeys(): void {
-    if (!this.cacheMapStore) return
+    if (!this.cacheMapStore || !this.cacheMapStore.isWritable()) return
     try {
       const all = this.store.store as unknown as Record<string, unknown>
       const cacheKeys = Object.keys(all).filter(isCacheMapKey)
@@ -353,6 +407,108 @@ export class ConfigService {
     return !this.isLockMode() || this.unlockedKeys.size > 0
   }
 
+  isLocalSecretStorageAvailable(): boolean {
+    return this.localSecretKey?.length === 32
+  }
+
+  isStoredWithLocalSecret(key: keyof ConfigSchema): boolean {
+    const raw = this.store.get(key)
+    return typeof raw === 'string' && raw.startsWith(LOCAL_PREFIX)
+  }
+
+  getLocalSecretStorageStatus(): {
+    backend: 'local-file-aes-256-gcm-v1'
+    available: boolean
+    directoryMode: string | null
+    directoryIsDirectory: boolean
+    directorySymlink: boolean
+    keyFileMode: string | null
+    keyFileRegular: boolean
+    keyFileSymlink: boolean
+    keyLengthValid: boolean
+    backupAvailable: boolean
+    recoveredThisStart: boolean
+    recoveryError: string
+    localEncryptedValues: number
+    legacySafeValues: number
+  } {
+    const { directory, keyPath } = this.getLocalSecretPaths()
+    const raw = this.store.store as unknown as Record<string, unknown>
+    const candidates: unknown[] = [
+      ...[...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS, 'authHelloSecret']
+        .map(key => raw[key])
+    ]
+    const wxidConfigs = raw.wxidConfigs
+    if (wxidConfigs && typeof wxidConfigs === 'object' && !Array.isArray(wxidConfigs)) {
+      for (const config of Object.values(wxidConfigs)) {
+        if (!config || typeof config !== 'object' || Array.isArray(config)) continue
+        const record = config as Record<string, unknown>
+        candidates.push(record.decryptKey, record.imageAesKey, record.imageXorKey)
+      }
+    }
+    let directoryMode: string | null = null
+    let directoryIsDirectory = false
+    let directorySymlink = false
+    let keyFileMode: string | null = null
+    let keyFileRegular = false
+    let keyFileSymlink = false
+    let keyLengthValid = false
+    try {
+      const info = lstatSync(directory)
+      directoryMode = (info.mode & 0o777).toString(8).padStart(3, '0')
+      directoryIsDirectory = info.isDirectory()
+      directorySymlink = info.isSymbolicLink()
+    } catch { /* missing/unreadable remains explicit */ }
+    try {
+      const info = lstatSync(keyPath)
+      keyFileMode = (info.mode & 0o777).toString(8).padStart(3, '0')
+      keyFileRegular = info.isFile()
+      keyFileSymlink = info.isSymbolicLink()
+      keyLengthValid = keyFileRegular && !keyFileSymlink && info.size === 32
+    } catch { /* missing/unreadable remains explicit */ }
+    return {
+      backend: 'local-file-aes-256-gcm-v1',
+      available: this.localSecretKey?.length === 32 && directoryIsDirectory &&
+        !directorySymlink && keyLengthValid,
+      directoryMode,
+      directoryIsDirectory,
+      directorySymlink,
+      keyFileMode,
+      keyFileRegular,
+      keyFileSymlink,
+      keyLengthValid,
+      backupAvailable: this.localSecretRecovery.backupAvailable,
+      recoveredThisStart: this.localSecretRecovery.recoveredThisStart,
+      recoveryError: this.localSecretRecovery.error,
+      localEncryptedValues: candidates.filter(value =>
+        typeof value === 'string' && value.startsWith(LOCAL_PREFIX)).length,
+      legacySafeValues: candidates.filter(value =>
+        typeof value === 'string' && value.startsWith(SAFE_PREFIX)).length
+    }
+  }
+
+  getOrCreateLocalCacheEncryptionKey(): string {
+    if (!this.isLocalSecretStorageAvailable()) return ''
+    const existing = String(this.get('localCacheEncryptionKey') || '')
+    if (/^[a-f0-9]{64}$/i.test(existing)) return existing
+    const generated = crypto.randomBytes(32).toString('hex')
+    this.set('localCacheEncryptionKey', generated)
+    const verified = String(this.get('localCacheEncryptionKey') || '')
+    return /^[a-f0-9]{64}$/i.test(verified) ? verified : ''
+  }
+
+  initializeLocalCacheEncryption(): string {
+    const key = this.getOrCreateLocalCacheEncryptionKey()
+    if (!key) return ''
+    this.cacheMapStore?.initializeEncryption(key)
+    this.migrateCacheMapKeys()
+    return key
+  }
+
+  getCacheMapPrivacyStatus(): unknown {
+    return this.cacheMapStore?.getPrivacyStatus() || null
+  }
+
   // === get / set ===
 
   get<K extends keyof ConfigSchema>(key: K): ConfigSchema[K] {
@@ -363,7 +519,7 @@ export class ConfigService {
 
     if (ENCRYPTED_BOOL_KEYS.has(key)) {
       const str = typeof raw === 'string' ? raw : ''
-      if (!str || !str.startsWith(SAFE_PREFIX)) return raw
+      if (!str || (!str.startsWith(SAFE_PREFIX) && !str.startsWith(LOCAL_PREFIX))) return raw
       return (this.safeDecrypt(str) === 'true') as ConfigSchema[K]
     }
 
@@ -374,7 +530,7 @@ export class ConfigService {
         const cached = this.unlockedKeys.get(key as string)
         return (cached !== undefined ? cached : 0) as ConfigSchema[K]
       }
-      if (!str.startsWith(SAFE_PREFIX)) return raw
+      if (!str.startsWith(SAFE_PREFIX) && !str.startsWith(LOCAL_PREFIX)) return raw
       const num = Number(this.safeDecrypt(str))
       return (Number.isFinite(num) ? num : 0) as ConfigSchema[K]
     }
@@ -399,11 +555,10 @@ export class ConfigService {
     return raw
   }
 
-  set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
-    if (this.cacheMapStore && isCacheMapKey(key as string)) {
-      this.cacheMapStore.set(key as string, value)
-      return
-    }
+  private encodeStoredValue<K extends keyof ConfigSchema>(
+    key: K,
+    value: ConfigSchema[K]
+  ): ConfigSchema[K] {
     let toStore = value
     const inLockMode = this.isLockMode() && this.unlockPassword
 
@@ -413,7 +568,7 @@ export class ConfigService {
 
     if (ENCRYPTED_BOOL_KEYS.has(key)) {
       const boolValue = value === true || value === 'true'
-      // `false` 不需要写入 keychain，避免无意义触发 macOS 钥匙串弹窗
+      // `false` 保留为布尔值，无需生成加密载荷。
       toStore = (boolValue ? this.safeEncrypt('true') : false) as ConfigSchema[K]
     } else if (ENCRYPTED_NUMBER_KEYS.has(key)) {
       if (inLockMode && LOCKABLE_NUMBER_KEYS.has(key)) {
@@ -439,28 +594,149 @@ export class ConfigService {
       }
     }
 
-    this.store.set(key, toStore)
+    return toStore
+  }
+
+  set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
+    if (this.cacheMapStore && isCacheMapKey(key as string)) {
+      this.cacheMapStore.set(key as string, value)
+      return
+    }
+    this.store.set(key, this.encodeStoredValue(key, value))
+  }
+
+  setMany(values: Partial<ConfigSchema>): void {
+    const entries = Object.entries(values) as Array<
+      [keyof ConfigSchema, ConfigSchema[keyof ConfigSchema]]
+    >
+    if (!entries.length) return
+    if (entries.some(([key]) => isCacheMapKey(String(key)))) {
+      throw new Error('批量配置提交不支持旁路缓存字段')
+    }
+    const next = { ...(this.store.store as ConfigSchema) }
+    for (const [key, value] of entries) {
+      ;(next as any)[key] = this.encodeStoredValue(key, value as any)
+    }
+    ;(this.store as any).store = next
+  }
+
+  private commitStoredValues(values: Partial<ConfigSchema>): void {
+    const next = { ...(this.store.store as ConfigSchema), ...values }
+    ;(this.store as any).store = next
   }
 
   // === 加密/解密工具 ===
 
   private safeEncrypt(plaintext: string): string {
     if (!plaintext) return ''
-    if (plaintext.startsWith(SAFE_PREFIX)) return plaintext
-    if (!isSafeStorageAvailable()) return plaintext
-    const encrypted = safeStorage.encryptString(plaintext)
-    return SAFE_PREFIX + encrypted.toString('base64')
+    if (plaintext.startsWith(LOCAL_PREFIX) || plaintext.startsWith(SAFE_PREFIX)) return plaintext
+    if (!this.localSecretKey) {
+      throw new Error('本机主密钥不可用，敏感配置未写入；请先保留现场并检查隐私诊断')
+    }
+    const nonce = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.localSecretKey, nonce)
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+    const tag = cipher.getAuthTag()
+    return LOCAL_PREFIX + Buffer.concat([nonce, tag, encrypted]).toString('base64')
   }
 
   private safeDecrypt(stored: string): string {
     if (!stored) return ''
+    if (stored.startsWith(LOCAL_PREFIX)) {
+      if (!this.localSecretKey) return ''
+      try {
+        const combined = Buffer.from(stored.slice(LOCAL_PREFIX.length), 'base64')
+        if (combined.length < 29) return ''
+        const decipher = crypto.createDecipheriv('aes-256-gcm', this.localSecretKey, combined.subarray(0, 12))
+        decipher.setAuthTag(combined.subarray(12, 28))
+        return Buffer.concat([decipher.update(combined.subarray(28)), decipher.final()]).toString('utf8')
+      } catch {
+        return ''
+      }
+    }
     if (!stored.startsWith(SAFE_PREFIX)) return stored
+    // 仅用于旧版 safe: 值的一次性迁移；新值永远不写入钥匙串。
     if (!isSafeStorageAvailable()) return ''
     try {
       const buf = Buffer.from(stored.slice(SAFE_PREFIX.length), 'base64')
       return safeStorage.decryptString(buf)
     } catch {
       return ''
+    }
+  }
+
+  private loadOrCreateLocalSecretKey(): Buffer | null {
+    const { directory, keyPath, backupPath } = this.getLocalSecretPaths()
+    try {
+      mkdirSync(directory, { recursive: true, mode: 0o700 })
+      const directoryInfo = lstatSync(directory)
+      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return null
+      chmodSync(directory, 0o700)
+      const readValidKey = (path: string): Buffer | null => {
+        if (!existsSync(path)) return null
+        const info = lstatSync(path)
+        if (!info.isFile() || info.isSymbolicLink() || info.size !== 32) return null
+        chmodSync(path, 0o600)
+        const value = readFileSync(path)
+        return value.length === 32 ? value : null
+      }
+      let key = readValidKey(keyPath)
+      const backup = readValidKey(backupPath)
+      if (!key && !existsSync(keyPath) && backup) {
+        const temporaryPath = `${keyPath}.recovering-${process.pid}`
+        writeFileSync(temporaryPath, backup, { flag: 'wx', mode: 0o600 })
+        renameSync(temporaryPath, keyPath)
+        key = readValidKey(keyPath)
+        this.localSecretRecovery.recoveredThisStart = Boolean(key)
+      }
+      if (!key && existsSync(keyPath)) {
+        this.localSecretRecovery.error = '本机主密钥文件损坏或类型异常，已保留现场'
+        return null
+      }
+      if (!key && this.hasPersistedLocalCiphertext()) {
+        this.localSecretRecovery.error = '已存在本机加密配置，但主密钥及恢复副本均缺失'
+        return null
+      }
+      if (!key) {
+        try {
+          writeFileSync(keyPath, crypto.randomBytes(32), { flag: 'wx', mode: 0o600 })
+        } catch (error: any) {
+          if (error?.code !== 'EEXIST') throw error
+        }
+        key = readValidKey(keyPath)
+      }
+      if (!key) return null
+      if (!backup) {
+        const temporaryBackup = `${backupPath}.writing-${process.pid}`
+        writeFileSync(temporaryBackup, key, { flag: 'wx', mode: 0o600 })
+        renameSync(temporaryBackup, backupPath)
+      } else if (!crypto.timingSafeEqual(key, backup)) {
+        this.localSecretRecovery.error = '本机主密钥与恢复副本不一致，已保留两份现场'
+        return null
+      }
+      this.localSecretRecovery.backupAvailable = Boolean(readValidKey(backupPath))
+      return key
+    } catch (error) {
+      console.error('ConfigService: 本机密钥文件初始化失败', error)
+      return null
+    }
+  }
+
+  private hasPersistedLocalCiphertext(): boolean {
+    const contains = (value: unknown): boolean => {
+      if (typeof value === 'string') return value.startsWith(LOCAL_PREFIX)
+      if (!value || typeof value !== 'object') return false
+      return Object.values(value as Record<string, unknown>).some(contains)
+    }
+    try { return contains(this.store.store) } catch { return true }
+  }
+
+  private getLocalSecretPaths(): { directory: string; keyPath: string; backupPath: string } {
+    const directory = join(this.getUserDataPath(), 'secrets')
+    return {
+      directory,
+      keyPath: join(directory, 'local-master-key.bin'),
+      backupPath: join(directory, 'local-master-key.recovery.bin')
     }
   }
 
@@ -567,7 +843,7 @@ export class ConfigService {
       if (typeof cfg.imageXorKey === 'string') {
         if (cfg.imageXorKey.startsWith(LOCK_PREFIX)) {
           result[wxid].imageXorKey = this.unlockedKeys.get(`wxid:${wxid}:imageXorKey`) ?? 0
-        } else if (cfg.imageXorKey.startsWith(SAFE_PREFIX)) {
+        } else if (cfg.imageXorKey.startsWith(SAFE_PREFIX) || cfg.imageXorKey.startsWith(LOCAL_PREFIX)) {
           const num = Number(this.safeDecrypt(cfg.imageXorKey))
           result[wxid].imageXorKey = Number.isFinite(num) ? num : 0
         }
@@ -575,14 +851,17 @@ export class ConfigService {
     }
     return result
   }
-  private lockEncryptWxidConfigs(configs: ConfigSchema['wxidConfigs']): ConfigSchema['wxidConfigs'] {
+  private lockEncryptWxidConfigs(
+    configs: ConfigSchema['wxidConfigs'],
+    password = this.unlockPassword!
+  ): ConfigSchema['wxidConfigs'] {
     const result: ConfigSchema['wxidConfigs'] = {}
     for (const [wxid, cfg] of Object.entries(configs)) {
       result[wxid] = { ...cfg }
-      if (cfg.decryptKey) result[wxid].decryptKey = this.lockEncrypt(cfg.decryptKey, this.unlockPassword!) as any
-      if (cfg.imageAesKey) result[wxid].imageAesKey = this.lockEncrypt(cfg.imageAesKey, this.unlockPassword!) as any
+      if (cfg.decryptKey) result[wxid].decryptKey = this.lockEncrypt(cfg.decryptKey, password) as any
+      if (cfg.imageAesKey) result[wxid].imageAesKey = this.lockEncrypt(cfg.imageAesKey, password) as any
       if (cfg.imageXorKey !== undefined) {
-        (result[wxid] as any).imageXorKey = this.lockEncrypt(String(cfg.imageXorKey), this.unlockPassword!)
+        (result[wxid] as any).imageXorKey = this.lockEncrypt(String(cfg.imageXorKey), password)
       }
     }
     return result
@@ -598,32 +877,27 @@ export class ConfigService {
       const imageXorKey = this.get('imageXorKey')
       const wxidConfigs = this.get('wxidConfigs')
 
-      // 存储密码 hash（safeStorage 加密）
       const passwordHash = crypto.createHash('sha256').update(password).digest('hex')
-      this.store.set('authPassword', this.safeEncrypt(passwordHash) as any)
-      this.store.set('authEnabled', this.safeEncrypt('true') as any)
-
-      // 设置运行时状态
-      this.unlockPassword = password
-      this.unlockedKeys.set('decryptKey', decryptKey)
-      this.unlockedKeys.set('imageAesKey', imageAesKey)
-      this.unlockedKeys.set('imageXorKey', imageXorKey)
-
-      // 用密码派生密钥重新加密所有敏感字段
-      if (decryptKey) this.store.set('decryptKey', this.lockEncrypt(String(decryptKey), password) as any)
-      if (imageAesKey) this.store.set('imageAesKey', this.lockEncrypt(String(imageAesKey), password) as any)
-      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.lockEncrypt(String(imageXorKey), password) as any)
-
-      // 处理 wxidConfigs 中的嵌套密钥
-      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
-        const lockedConfigs = this.lockEncryptWxidConfigs(wxidConfigs)
-        this.store.set('wxidConfigs', lockedConfigs)
-        for (const [wxid, cfg] of Object.entries(wxidConfigs)) {
-          if (cfg.decryptKey) this.unlockedKeys.set(`wxid:${wxid}:decryptKey`, cfg.decryptKey)
-          if (cfg.imageAesKey) this.unlockedKeys.set(`wxid:${wxid}:imageAesKey`, cfg.imageAesKey)
-          if (cfg.imageXorKey !== undefined) this.unlockedKeys.set(`wxid:${wxid}:imageXorKey`, cfg.imageXorKey)
-        }
+      const stored: Partial<ConfigSchema> = {
+        authPassword: this.safeEncrypt(passwordHash) as any,
+        authEnabled: this.safeEncrypt('true') as any,
+        decryptKey: decryptKey ? this.lockEncrypt(String(decryptKey), password) as any : '',
+        imageAesKey: imageAesKey ? this.lockEncrypt(String(imageAesKey), password) as any : '',
+        imageXorKey: this.lockEncrypt(String(imageXorKey), password) as any,
+        wxidConfigs: this.lockEncryptWxidConfigs(wxidConfigs, password)
       }
+      this.commitStoredValues(stored)
+
+      const unlocked = new Map<string, any>([
+        ['decryptKey', decryptKey], ['imageAesKey', imageAesKey], ['imageXorKey', imageXorKey]
+      ])
+      for (const [wxid, cfg] of Object.entries(wxidConfigs)) {
+        if (cfg.decryptKey) unlocked.set(`wxid:${wxid}:decryptKey`, cfg.decryptKey)
+        if (cfg.imageAesKey) unlocked.set(`wxid:${wxid}:imageAesKey`, cfg.imageAesKey)
+        if (cfg.imageXorKey !== undefined) unlocked.set(`wxid:${wxid}:imageXorKey`, cfg.imageXorKey)
+      }
+      this.unlockedKeys = unlocked
+      this.unlockPassword = password
 
       return { success: true }
     } catch (e: any) {
@@ -654,29 +928,49 @@ export class ConfigService {
         this.store.set('authEnabled', this.safeEncrypt('true') as any)
       }
 
-      // 解密所有 lock: 字段到内存缓存
+      // 先在临时缓存中认证全部 lock: 字段；任一字段损坏都不得提交半解锁状态。
+      const decrypted = new Map<string, any>()
       const rawDecryptKey: any = this.store.get('decryptKey')
       if (typeof rawDecryptKey === 'string' && rawDecryptKey.startsWith(LOCK_PREFIX)) {
         const d = this.lockDecrypt(rawDecryptKey, password)
-        if (d !== null) this.unlockedKeys.set('decryptKey', d)
+        if (d === null) return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+        decrypted.set('decryptKey', d)
       }
 
       const rawImageAesKey: any = this.store.get('imageAesKey')
       if (typeof rawImageAesKey === 'string' && rawImageAesKey.startsWith(LOCK_PREFIX)) {
         const d = this.lockDecrypt(rawImageAesKey, password)
-        if (d !== null) this.unlockedKeys.set('imageAesKey', d)
+        if (d === null) return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+        decrypted.set('imageAesKey', d)
       }
 
       const rawImageXorKey: any = this.store.get('imageXorKey')
       if (typeof rawImageXorKey === 'string' && rawImageXorKey.startsWith(LOCK_PREFIX)) {
         const d = this.lockDecrypt(rawImageXorKey, password)
-        if (d !== null) this.unlockedKeys.set('imageXorKey', Number(d))
+        if (d === null || !Number.isFinite(Number(d))) {
+          return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+        }
+        decrypted.set('imageXorKey', Number(d))
       }
 
-      // 解密 wxidConfigs 嵌套密钥
-      this.decryptLockedWxidConfigs(password)
+      const wxidConfigs = this.store.get('wxidConfigs')
+      if (wxidConfigs && typeof wxidConfigs === 'object') {
+        for (const [wxid, cfg] of Object.entries(wxidConfigs) as [string, any][]) {
+          for (const [field, numeric] of [['decryptKey', false], ['imageAesKey', false], ['imageXorKey', true]] as const) {
+            const raw = cfg?.[field]
+            if (typeof raw !== 'string' || !raw.startsWith(LOCK_PREFIX)) continue
+            const value = this.lockDecrypt(raw, password)
+            if (value === null || (numeric && !Number.isFinite(Number(value)))) {
+              return { success: false, error: '应用锁加密数据校验失败，未执行半解锁' }
+            }
+            decrypted.set(`wxid:${wxid}:${field}`, numeric ? Number(value) : value)
+          }
+        }
+      }
 
       // 保留密码供 set() 使用
+      this.unlockedKeys.clear()
+      for (const [key, value] of decrypted) this.unlockedKeys.set(key, value)
       this.unlockPassword = password
       return { success: true }
     } catch (e: any) {
@@ -693,32 +987,26 @@ export class ConfigService {
         return { success: false, error: '密码错误' }
       }
 
-      // 先解密所有 lock: 字段
       if (this.unlockedKeys.size === 0) {
-        this.unlock(password)
+        const unlocked = this.unlock(password)
+        if (!unlocked.success) return unlocked
       }
 
-      // 将所有密钥转回 safe: 格式
       const decryptKey = this.unlockedKeys.get('decryptKey')
       const imageAesKey = this.unlockedKeys.get('imageAesKey')
       const imageXorKey = this.unlockedKeys.get('imageXorKey')
 
-      if (decryptKey) this.store.set('decryptKey', this.safeEncrypt(String(decryptKey)) as any)
-      if (imageAesKey) this.store.set('imageAesKey', this.safeEncrypt(String(imageAesKey)) as any)
-      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.safeEncrypt(String(imageXorKey)) as any)
-
-      // 转换 wxidConfigs
       const wxidConfigs = this.get('wxidConfigs')
-      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
-        const safeConfigs = this.encryptWxidConfigs(wxidConfigs)
-        this.store.set('wxidConfigs', safeConfigs)
-      }
-
-      // 清除 auth 字段
-      this.store.set('authEnabled', false as any)
-      this.store.set('authPassword', '' as any)
-      this.store.set('authUseHello', false as any)
-      this.store.set('authHelloSecret', '' as any)
+      this.commitStoredValues({
+        decryptKey: decryptKey ? this.safeEncrypt(String(decryptKey)) as any : '',
+        imageAesKey: imageAesKey ? this.safeEncrypt(String(imageAesKey)) as any : '',
+        imageXorKey: imageXorKey !== undefined ? this.safeEncrypt(String(imageXorKey)) as any : 0,
+        wxidConfigs: this.encryptWxidConfigs(wxidConfigs),
+        authEnabled: false,
+        authPassword: '',
+        authUseHello: false,
+        authHelloSecret: ''
+      })
 
       // 清除运行时状态
       this.unlockedKeys.clear()
@@ -741,35 +1029,25 @@ export class ConfigService {
 
       // 确保已解锁
       if (this.unlockedKeys.size === 0) {
-        this.unlock(oldPassword)
+        const unlocked = this.unlock(oldPassword)
+        if (!unlocked.success) return unlocked
       }
 
-      // 用新密码重新加密所有密钥
       const decryptKey = this.unlockedKeys.get('decryptKey')
       const imageAesKey = this.unlockedKeys.get('imageAesKey')
       const imageXorKey = this.unlockedKeys.get('imageXorKey')
 
-      if (decryptKey) this.store.set('decryptKey', this.lockEncrypt(String(decryptKey), newPassword) as any)
-      if (imageAesKey) this.store.set('imageAesKey', this.lockEncrypt(String(imageAesKey), newPassword) as any)
-      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.lockEncrypt(String(imageXorKey), newPassword) as any)
-
-      // 重新加密 wxidConfigs
       const wxidConfigs = this.get('wxidConfigs')
-      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
-        this.unlockPassword = newPassword
-        const lockedConfigs = this.lockEncryptWxidConfigs(wxidConfigs)
-        this.store.set('wxidConfigs', lockedConfigs)
-      }
-
-      // 更新密码 hash
       const newHash = crypto.createHash('sha256').update(newPassword).digest('hex')
-      this.store.set('authPassword', this.safeEncrypt(newHash) as any)
-
-      // 更新 Hello secret（如果启用了 Hello）
       const useHello = this.get('authUseHello')
-      if (useHello) {
-        this.store.set('authHelloSecret', this.safeEncrypt(newPassword) as any)
-      }
+      this.commitStoredValues({
+        decryptKey: decryptKey ? this.lockEncrypt(String(decryptKey), newPassword) as any : '',
+        imageAesKey: imageAesKey ? this.lockEncrypt(String(imageAesKey), newPassword) as any : '',
+        imageXorKey: imageXorKey !== undefined ? this.lockEncrypt(String(imageXorKey), newPassword) as any : 0,
+        wxidConfigs: this.lockEncryptWxidConfigs(wxidConfigs, newPassword),
+        authPassword: this.safeEncrypt(newHash) as any,
+        ...(useHello ? { authHelloSecret: this.safeEncrypt(newPassword) as any } : {})
+      })
 
       this.unlockPassword = newPassword
       return { success: true }
@@ -781,8 +1059,10 @@ export class ConfigService {
   // === Hello 相关 ===
 
   setHelloSecret(password: string): void {
-    this.store.set('authHelloSecret', this.safeEncrypt(password) as any)
-    this.store.set('authUseHello', this.safeEncrypt('true') as any)
+    this.commitStoredValues({
+      authHelloSecret: this.safeEncrypt(password) as any,
+      authUseHello: this.safeEncrypt('true') as any
+    })
   }
 
   getHelloSecret(): string {
@@ -792,59 +1072,95 @@ export class ConfigService {
   }
 
   clearHelloSecret(): void {
-    this.store.set('authHelloSecret', '' as any)
-    this.store.set('authUseHello', false as any)
+    this.commitStoredValues({ authHelloSecret: '', authUseHello: false })
   }
 
   // === 迁移 ===
 
-  private migrateAuthFields(): void {
-    // 将旧版明文 auth 字段迁移为 safeStorage 加密格式
-    // 如果已经是 safe: 或 lock: 前缀则跳过
-    const rawEnabled: any = this.store.get('authEnabled')
-    if (rawEnabled === true || rawEnabled === 'true') {
-      this.store.set('authEnabled', this.safeEncrypt('true') as any)
-    } else if (rawEnabled === false || rawEnabled === 'false') {
-      // 保持 false 为明文布尔，避免冷启动访问 keychain
-      this.store.set('authEnabled', false as any)
+  private migrateStartupConfiguration(): void {
+    try {
+      this.migrateStartupConfigurationAtomically()
+    } catch (error) {
+      // 任一旧钥匙串值无法解密时，整份配置保持原样，不能提交其他迁移形成混合版本。
+      console.error('ConfigService: 启动配置原子迁移未完成', error)
+    }
+  }
+
+  private migrateStartupConfigurationAtomically(): void {
+    const next = structuredClone(this.store.store as ConfigSchema)
+    let changed = false
+    const replace = (key: keyof ConfigSchema, value: unknown): void => {
+      if ((next as any)[key] === value) return
+      ;(next as any)[key] = value
+      changed = true
     }
 
-    const rawUseHello: any = this.store.get('authUseHello')
-    if (rawUseHello === true || rawUseHello === 'true') {
-      this.store.set('authUseHello', this.safeEncrypt('true') as any)
-    } else if (rawUseHello === false || rawUseHello === 'false') {
-      this.store.set('authUseHello', false as any)
-    }
-
-    const rawPassword: any = this.store.get('authPassword')
-    if (typeof rawPassword === 'string' && rawPassword && !rawPassword.startsWith(SAFE_PREFIX)) {
-      this.store.set('authPassword', this.safeEncrypt(rawPassword) as any)
-    }
-
-    // 迁移敏感密钥字段（明文 → safe:）
-    for (const key of LOCKABLE_STRING_KEYS) {
-      const raw: any = this.store.get(key as any)
-      if (typeof raw === 'string' && raw && !raw.startsWith(SAFE_PREFIX) && !raw.startsWith(LOCK_PREFIX)) {
-        this.store.set(key as any, this.safeEncrypt(raw) as any)
+    if (this.localSecretKey) {
+      const migrateLegacyValue = (value: unknown): unknown => {
+        if (typeof value !== 'string' || !value.startsWith(SAFE_PREFIX)) return value
+        const plaintext = this.safeDecrypt(value)
+        if (!plaintext) throw new Error('旧 Safe Storage 值无法解密')
+        return this.safeEncrypt(plaintext)
+      }
+      for (const key of [...ENCRYPTED_STRING_KEYS, ...ENCRYPTED_BOOL_KEYS, ...ENCRYPTED_NUMBER_KEYS, 'authHelloSecret']) {
+        const migrated = migrateLegacyValue((next as any)[key])
+        if (migrated !== (next as any)[key]) replace(key as keyof ConfigSchema, migrated)
+      }
+      for (const config of Object.values(next.wxidConfigs || {})) {
+        for (const key of ['decryptKey', 'imageAesKey', 'imageXorKey'] as const) {
+          const migrated = migrateLegacyValue(config[key])
+          if (migrated !== config[key]) {
+            ;(config as any)[key] = migrated
+            changed = true
+          }
+        }
       }
     }
 
-    // imageXorKey: 数字 → safe:
-    const rawXor: any = this.store.get('imageXorKey')
-    if (typeof rawXor === 'number' && rawXor !== 0) {
-      this.store.set('imageXorKey', this.safeEncrypt(String(rawXor)) as any)
+    // 将旧版明文 auth 字段迁移为本机密钥加密格式。
+    const rawEnabled: any = next.authEnabled
+    if (rawEnabled === true || rawEnabled === 'true') {
+      replace('authEnabled', this.safeEncrypt('true'))
+    } else if (rawEnabled === false || rawEnabled === 'false') {
+      // 保持 false 为明文布尔，避免无意义的加密写入。
+      replace('authEnabled', false)
     }
 
-    // wxidConfigs 中的嵌套密钥
-    const wxidConfigs: any = this.store.get('wxidConfigs')
+    const rawUseHello: any = next.authUseHello
+    if (rawUseHello === true || rawUseHello === 'true') {
+      replace('authUseHello', this.safeEncrypt('true'))
+    } else if (rawUseHello === false || rawUseHello === 'false') {
+      replace('authUseHello', false)
+    }
+
+    const rawPassword: any = next.authPassword
+    if (typeof rawPassword === 'string' && rawPassword &&
+        !rawPassword.startsWith(SAFE_PREFIX) && !rawPassword.startsWith(LOCAL_PREFIX)) {
+      replace('authPassword', this.safeEncrypt(rawPassword))
+    }
+
+    // 所有敏感字符串都必须迁移；兼容字段即使已复制到新字段，也不能留下明文副本。
+    for (const key of ENCRYPTED_STRING_KEYS) {
+      const raw: any = next[key]
+      if (typeof raw === 'string' && raw && !raw.startsWith(SAFE_PREFIX) &&
+          !raw.startsWith(LOCAL_PREFIX) && !raw.startsWith(LOCK_PREFIX)) {
+        replace(key, this.safeEncrypt(raw))
+      }
+    }
+
+    const rawXor: any = next.imageXorKey
+    if (typeof rawXor === 'number' && rawXor !== 0) {
+      replace('imageXorKey', this.safeEncrypt(String(rawXor)))
+    }
+
+    const wxidConfigs: any = next.wxidConfigs
     if (wxidConfigs && typeof wxidConfigs === 'object') {
-      let changed = false
       for (const [_wxid, cfg] of Object.entries(wxidConfigs) as [string, any][]) {
-        if (cfg.decryptKey && typeof cfg.decryptKey === 'string' && !cfg.decryptKey.startsWith(SAFE_PREFIX) && !cfg.decryptKey.startsWith(LOCK_PREFIX)) {
+        if (cfg.decryptKey && typeof cfg.decryptKey === 'string' && !cfg.decryptKey.startsWith(SAFE_PREFIX) && !cfg.decryptKey.startsWith(LOCAL_PREFIX) && !cfg.decryptKey.startsWith(LOCK_PREFIX)) {
           cfg.decryptKey = this.safeEncrypt(cfg.decryptKey)
           changed = true
         }
-        if (cfg.imageAesKey && typeof cfg.imageAesKey === 'string' && !cfg.imageAesKey.startsWith(SAFE_PREFIX) && !cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
+        if (cfg.imageAesKey && typeof cfg.imageAesKey === 'string' && !cfg.imageAesKey.startsWith(SAFE_PREFIX) && !cfg.imageAesKey.startsWith(LOCAL_PREFIX) && !cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
           cfg.imageAesKey = this.safeEncrypt(cfg.imageAesKey)
           changed = true
         }
@@ -853,36 +1169,28 @@ export class ConfigService {
           changed = true
         }
       }
-      if (changed) {
-        this.store.set('wxidConfigs', wxidConfigs)
-      }
-    }
-  }
-
-  private migrateAiConfig(): void {
-    const sharedBaseUrl = String(this.get('aiModelApiBaseUrl') || '').trim()
-    const sharedApiKey = String(this.get('aiModelApiKey') || '').trim()
-    const sharedModel = String(this.get('aiModelApiModel') || '').trim()
-
-    const legacyBaseUrl = String(this.get('aiInsightApiBaseUrl') || '').trim()
-    const legacyApiKey = String(this.get('aiInsightApiKey') || '').trim()
-    const legacyModel = String(this.get('aiInsightApiModel') || '').trim()
-
-    if (!sharedBaseUrl && legacyBaseUrl) {
-      this.set('aiModelApiBaseUrl', legacyBaseUrl)
-    }
-    if (!sharedApiKey && legacyApiKey) {
-      this.set('aiModelApiKey', legacyApiKey)
-    }
-    if (!sharedModel && legacyModel) {
-      this.set('aiModelApiModel', legacyModel)
     }
 
-    const groupSummaryFilterMode = String(this.store.get('aiGroupSummaryFilterMode' as any) || '').trim()
+    const decode = (value: unknown): string => this.safeDecrypt(String(value || '')).trim()
+    const sharedBaseUrl = decode(next.aiModelApiBaseUrl)
+    const sharedApiKey = decode(next.aiModelApiKey)
+    const sharedModel = decode(next.aiModelApiModel)
+
+    const legacyBaseUrl = decode(next.aiInsightApiBaseUrl)
+    const legacyApiKey = decode(next.aiInsightApiKey)
+    const legacyModel = decode(next.aiInsightApiModel)
+
+    if (!sharedBaseUrl && legacyBaseUrl) replace('aiModelApiBaseUrl', this.safeEncrypt(legacyBaseUrl))
+    if (!sharedApiKey && legacyApiKey) replace('aiModelApiKey', this.safeEncrypt(legacyApiKey))
+    if (!sharedModel && legacyModel) replace('aiModelApiModel', this.safeEncrypt(legacyModel))
+
+    const groupSummaryFilterMode = String(next.aiGroupSummaryFilterMode || '').trim()
     if (groupSummaryFilterMode === 'blacklist') {
-      this.store.set('aiGroupSummaryFilterList' as any, [] as any)
-      this.store.set('aiGroupSummaryFilterMode' as any, 'whitelist' as any)
+      next.aiGroupSummaryFilterList = []
+      next.aiGroupSummaryFilterMode = 'whitelist'
+      changed = true
     }
+    if (changed) (this.store as any).store = next
   }
 
   // === 验证 ===
@@ -890,7 +1198,8 @@ export class ConfigService {
   verifyAuthEnabled(): boolean {
     // 先检查 authEnabled 字段
     const rawEnabled: any = this.store.get('authEnabled')
-    if (typeof rawEnabled === 'string' && rawEnabled.startsWith(SAFE_PREFIX)) {
+    if (typeof rawEnabled === 'string' &&
+        (rawEnabled.startsWith(SAFE_PREFIX) || rawEnabled.startsWith(LOCAL_PREFIX))) {
       if (this.safeDecrypt(rawEnabled) === 'true') return true
     }
 
@@ -1132,4 +1441,3 @@ export class ConfigService {
     this.unlockPassword = null
   }
 }
-

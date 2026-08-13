@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper, Star, Sparkles, Code2 } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper, Star, Sparkles, Code2, ShieldCheck } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -9294,27 +9294,28 @@ function ChatPage(props: ChatPageProps) {
                   </span>
                 </div>
               </div>
-              <div className="detail-section">
-                <div className="section-title">
-                  <Code2 size={14} />
-                  <span>系统提示词</span>
+              {groupSummaryLogRecord.log.sensitivePayloadRetained === false ? (
+                <div className="detail-section">
+                  <div className="section-title">
+                    <ShieldCheck size={14} />
+                    <span>本机隐私策略</span>
+                  </div>
+                  <p>完整 Prompt、聊天上下文和模型原始输出不会作为调试副本持久化；这里只保留运行元数据与结构化总结。</p>
                 </div>
-                <pre className="group-summary-log-pre">{groupSummaryLogRecord.log.systemPrompt}</pre>
-              </div>
-              <div className="detail-section">
-                <div className="section-title">
-                  <Code2 size={14} />
-                  <span>用户提示词与完整记录</span>
+              ) : <>
+                <div className="detail-section">
+                  <div className="section-title"><Code2 size={14} /><span>系统提示词</span></div>
+                  <pre className="group-summary-log-pre">{groupSummaryLogRecord.log.systemPrompt}</pre>
                 </div>
-                <pre className="group-summary-log-pre">{groupSummaryLogRecord.log.userPrompt}</pre>
-              </div>
-              <div className="detail-section">
-                <div className="section-title">
-                  <Code2 size={14} />
-                  <span>模型输出原文</span>
+                <div className="detail-section">
+                  <div className="section-title"><Code2 size={14} /><span>用户提示词与完整记录</span></div>
+                  <pre className="group-summary-log-pre">{groupSummaryLogRecord.log.userPrompt}</pre>
                 </div>
-                <pre className="group-summary-log-pre">{groupSummaryLogRecord.log.rawOutput}</pre>
-              </div>
+                <div className="detail-section">
+                  <div className="section-title"><Code2 size={14} /><span>模型输出原文</span></div>
+                  <pre className="group-summary-log-pre">{groupSummaryLogRecord.log.rawOutput}</pre>
+                </div>
+              </>}
               <div className="detail-section">
                 <div className="section-title">
                   <Newspaper size={14} />

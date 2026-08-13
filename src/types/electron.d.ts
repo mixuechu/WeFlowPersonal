@@ -57,6 +57,8 @@ export interface InsightRecordLog {
   responseFormatJson?: boolean
   responseFormatFallback?: boolean
   responseFormatFallbackReason?: string
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
   targetMessage?: {
     localId: number
     createTime: number
@@ -182,6 +184,8 @@ export interface GroupSummaryLog {
   responseFormatFallback?: boolean
   responseFormatFallbackReason?: string
   parsedTopics?: GroupSummaryTopic[]
+  privacyVersion?: string
+  sensitivePayloadRetained?: boolean
 }
 
 export interface GroupSummaryRecordSummary {
@@ -362,6 +366,11 @@ export interface ElectronAPI {
   app: {
     getDownloadsPath: () => Promise<string>
     getVersion: () => Promise<string>
+    reportRendererPageIncident: (payload: unknown) => Promise<{
+      success: boolean
+      recorded?: boolean
+      reason?: 'recorded' | 'duplicate' | 'rate_limited'
+    }>
     getLaunchAtStartupStatus: () => Promise<{ enabled: boolean; supported: boolean; reason?: string }>
     setLaunchAtStartup: (enabled: boolean) => Promise<{
       success: boolean
@@ -370,7 +379,13 @@ export interface ElectronAPI {
       reason?: string
       error?: string
     }>
-    checkForUpdates: () => Promise<{ hasUpdate: boolean; version?: string; releaseNotes?: string }>
+    checkForUpdates: () => Promise<{
+      hasUpdate: boolean
+      available?: boolean
+      reason?: string
+      version?: string
+      releaseNotes?: string
+    }>
     downloadAndInstall: () => Promise<void>
     ignoreUpdate: (version: string) => Promise<{ success: boolean }>
     onDownloadProgress: (callback: (progress: number) => void) => () => void
@@ -1638,6 +1653,852 @@ export interface ElectronAPI {
     start: (port?: number, host?: string) => Promise<{ success: boolean; port?: number; error?: string }>
     stop: () => Promise<{ success: boolean }>
     status: () => Promise<{ running: boolean; port: number; mediaExportPath: string }>
+  }
+  aiAssistant: {
+    status: () => Promise<any>
+    dashboard: () => Promise<any>
+      getBriefingArchivePage: (options?: {
+        offset?: number
+        limit?: number
+        revision?: string
+      }) => Promise<{
+        items: any[]
+        total: number
+        offset: number
+        limit: number
+        hasMore: boolean
+        nextOffset: number
+        revision: string
+        stale: boolean
+      }>
+      getGraphReviewPage: (options?: {
+        status?: 'pending' | 'resolved' | 'all'
+        kind?: string
+        query?: string
+        reviewId?: string
+        entityId?: string
+        calibrationOutcome?: '' | 'exact' | 'corrected' | 'rejected'
+        reasonCode?: string
+        offset?: number
+        limit?: number
+        revision?: string
+        reviewScopeToken?: string
+      }) => Promise<{
+        items: any[]
+        offset: number
+        limit: number
+        total: number
+        hasMore: boolean
+        counts: { pending: number; resolved: number; all: number }
+        revision: string
+        stale: boolean
+        reviewScopeToken?: string
+        reviewScopeStale?: boolean
+      }>
+      getGraphReviewEvidencePage: (reviewId: string, options?: {
+        offset?: number
+        limit?: number
+        revision?: string
+        query?: string
+        source?: string
+        session?: string
+        sender?: string
+        fromTimestamp?: number
+        toTimestamp?: number
+        evidenceScopeToken?: string
+      }) => Promise<{
+        items: any[]
+        total: number
+        unfilteredTotal: number
+        offset: number
+        limit: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        evidenceScopeToken?: string
+        evidenceScopeStale?: boolean
+      }>
+      getGraphWorkspace: (options?: {
+        query?: string
+        relationType?: string
+        relationStatus?: string
+        focusEntityId?: string
+        depth?: number
+        maxNodes?: number
+        revision?: string
+      }) => Promise<{
+        viewport: {
+          entities: any[]
+          relations: any[]
+          levels: Record<string, number>
+          mode: 'overview' | 'search' | 'focus'
+          totalAvailable: number
+          truncated: number
+          totalRelationsAvailable: number
+          truncatedRelations: number
+          matchingSeeds: number
+          maxNodes: number
+        }
+        summary: { entities: number; relations: number }
+        predicates: string[]
+        focus: any | null
+        revision: string
+        stale: boolean
+      }>
+      getEntityTaskPage: (entityId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        nextOffset: number
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getEntityAuditPage: (entityId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getMemoryItemAuditPage: (
+        kind: 'claim' | 'event',
+        itemId: string,
+        options?: { limit?: number; offset?: number; revision?: string; archiveScopeToken?: string }
+      ) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
+      getEventCorrectionParticipantSnapshotPage: (
+        correctionId: number,
+        phase: 'before' | 'after',
+        options: {
+          revision: string; query?: string; offset?: number; limit?: number
+          archiveScopeToken?: string
+        }
+      ) => Promise<any>
+      getProjectWorkspace: (projectId: string) => Promise<{
+        project: any
+        payloadPolicy: { version: string; evidence: string; loadedOnDemand: boolean }
+      }>
+      getProjectMemberPage: (projectId: string, options?: any) => Promise<{
+        items: Array<{ id: string; name: string }>
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getProjectTaskPage: (projectId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        nextOffset?: number
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getProjectRiskPage: (projectId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        nextOffset?: number
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getProjectDirectory: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        nextOffset?: number
+        revision: string
+        stale: boolean
+        projectDirectoryScopeToken?: string
+        projectDirectoryScopeStale?: boolean
+      }>
+      getTaskWorkspace: (taskId: string) => Promise<{
+        task: any
+        history: any[]
+        historyTotal: number
+        historyHasMore: boolean
+        historyRevision: string
+        historyArchiveScopeToken?: string
+        payloadPolicy: { version: string; evidenceLimit: number; historyLimit: number; loadedOnDemand: boolean }
+      } | null>
+      getTaskHistoryPage: (taskId: string, options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getTaskReminderPage: (options?: any) => Promise<{
+        items: any[]
+        offset: number
+        nextOffset: number
+        limit: number
+        total: number
+        rawTotal: number
+        suppressed: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        nextBoundaryMs: number | null
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getTaskDependencyCandidates: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        revision: string
+        stale: boolean
+      }>
+      getActiveTaskWorkset: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: Record<string, number>
+        revision: string
+        stale: boolean
+        taskWorksetScopeToken?: string
+        taskWorksetScopeStale?: boolean
+      }>
+      auditActiveTaskLifecycles: () => Promise<{
+        total: number
+        processed: number
+        closed: number
+        kept: number
+        skipped: number
+      }>
+      getTaskCalendarPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        taskCalendarScopeToken?: string
+        taskCalendarScopeStale?: boolean
+      }>
+      getTaskArchive: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+        taskArchiveScopeToken?: string
+        taskArchiveScopeStale?: boolean
+      }>
+      getTaskArchiveProjects: (options?: any) => Promise<{
+        items: Array<{ project: string; taskTotal: number; lastUpdatedAt: string }>
+        total: number
+        hasMore: boolean
+        revision: string
+        stale: boolean
+      }>
+      getTaskOwnershipReviews: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: Record<string, number>
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getTaskReviewDecisionPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { active: number; revoked: number; all: number }
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) => Promise<any>
+      getMemoryDeletionAuditPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: {
+          all: number
+          claim: number
+          event: number
+          relation: number
+          manual_delete: number
+          not_important: number
+        }
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getMemoryMaintenanceAuditPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { all: number; manual: number; automatic: number; recovery: number }
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      retryMemoryMaintenanceAuditDelivery: () => Promise<{
+        success: boolean
+        attempted: number
+        delivered: number
+        pending: number
+        lastDeliveredAt: string
+        lastError: string
+      }>
+      getMemoryChangeLogPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        counts: Record<string, number>
+        revision: string
+        stale: boolean
+        trackedSince: string
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getMemoryChangeOriginDossier: (
+        changeId: number,
+        expectedRevision: string
+      ) => Promise<any>
+      getMergeHistoryPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { active: number; reverted: number; all: number }
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      sync: () => Promise<any>
+      cancelSync: () => Promise<any>
+    getSettings: () => Promise<any>
+    setSettings: (input: any) => Promise<any>
+      updateTask: (id: string, patch: any, mutationToken?: string) => Promise<any>
+      reviewMineTaskOwnership: (
+        id: string,
+        decision: 'mine' | 'rejected',
+        mutationToken?: string,
+        sampleContext?: { revision: string; strategy: string },
+        reasonCode?: string
+      ) => Promise<any>
+      updateTasks: (updates: Array<{ id: string; patch: any; mutationToken?: string }>) => Promise<any[]>
+      previewTaskFromMemory: (input: any) => Promise<any>
+      createTaskFromMemory: (input: any) => Promise<any>
+      updateTaskReview: (
+        id: string,
+        decision: 'mine' | 'rejected',
+        expectedRevision?: string,
+        reasonCode?: string
+      ) => Promise<any>
+      revertTaskReview: (evidenceFingerprint: string, expectedRevision?: string) => Promise<any>
+      updateReminderPreference: (input: {
+        reminderId?: string
+        taskId?: string
+        kind: 'overdue' | 'due_soon' | 'waiting_stale' | 'blocked'
+        action: 'helpful' | 'snooze' | 'mute_kind' | 'restore_kind'
+        expectedRevision: string
+      }) => Promise<any>
+      retryNotificationOutbox: () => Promise<{
+        pending: number
+        failedPending: number
+        nextAttemptAt: string | null
+      }>
+      updateGraphReview: (id: string, decision: 'confirmed' | 'rejected', options?: {
+        expectedRevision?: string
+        mergeTargetEntityId?: string
+        correctedCanonicalName?: string
+        correctedSummaryText?: string
+        correctedAliasText?: string
+        relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+        reasonCode?: string
+      }) => Promise<any>
+      previewRestoreRejectedEntity: (id: string, expectedRevision?: string) => Promise<any>
+      restoreRejectedEntity: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      getTrustedEntityDirectory: (options?: {
+        query?: string
+        type?: string
+        offset?: number
+        limit?: number
+        expectedRevision?: string
+        directoryScopeToken?: string
+      }) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        nextOffset: number
+        offset: number
+        limit: number
+        revision: string
+        stale: boolean
+        directoryScopeToken?: string
+        directoryScopeStale?: boolean
+        counts: Record<string, number>
+      }>
+      previewRevertMerge: (id: number, expectedRevision?: string) => Promise<any>
+      revertMerge: (
+        id: number,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      updateMemoryItemStatus: (
+        kind: 'claim' | 'event',
+        id: string,
+        status: 'confirmed' | 'rejected',
+        expectedRevision?: string,
+        reasonCode?: string
+      ) => Promise<any>
+      previewDeleteMemoryItem: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string,
+        reason?: 'manual_delete' | 'not_important'
+      ) => Promise<any>
+      deleteMemoryItem: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      ignoreMemoryItem: (
+        kind: 'claim' | 'event',
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      previewDeleteMemoryResource: (id: string) => Promise<any>
+      getResourceArchive: (options?: {
+        resourceType?: string
+        sourceId?: 'wechat' | 'documents' | 'calendar' | 'mail' | 'legacy'
+        enrichmentKind?: 'attachment_index' | 'attachment_structure' | 'image_ocr' |
+          'image_semantics' | 'voice_transcript' | 'web_snapshot' | 'pdf_ocr'
+        enrichmentStatus?: 'pending' | 'deferred' | 'completed' | 'terminal' | 'waiting'
+        query?: string
+        from?: string
+        to?: string
+        limit?: number
+        offset?: number
+        revision?: string
+        archiveScopeToken?: string
+      }) => Promise<any>
+      retryResourceEnrichment: (input: {
+        resourceId: string
+        kind: 'attachment_index' | 'attachment_structure' | 'image_ocr' |
+          'image_semantics' | 'voice_transcript' | 'web_snapshot' | 'pdf_ocr'
+        retryToken: string
+      }) => Promise<any>
+      previewResourceEnrichmentBatch: (input: any) => Promise<any>
+      retryResourceEnrichmentBatch: (input: any) => Promise<any>
+      cancelResourceEnrichmentBatch: () => Promise<any>
+      getResourceDossier: (id: string, expectedRevision: string) => Promise<any>
+      getCurrentResourceDossier: (id: string) => Promise<any>
+      getStructuredMemoryDossier: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string,
+        expectedSearchRevision: string
+      ) => Promise<any>
+      getCurrentStructuredMemoryDossier: (
+        kind: 'claim' | 'event' | 'relation',
+        id: string
+      ) => Promise<any>
+      getEventDossierParticipantPage: (
+        eventId: string,
+        options: {
+          expectedSearchRevision: string
+          offset?: number
+          limit?: number
+          revision?: string
+          archiveScopeToken?: string
+        }
+      ) => Promise<any>
+      getRelationDossierAuditPage: (
+        relationId: string,
+        kind: 'history' | 'correction',
+        options?: {
+          expectedSearchRevision: string
+          offset?: number
+          limit?: number
+          revision?: string
+          archiveScopeToken?: string
+        }
+      ) => Promise<any>
+      getResourceTrashArchive: (options?: {
+        query?: string
+        limit?: number
+        offset?: number
+        revision?: string
+        archiveScopeToken?: string
+      }) => Promise<any>
+      deleteMemoryResource: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      restoreMemoryResource: (id: string, expectedMutationToken: string) => Promise<any>
+      previewPurgeMemoryResourceTrash: (id: string) => Promise<any>
+      purgeMemoryResourceTrash: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      previewRelationCorrectionFromMemoryDocument: (
+        id: string,
+        input?: {
+          assistantMessageId?: string
+          documentId?: string
+          reviewToken?: string
+          entityDirectoryRevision?: string
+          relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+        }
+      ) => Promise<any>
+      reviewMemoryDocument: (
+        kind: 'relation' | 'claim' | 'event', id: string,
+        decision: 'confirmed' | 'rejected' | 'corrected',
+        input?: {
+          assistantMessageId?: string
+          documentId?: string
+          reviewToken?: string
+          correctionPreviewToken?: string
+          entityDirectoryRevision?: string
+          relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+        }
+      ) => Promise<any>
+      previewForgetEntity: (id: string) => Promise<any>
+      forgetEntity: (id: string, input?: { previewToken?: string; confirmation?: string }) => Promise<any>
+      searchMemory: (query: string, options?: any) => Promise<any[]>
+      searchMemoryPage: (query: string, options?: any, pagination?: {
+        offset?: number
+        limit?: number
+        revision?: string
+        mode?: 'hybrid' | 'lexical_archive'
+        retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
+        pageScopeToken?: string
+      }) => Promise<{
+        results: any[]
+        offset: number
+        limit: number
+        total: number
+        hasMore: boolean
+        truncated: boolean
+        searchMode?: 'hybrid' | 'lexical_archive' | 'scope_browse'
+        retrievalMode?: 'hybrid' | 'lexical_ai_disabled' | 'lexical_vector_fallback' | 'lexical_archive' | 'scope_browse'
+        retrievalModeStale?: boolean
+        lexicalSearchMode?: 'fts' | 'substring_fallback'
+        typeCounts?: Record<string, number>
+        typeCountsBasis?: 'lexical_archive' | 'scope_browse'
+        typeCountsSearchMode?: 'fts' | 'substring_fallback'
+        trustCounts?: Record<string, number>
+        trustCountsBasis?: 'lexical_archive' | 'scope_browse'
+        trustCountsSearchMode?: 'fts' | 'substring_fallback'
+        sourceCounts?: Record<string, number>
+        sourceCountsBasis?: 'lexical_archive' | 'scope_browse'
+        supportCounts?: Record<string, number>
+        supportCountsBasis?: 'lexical_archive' | 'scope_browse'
+        supportCountsSearchMode?: 'fts' | 'substring_fallback'
+        contradictionCount?: number
+        noContradictionCount?: number
+        contradictionCountBasis?: 'lexical_archive' | 'scope_browse'
+        evidenceStrengthCounts?: Record<string, number>
+        evidenceStrengthCountsBasis?: 'lexical_archive' | 'scope_browse'
+        evidenceBreadthCounts?: Record<string, number>
+        evidenceBreadthCountsBasis?: 'lexical_archive' | 'scope_browse'
+        reviewPresetCounts?: Record<string, number>
+        reviewPresetCountsBasis?: 'lexical_archive' | 'scope_browse'
+        scopeCandidates: number | null
+        revision: string
+        pageScopeToken?: string
+        stale: boolean
+        pageScopeStale?: boolean
+        dateScopeInvalid?: boolean
+        dateScopeInvalidReason?: 'invalid_from' | 'invalid_to' | 'reversed'
+        entityScopeStale?: boolean
+        entityDirectoryRevision?: string
+        entityScopeStaleReason?: 'missing_revision' | 'revision_changed' | 'entity_untrusted'
+        sessionScopeStale?: boolean
+        sessionScopeStaleReason?: 'missing_session_id' | 'missing_selection_token' | 'unknown_session' | 'selection_changed'
+        feedback: Array<{
+          id: number
+          documentId: string
+          documentType: string
+          documentTitle: string
+          action: 'helpful' | 'not_relevant'
+          createdAt: string
+        }>
+        feedbackVersion: string
+      }>
+      updateMemorySearchFeedback: (input: {
+        query: string
+        options?: any
+        documentId: string
+        action: 'helpful' | 'not_relevant' | 'cleared'
+        mutationToken: string
+      }) => Promise<any>
+      getMemorySearchFeedbackArchive: (options?: {
+        id?: number
+        action?: 'helpful' | 'not_relevant' | 'cleared' | ''
+        query?: string
+        from?: string
+        to?: string
+        offset?: number
+        limit?: number
+        revision?: string
+        archiveScopeToken?: string
+      }) => Promise<any>
+      deleteMemorySearchFeedback: (input?: {
+        id?: number
+        action?: 'helpful' | 'not_relevant' | 'cleared' | ''
+        query?: string
+        from?: string
+        to?: string
+        all?: boolean
+        confirmation?: string
+        preview?: boolean
+        revision?: string
+      }) => Promise<any>
+      getMemoryEvidencePage: (
+        documentType: string,
+        sourceId: string,
+        pagination?: {
+          offset?: number
+          limit?: number
+          revision?: string
+          query?: string
+          source?: string
+          session?: string
+          sender?: string
+          role?: 'direct' | 'indirect' | 'contradiction' | 'support' | 'original' | ''
+          fromTimestamp?: number
+          toTimestamp?: number
+          expectedSearchRevision?: string
+          expectedContentHash?: string
+          expectedEvidenceAuthorityRevision?: number
+          evidenceScopeToken?: string
+        }
+      ) => Promise<{
+        items: any[]
+        total: number
+        unfilteredTotal: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        documentType: string
+        sourceId: string
+        revision: string
+        stale: boolean
+        evidenceScopeToken?: string
+        evidenceScopeStale?: boolean
+        searchSnapshotStale?: boolean
+        evidenceSnapshotStale?: boolean
+        searchRevision?: string
+        sourceMissing?: boolean
+      }>
+      indexMemoryVectors: () => Promise<any>
+      findGraphPath: (fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string) => Promise<any>
+      findCommonNeighbors: (fromId: string, toId: string, entityDirectoryRevision?: string, pagination?: any) => Promise<any>
+      getMemoryDiagnostics: (options?: { forceIntegrityCheck?: boolean }) => Promise<any>
+      repairMemorySearchIndexes: () => Promise<any>
+      getIngestionRunPage: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        counts: { running: number; completed: number; partial: number; failed: number; all: number }
+        revision: string
+        stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
+      }>
+      getIngestionRunDossier: (runId: string, options?: any) => Promise<any>
+      getIngestionRecoveryPage: (options?: any) => Promise<any>
+      retryPreparedIngestion: () => Promise<{
+        attempted: number
+        recovered: number
+        failed: number
+        remaining: number
+      }>
+      getCrossStoreRecoveryPage: (options?: any) => Promise<any>
+      getCrossStoreRecoveryArchivePage: (options?: any) => Promise<any>
+      retryCrossStoreRecovery: () => Promise<any>
+      previewAbandonCrossStoreRecovery: (
+        kind: 'task' | 'source', commitId: string
+      ) => Promise<any>
+      abandonCrossStoreRecovery: (
+        kind: 'task' | 'source', commitId: string, input?: any
+      ) => Promise<boolean>
+      createMemoryBackup: () => Promise<any>
+      inspectMemoryBackup: (path: string) => Promise<any>
+      restoreMemoryBackup: (
+        path: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      previewDeleteMemoryBackup: (path: string) => Promise<any>
+      deleteMemoryBackup: (
+        path: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      previewDiscardImportedBackupStagingConflict: (id: string) => Promise<any>
+      discardImportedBackupStagingConflict: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      previewResolveMemoryBackupTrashConflict: (
+        id: string,
+        action: 'restore' | 'discard'
+      ) => Promise<any>
+      resolveMemoryBackupTrashConflict: (
+        id: string,
+        action: 'restore' | 'discard',
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      exportMemoryBundle: (path: string, passphrase: string) => Promise<any>
+      inspectMemoryBundle: (path: string, passphrase?: string) => Promise<any>
+      importMemoryBundle: (
+        path: string,
+        passphrase?: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<any>
+      correctClaim: (id: string, input: any, expectedRevision?: string) => Promise<any>
+      correctEvent: (id: string, input: any, expectedRevision?: string) => Promise<any>
+      getMemoryClaim: (id: string) => Promise<any>
+      getMemoryEvent: (id: string) => Promise<any>
+      getEventCorrectionParticipantPage: (
+        eventId: string,
+        options: {
+          revision: string; offset?: number; limit?: number; archiveScopeToken?: string
+        }
+      ) => Promise<any>
+      getMemoryRelation: (id: string) => Promise<any>
+      previewRelationCorrection: (id: string, input?: any) => Promise<any>
+      correctRelation: (id: string, input?: any) => Promise<any>
+      rejectRelation: (id: string, expectedRevision: string) => Promise<any>
+      restoreRelation: (id: string, expectedRevision: string) => Promise<any>
+      askMemory: (question: string, conversationId?: string, options?: any) => Promise<any>
+      getAssistantConversations: (options?: any) => Promise<any>
+      getAssistantModelRequestAudits: (options?: any) => Promise<any>
+      getAssistantAnswerReviews: (options?: any) => Promise<any>
+      reviewAssistantAnswer: (
+        messageId: string,
+        action: 'acknowledged' | 'reopened',
+        expectedMutationToken: string
+      ) => Promise<any>
+      getAssistantAnswerReviewDecisions: (messageId: string, options?: any) => Promise<any>
+      getAssistantConversation: (id: string, options?: any) => Promise<any>
+      previewDeleteAssistantConversation: (id: string) => Promise<{
+        conversationId: string
+        title: string
+        createdAt: string
+        updatedAt: string
+        counts: {
+          messages: number
+          userMessages: number
+          assistantMessages: number
+          citations: number
+          dependencies: number
+          reviews: number
+        }
+        identitySha256: string
+        previewToken: string
+      }>
+      deleteAssistantConversation: (
+        id: string,
+        input?: { previewToken?: string; confirmation?: string }
+      ) => Promise<boolean>
+      getConversationSources: (options?: any) => Promise<{
+        items: any[]
+        total: number
+        hasMore: boolean
+        offset: number
+        limit: number
+        revision: string
+        stale: boolean
+        directoryScopeToken: string
+        directoryScopeStale: boolean
+        counts: {
+          total: number
+          enabled: number
+          disabled: number
+          group: number
+          private: number
+          groupEnabled: number
+          privateEnabled: number
+        }
+      }>
+      getDataSources: () => Promise<any[]>
+      getEventTimeline: (options?: any) => Promise<{
+        items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
+      }>
+      getEntityRelationPage: (options?: any) => Promise<{
+        items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
+      }>
+      getEntityIdentityAnchorPage: (options?: any) => Promise<{
+        items: any[]; total: number; unfilteredTotal: number; hasMore: boolean
+        counts: { alias: number; identity: number; wechat: number; external: number }
+        platforms: string[]; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
+      }>
+      getEntityEvidencePage: (options?: any) => Promise<{
+        items: any[]; total: number; unfilteredTotal: number
+        hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
+      }>
+      getClaimArchive: (options?: any) => Promise<{
+        items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
+      }>
+      getCalendarAuthorization: () => Promise<{ available: boolean; authorization: string }>
+      requestCalendarAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
+      listCalendars: () => Promise<{
+        items: Array<{
+          id: string; title: string; source: string; type: string; selected: boolean
+        }>
+        mutationToken: string
+      }>
+      getMailAuthorization: () => Promise<{ available: boolean; authorization: string }>
+      requestMailAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>
+      listMailboxes: () => Promise<{
+        items: Array<{
+          id: string
+          accountId: string
+          accountName: string
+          path: string[]
+          displayName: string
+          selected: boolean
+        }>
+        mutationToken: string
+        allowModelAnalysis: boolean
+      }>
+      setDataSourceEnabled: (
+        sourceId: string,
+        enabled: boolean,
+        expectedMutationToken: string
+      ) => Promise<any>
+      configureDataSource: (sourceId: string, input: {
+        folderPath?: string
+        calendarIds?: string[]
+        mailboxIds?: string[]
+        allowModelAnalysis?: boolean
+        expectedMutationToken: string
+      }) => Promise<any>
+      setConversationSource: (input: any) => Promise<any>
+      setConversationSourcesBulk: (input: any) => Promise<any>
   }
   social: {
     saveWeiboCookie: (rawInput: string) => Promise<SocialSaveWeiboCookieResult>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.WeFlow.app.calendar-helper</string>
+  <key>CFBundleName</key>
+  <string>WeFlow Calendar Helper</string>
+  <key>CFBundleDisplayName</key>
+  <string>WeFlow 升级版日历连接器</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>WeFlow 升级版仅在你明确启用日历连接器后读取所选日历，用于本机时间线和记忆检索。</string>
+</dict>
+</plist>

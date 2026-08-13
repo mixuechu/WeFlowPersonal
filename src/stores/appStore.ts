@@ -13,6 +13,8 @@ export interface AppState {
   // 更新状态
   updateInfo: {
     hasUpdate: boolean
+    available?: boolean
+    reason?: string
     version?: string
     releaseNotes?: string
   } | null

@@ -1,8 +1,17 @@
 import { join, dirname } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
-import { writeFile } from 'fs/promises'
-import { app } from 'electron'
-import { ConfigService } from './config'
+import { existsSync, mkdirSync, rmSync } from 'fs'
+import { ConfigService } from './config.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 export interface ContactCacheEntry {
   displayName?: string
@@ -16,15 +25,19 @@ export class ContactCacheService {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private encryptionKey: Buffer | string
 
-  constructor(cacheBasePath?: string) {
+  constructor(cacheBasePath?: string, encryptionKey: Buffer | string = '') {
+    this.encryptionKey = encryptionKey
     const basePath = cacheBasePath && cacheBasePath.trim().length > 0
       ? cacheBasePath
       : ConfigService.getInstance().getCacheBasePath()
     this.cacheFilePath = join(basePath, 'contacts.json')
     this.ensureCacheDir()
     this.loadCache()
-    app?.once('will-quit', () => this.flushSync())
+    electronApp?.once?.('will-quit', () => this.flushSync())
   }
 
   private ensureCacheDir() {
@@ -35,10 +48,13 @@ export class ContactCacheService {
   }
 
   private loadCache() {
-    if (!existsSync(this.cacheFilePath)) return
     try {
-      const raw = readFileSync(this.cacheFilePath, 'utf8')
-      const parsed = JSON.parse(raw)
+      const loaded = loadEncryptedSensitiveCache<Record<string, unknown>>(
+        this.cacheFilePath,
+        this.encryptionKey
+      )
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       if (parsed && typeof parsed === 'object') {
         // 清除无效的头像数据（hex 格式而非正确的 base64）
         for (const key of Object.keys(parsed)) {
@@ -53,6 +69,11 @@ export class ContactCacheService {
     } catch (error) {
       console.error('ContactCacheService: 载入缓存失败', error)
       this.cache = {}
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
@@ -62,6 +83,26 @@ export class ContactCacheService {
 
   getAllEntries(): Record<string, ContactCacheEntry> {
     return { ...this.cache }
+  }
+
+  getPrivacyStatus(): unknown {
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.cacheFilePath),
+      entries: Object.keys(this.cache).length,
+      persistenceRetry: { ...this.persistenceRetry }
+    }
+  }
+
+  initializeEncryption(encryptionKey: Buffer | string): void {
+    if (!encryptionKey || (this.encryptionKey && this.privacy.writable)) return
+    const pending = this.cache
+    this.encryptionKey = encryptionKey
+    this.cache = {}
+    this.privacy = emptySensitiveCachePrivacy()
+    this.loadCache()
+    this.cache = { ...this.cache, ...pending }
+    if (Object.keys(pending).length > 0 && this.privacy.writable) this.persist()
   }
 
   setEntries(entries: Record<string, ContactCacheEntry>): void {
@@ -80,12 +121,12 @@ export class ContactCacheService {
   }
 
   /** 防抖异步落盘：启动阶段批量补全联系人时避免连续同步写盘阻塞主线程 */
-  private persist() {
+  private persist(delayMs = 1000) {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persistNow()
-    }, 1000)
+    }, Math.max(0, delayMs))
     this.persistTimer.unref?.()
   }
 
@@ -96,14 +137,21 @@ export class ContactCacheService {
     }
     this.persistInFlight = true
     try {
-      await writeFile(this.cacheFilePath, JSON.stringify(this.cache), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.cache, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('ContactCacheService: 保存缓存失败', error)
+      this.persistDirty = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistDirty) {
         this.persistDirty = false
-        void this.persistNow()
+        this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
     }
   }
@@ -114,7 +162,11 @@ export class ContactCacheService {
     clearTimeout(this.persistTimer)
     this.persistTimer = null
     try {
-      writeFileSync(this.cacheFilePath, JSON.stringify(this.cache), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.cache, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
     } catch (error) {
       console.error('ContactCacheService: 保存缓存失败', error)
     }

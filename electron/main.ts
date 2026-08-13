@@ -1,9 +1,11 @@
 import './preload-env'
-import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, powerMonitor } from 'electron'
 import { Worker } from 'worker_threads'
 import { randomUUID } from 'crypto'
-import { join, dirname } from 'path'
+import { join, dirname, isAbsolute, resolve } from 'path'
 import { autoUpdater } from 'electron-updater'
+import { resolvePersonalUpdateAvailability } from './services/personalUpdatePolicy'
+import { trayIconCandidateNames, trayIconTargetSize } from './services/trayIconPolicy'
 import { readFile, writeFile, mkdir, rm, readdir, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { ConfigService } from './services/config'
@@ -13,6 +15,7 @@ import { chatService } from './services/chatService'
 import { imageDecryptService } from './services/imageDecryptService'
 import { imagePreloadService } from './services/imagePreloadService'
 import { analyticsService } from './services/analyticsService'
+import { exportRecordService } from './services/exportRecordService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { annualReportService } from './services/annualReportService'
 import { exportService, ExportOptions, ExportProgress } from './services/export'
@@ -27,7 +30,7 @@ import { windowsHelloService } from './services/windowsHelloService'
 import { exportCardDiagnosticsService } from './services/exportCardDiagnosticsService'
 import { cloudControlService } from './services/cloudControlService'
 
-import { destroyNotificationWindow, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
+import { destroyNotificationWindow, isNotificationRenderer, registerNotificationHandlers, showNotification, setNotificationNavigateHandler } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
 import { messagePushService } from './services/messagePushService'
 import { insightService } from './services/insightService'
@@ -38,6 +41,44 @@ import { normalizeWeiboCookieInput, weiboService } from './services/social/weibo
 import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
+import { aiAssistantService } from './services/aiAssistantService'
+import { initializeAppRunRecoveryService } from './services/appRunRecoveryService'
+import { applySensitiveLogPolicy } from './services/sensitiveLogPolicy'
+import { formatPathSanitizationDiagnostic } from './services/pathSanitizationDiagnostic'
+import { isAllowedIpcSender, isAllowedRendererNavigation } from './services/rendererNavigationPolicy'
+import { isAllowedRendererPermission } from './services/rendererPermissionPolicy'
+import { releaseNotesToSafeText } from '../src/utils/releaseNotesPresentation'
+import { normalizeRendererPageIncident } from '../shared/rendererPageIncident'
+import { RendererPageIncidentAdmission } from './services/rendererPageIncidentAdmission'
+import { sanitizeDiagnosticText } from './services/diagnosticRedaction'
+import { getLegacyBackgroundRetries } from './services/legacyBackgroundRetryController.ts'
+
+// 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
+// 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
+app.setPath('userData', join(app.getPath('appData'), 'weflow'))
+const appRunRecoveryService = initializeAppRunRecoveryService(app.getPath('userData'))
+const rendererPageIncidentAdmission = new RendererPageIncidentAdmission()
+appRunRecoveryService.start(app.getVersion())
+process.on('uncaughtExceptionMonitor', error => {
+  appRunRecoveryService.recordIncident('uncaught_exception', error, true)
+})
+process.on('unhandledRejection', reason => {
+  appRunRecoveryService.recordIncident('unhandled_rejection', reason, false)
+})
+app.on('render-process-gone', (_event, _webContents, details) => {
+  appRunRecoveryService.recordIncident(
+    'renderer_gone',
+    `${details.reason}${details.exitCode !== undefined ? ` (${details.exitCode})` : ''}`,
+    false
+  )
+})
+app.on('child-process-gone', (_event, details) => {
+  appRunRecoveryService.recordIncident(
+    'child_process_gone',
+    `${details.type}: ${details.reason}${details.exitCode !== undefined ? ` (${details.exitCode})` : ''}`,
+    false
+  )
+})
 
 // 屏幕采集去节流（仅影响通知玻璃的 Chromium 流回退管线；Windows 主路径为
 // 原生面板渲染，不经过 Chromium 采集）：默认桌面采集 CPU 预算限制在 50%，
@@ -300,6 +341,88 @@ const normalizeAllowedExternalUrl = (rawUrl: unknown): string | null => {
   }
 }
 
+const trustedRendererPolicy = {
+  distRoot: join(__dirname, '../dist'),
+  devServerUrl: process.env.VITE_DEV_SERVER_URL
+}
+
+const isTrustedIpcSender = (event: any): boolean => {
+  const senderFrame = event?.senderFrame
+  const mainFrame = event?.sender?.mainFrame
+  if (!senderFrame || !mainFrame) return false
+  return isAllowedIpcSender(senderFrame.url, senderFrame === mainFrame, trustedRendererPolicy)
+}
+
+const installTrustedIpcBoundary = (): void => {
+  const registerHandle = ipcMain.handle.bind(ipcMain)
+  const registerOn = ipcMain.on.bind(ipcMain)
+
+  ipcMain.handle = ((channel: string, listener: (...args: any[]) => any) => (
+    registerHandle(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) {
+        console.warn(`[IpcSecurity] Rejected untrusted invoke on ${channel}`)
+        throw new Error('不受信任的页面不能调用本机能力')
+      }
+      return listener(event, ...args)
+    })
+  )) as typeof ipcMain.handle
+
+  ipcMain.on = ((channel: string, listener: (...args: any[]) => any) => (
+    registerOn(channel, (event, ...args) => {
+      if (!isTrustedIpcSender(event)) {
+        console.warn(`[IpcSecurity] Rejected untrusted message on ${channel}`)
+        return
+      }
+      listener(event, ...args)
+    })
+  )) as typeof ipcMain.on
+}
+
+const installRendererNavigationGuard = (): void => {
+  app.on('web-contents-created', (_event, contents) => {
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    contents.on('will-attach-webview', (event) => {
+      event.preventDefault()
+    })
+    contents.on('will-navigate', (event, targetUrl) => {
+      if (isAllowedRendererNavigation(targetUrl, trustedRendererPolicy)) return
+      event.preventDefault()
+      console.warn('[RendererSecurity] Blocked navigation outside the application origin')
+    })
+  })
+}
+
+installTrustedIpcBoundary()
+installRendererNavigationGuard()
+
+const installRendererPermissionPolicy = (): void => {
+  const isTrustedMainFrame = (contents: Electron.WebContents | null, isMainFrame: boolean): boolean => Boolean(
+    contents &&
+    isMainFrame &&
+    isAllowedRendererNavigation(contents.getURL(), trustedRendererPolicy)
+  )
+
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) => (
+    isAllowedRendererPermission({
+      permission,
+      trustedMainFrame: isTrustedMainFrame(contents, details.isMainFrame),
+      notificationRenderer: isNotificationRenderer(contents),
+      platform: process.platform,
+      mediaType: details.mediaType
+    })
+  ))
+
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    callback(isAllowedRendererPermission({
+      permission,
+      trustedMainFrame: isTrustedMainFrame(contents, details.isMainFrame),
+      notificationRenderer: isNotificationRenderer(contents),
+      platform: process.platform,
+      mediaTypes: 'mediaTypes' in details ? details.mediaTypes : undefined
+    }))
+  })
+}
+
 const postExportWorkerControl = (taskId: string, action: 'pause' | 'resume' | 'cancel') => {
   const worker = activeExportWorkers.get(taskId)
   if (!worker) return
@@ -407,6 +530,12 @@ const shouldOfferUpdateForTrack = (latestVersion: string, currentVersion: string
 
 let lastAppliedUpdaterChannel: string | null = null
 let lastAppliedUpdaterFeedUrl: string | null = null
+const personalUpdateAvailability = resolvePersonalUpdateAvailability({
+  feedBaseUrl: process.env.WEFLOW_PERSONAL_UPDATE_FEED_BASE_URL,
+  explicitEnabled: process.env.AUTO_UPDATE_ENABLED,
+  developmentServer: process.env.VITE_DEV_SERVER_URL
+})
+const AUTO_UPDATE_ENABLED = personalUpdateAvailability.enabled
 const resetUpdaterProviderCache = () => {
   const updater = autoUpdater as any
   // electron-updater 会缓存 provider；切换 channel 后需清理缓存，避免仍请求旧通道
@@ -418,7 +547,8 @@ const resetUpdaterProviderCache = () => {
 }
 
 const getUpdaterFeedUrlByTrack = (track: 'stable' | 'preview' | 'dev'): string => {
-  const repoBase = 'https://github.com/hicccc77/WeFlow/releases'
+  const repoBase = personalUpdateAvailability.feedBaseUrl
+  if (!repoBase) throw new Error(personalUpdateAvailability.reason)
   if (track === 'stable') return `${repoBase}/latest/download`
   if (track === 'preview') return `${repoBase}/download/nightly-preview`
   return `${repoBase}/download/nightly-dev`
@@ -453,11 +583,7 @@ const applyAutoUpdateChannel = (reason: 'startup' | 'settings' = 'startup') => {
   lastAppliedUpdaterFeedUrl = nextFeedUrl
 }
 
-applyAutoUpdateChannel('startup')
-const AUTO_UPDATE_ENABLED =
-  process.env.AUTO_UPDATE_ENABLED === 'true' ||
-  process.env.AUTO_UPDATE_ENABLED === '1' ||
-  (process.env.AUTO_UPDATE_ENABLED == null && !process.env.VITE_DEV_SERVER_URL)
+if (AUTO_UPDATE_ENABLED) applyAutoUpdateChannel('startup')
 
 const getLaunchAtStartupUnsupportedReason = (): string | null => {
   if (process.platform !== 'win32' && process.platform !== 'darwin') {
@@ -601,8 +727,7 @@ function sanitizePathEnv() {
 
   const filtered = parts.filter(isSafe)
   if (filtered.length !== parts.length) {
-    const removed = parts.filter((p) => !isSafe(p))
-    console.warn('[WeFlow] 使用白名单裁剪 PATH，移除目录:', removed)
+    console.warn('[WeFlow]', formatPathSanitizationDiagnostic(parts.length - filtered.length))
     const nextPath = filtered.join(sep)
     process.env.PATH = nextPath
     process.env.Path = nextPath
@@ -635,6 +760,7 @@ let mainWindowReady = false
 let shouldShowMain = true
 let isAppQuitting = false
 let shutdownPromise: Promise<void> | null = null
+let appExitCommitted = false
 let tray: Tray | null = null
 let isClosePromptVisible = false
 
@@ -796,7 +922,7 @@ const getDialogReleaseNotes = (rawReleaseNotes: unknown): string => {
   if (track !== 'stable') {
     return '修复了一些已知问题'
   }
-  return normalizeReleaseNotes(rawReleaseNotes)
+  return releaseNotesToSafeText(normalizeReleaseNotes(rawReleaseNotes))
 }
 
 type AnnualReportYearsLoadStrategy = 'cache' | 'native' | 'hybrid'
@@ -1068,6 +1194,29 @@ const resolveAppIconPath = (): string => {
   return join(__dirname, `../public/${iconName}`)
 }
 
+const resolveTrayIcon = (): Electron.NativeImage => {
+  const candidates = trayIconCandidateNames(process.platform).map(iconName => {
+    if (!process.env.VITE_DEV_SERVER_URL) return join(process.resourcesPath, iconName)
+    if (process.platform === 'darwin' && iconName === 'icon.icns') {
+      return join(__dirname, '../resources/icons/macos/icon.icns')
+    }
+    return join(__dirname, `../public/${iconName}`)
+  })
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue
+    const loaded = nativeImage.createFromPath(candidate)
+    if (loaded.isEmpty()) continue
+    const targetSize = trayIconTargetSize(process.platform)
+    const image = targetSize
+      ? loaded.resize({ width: targetSize, height: targetSize, quality: 'best' })
+      : loaded
+    if (image.isEmpty()) continue
+    if (process.platform === 'darwin') image.setTemplateImage(true)
+    return image
+  }
+  throw new Error(`没有可用的托盘图标资源（已检查 ${candidates.length} 个内置候选）`)
+}
+
 const requestMainWindowCloseConfirmation = (win: BrowserWindow): void => {
   if (isClosePromptVisible) return
   isClosePromptVisible = true
@@ -1092,8 +1241,7 @@ function createWindow(options: { autoShow?: boolean } = {}) {
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false // Allow loading local files (video playback)
+      nodeIntegration: false
     },
     frame: false,
     show: false
@@ -1127,20 +1275,6 @@ function createWindow(options: { autoShow?: boolean } = {}) {
   } else {
     win.loadFile(join(__dirname, '../dist/index.html'))
   }
-
-  // 忽略微信 CDN 域名的证书错误（部分节点证书配置不正确）
-  win.webContents.on('certificate-error', (event, url, _error, _cert, callback) => {
-    const trusted = ['.qq.com', '.qpic.cn', '.weixin.qq.com', '.wechat.com']
-    try {
-      const host = new URL(url).hostname
-      if (trusted.some(d => host.endsWith(d))) {
-        event.preventDefault()
-        callback(true)
-        return
-      }
-    } catch {}
-    callback(false)
-  })
 
   win.on('close', (e) => {
     if (isAppQuitting || win !== mainWindow) return
@@ -1240,10 +1374,10 @@ function createAgreementWindow() {
  * 创建 Splash 启动窗口
  * 使用纯 HTML 页面，不依赖 React，确保极速显示
  */
-function createSplashWindow(): BrowserWindow {
+function createSplashWindow(options: { themeId?: string; themeMode?: string } = {}): BrowserWindow {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
-  const splashThemeId = configService?.get('themeId') || 'cloud-dancer'
-  const splashThemeMode = configService?.get('theme') || 'system'
+  const splashThemeId = options.themeId || configService?.get('themeId') || 'cloud-dancer'
+  const splashThemeMode = options.themeMode || configService?.get('theme') || 'system'
   const iconPath = isDev
     ? join(__dirname, '../public/icon.ico')
     : (process.platform === 'darwin' 
@@ -1440,8 +1574,7 @@ function createVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHe
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false
+      nodeIntegration: false
     },
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -1499,8 +1632,7 @@ function createImageViewerWindow(imagePath: string, liveVideoPath?: string) {
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false // 允许加载本地文件
+      nodeIntegration: false
     },
     frame: false,
     show: false,
@@ -2015,9 +2147,25 @@ function registerIpcHandlers() {
     if (key === 'updateChannel') {
       applyAutoUpdateChannel('settings')
     }
-    void messagePushService.handleConfigChanged(key)
-    void insightService.handleConfigChanged(key)
-    void groupSummaryService.handleConfigChanged(key)
+    if (key === 'logEnabled') {
+      const enabled = value === true
+      if (enabled) applySensitiveLogPolicy(app.getPath('userData'), true)
+      await wcdbService.setLogEnabledAndWait(enabled)
+      if (!enabled) applySensitiveLogPolicy(app.getPath('userData'), false)
+    }
+    void Promise.allSettled([
+      messagePushService.handleConfigChanged(key),
+      insightService.handleConfigChanged(key),
+      groupSummaryService.handleConfigChanged(key)
+    ]).then(results => {
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          console.warn('[Background Services] 配置刷新最终边界捕获异常:', sanitizeDiagnosticText(result.reason))
+        }
+      }
+    }).catch(error => {
+      console.warn('[Background Services] 配置刷新聚合异常:', sanitizeDiagnosticText(error))
+    })
     return result
   })
 
@@ -2211,7 +2359,12 @@ function registerIpcHandlers() {
 
   ipcMain.handle('shell:openPath', async (_, path: string) => {
     const { shell } = await import('electron')
-    return shell.openPath(path)
+    const targetPath = String(path || '').trim()
+    if (!targetPath || !isAbsolute(targetPath) || targetPath.includes('\0') || !existsSync(targetPath)) {
+      return '不允许定位无效的本机路径'
+    }
+    shell.showItemInFolder(resolve(targetPath))
+    return ''
   })
 
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
@@ -2232,6 +2385,19 @@ function registerIpcHandlers() {
     return app.getVersion()
   })
 
+  ipcMain.handle('app:reportRendererPageIncident', async (_, payload: unknown) => {
+    const incident = normalizeRendererPageIncident(payload)
+    if (!incident) return { success: false }
+    const admission = rendererPageIncidentAdmission.admit(incident)
+    if (!admission.recorded) return { success: true, ...admission }
+    appRunRecoveryService.recordIncident(
+      'renderer_page_error',
+      `页面 ${incident.pageKind} 未完成渲染；类型 ${incident.errorClass}；摘要 ${incident.fingerprint}`,
+      false
+    )
+    return { success: true, ...admission }
+  })
+
   ipcMain.handle('app:getLaunchAtStartupStatus', async () => {
     return getLaunchAtStartupStatus()
   })
@@ -2247,7 +2413,10 @@ function registerIpcHandlers() {
   ipcMain.handle('log:read', async () => {
     try {
       const logPath = join(app.getPath('userData'), 'logs', 'wcdb.log')
-      const content = await readFile(logPath, 'utf8')
+      const contentBuffer = await readFile(logPath)
+      const content = contentBuffer
+        .subarray(Math.max(0, contentBuffer.length - 512 * 1024))
+        .toString('utf8')
       return { success: true, content }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -2256,9 +2425,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('log:clear', async () => {
     try {
-      const logPath = join(app.getPath('userData'), 'logs', 'wcdb.log')
-      await mkdir(dirname(logPath), { recursive: true })
-      await writeFile(logPath, '', 'utf8')
+      applySensitiveLogPolicy(app.getPath('userData'), configService.get('logEnabled') === true, 'manual_clear')
       return { success: true }
     } catch (e) {
       return { success: false, error: String(e) }
@@ -2341,7 +2508,11 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:checkForUpdates', async () => {
     if (!AUTO_UPDATE_ENABLED) {
-      return { hasUpdate: false }
+      return {
+        hasUpdate: false,
+        available: false,
+        reason: personalUpdateAvailability.reason
+      }
     }
     // 每次主动检查前重新应用一次通道配置，确保使用最新选择的更新通道。
     applyAutoUpdateChannel('settings')
@@ -2368,7 +2539,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:downloadAndInstall', async (event) => {
     if (!AUTO_UPDATE_ENABLED) {
-      throw new Error('自动更新已暂时禁用')
+      throw new Error(personalUpdateAvailability.reason)
     }
 
     // 防止重复下载（Issue #294 修复）
@@ -4494,6 +4665,342 @@ function registerIpcHandlers() {
     }
   })
 
+  ipcMain.handle('ai-assistant:status', () => aiAssistantService.getStatus())
+  ipcMain.handle('ai-assistant:dashboard', () => aiAssistantService.getDashboard())
+  ipcMain.handle('ai-assistant:getBriefingArchivePage', (_, options?: any) =>
+    aiAssistantService.getBriefingArchivePage(options))
+  ipcMain.handle('ai-assistant:getGraphReviewPage', (_, options?: any) =>
+    aiAssistantService.getGraphReviewPage(options))
+  ipcMain.handle('ai-assistant:getGraphReviewEvidencePage', (_, reviewId: string, options?: any) =>
+    aiAssistantService.getGraphReviewEvidencePage(reviewId, options))
+  ipcMain.handle('ai-assistant:getGraphWorkspace', (_, options?: any) =>
+    aiAssistantService.getGraphWorkspace(options))
+  ipcMain.handle('ai-assistant:getTrustedEntityDirectory', (_, options?: any) =>
+    aiAssistantService.getTrustedEntityDirectory(options))
+  ipcMain.handle('ai-assistant:getEntityTaskPage', (_, entityId: string, options?: any) =>
+    aiAssistantService.getEntityTaskPage(entityId, options))
+  ipcMain.handle('ai-assistant:getEntityAuditPage', (_, entityId: string, options?: any) =>
+    aiAssistantService.getEntityAuditPage(entityId, options))
+  ipcMain.handle('ai-assistant:getMemoryItemAuditPage',
+    (_, kind: string, itemId: string, options?: any) =>
+      aiAssistantService.getMemoryItemAuditPage(kind, itemId, options))
+  ipcMain.handle('ai-assistant:getEventCorrectionParticipantSnapshotPage',
+    (_, correctionId: number, phase: string, options?: any) =>
+      aiAssistantService.getEventCorrectionParticipantSnapshotPage(
+        correctionId,
+        phase,
+        options
+      ))
+  ipcMain.handle('ai-assistant:getProjectDirectory', (_, options?: any) =>
+    aiAssistantService.getProjectDirectory(options))
+  ipcMain.handle('ai-assistant:getProjectWorkspace', (_, projectId: string) =>
+    aiAssistantService.getProjectWorkspace(projectId))
+  ipcMain.handle('ai-assistant:getProjectMemberPage', (_, projectId: string, options?: any) =>
+    aiAssistantService.getProjectMemberPage(projectId, options))
+  ipcMain.handle('ai-assistant:getProjectTaskPage', (_, projectId: string, options?: any) =>
+    aiAssistantService.getProjectTaskPage(projectId, options))
+  ipcMain.handle('ai-assistant:getProjectRiskPage', (_, projectId: string, options?: any) =>
+    aiAssistantService.getProjectRiskPage(projectId, options))
+  ipcMain.handle('ai-assistant:getTaskWorkspace', (_, taskId: string) =>
+    aiAssistantService.getTaskWorkspace(taskId))
+  ipcMain.handle('ai-assistant:getTaskHistoryPage', (_, taskId: string, options?: any) =>
+    aiAssistantService.getTaskHistoryPage(taskId, options))
+  ipcMain.handle('ai-assistant:getTaskReminderPage', (_, options?: any) =>
+    aiAssistantService.getTaskReminderPage(options))
+  ipcMain.handle('ai-assistant:getTaskDependencyCandidates', (_, options?: any) =>
+    aiAssistantService.getTaskDependencyCandidates(options))
+  ipcMain.handle('ai-assistant:getActiveTaskWorkset', (_, options?: any) =>
+    aiAssistantService.getActiveTaskWorkset(options))
+  ipcMain.handle('ai-assistant:getTaskCalendarPage', (_, options?: any) =>
+    aiAssistantService.getTaskCalendarPage(options))
+  ipcMain.handle('ai-assistant:getTaskArchive', (_, options?: any) =>
+    aiAssistantService.getTaskArchive(options))
+  ipcMain.handle('ai-assistant:getTaskArchiveProjects', (_, options?: any) =>
+    aiAssistantService.getTaskArchiveProjects(options))
+  ipcMain.handle('ai-assistant:getTaskOwnershipReviews', (_, options?: any) =>
+    aiAssistantService.getTaskOwnershipReviews(options))
+  ipcMain.handle('ai-assistant:getTaskReviewDecisionPage', (_, options?: any) =>
+    aiAssistantService.getTaskReviewDecisionPage(options))
+  ipcMain.handle('ai-assistant:getTaskReviewDecisionDossier', (_, evidenceFingerprint: string, options?: any) =>
+    aiAssistantService.getTaskReviewDecisionDossier(evidenceFingerprint, options))
+  ipcMain.handle('ai-assistant:getMemoryDeletionAuditPage', (_, options?: any) =>
+    aiAssistantService.getMemoryDeletionAuditPage(options))
+  ipcMain.handle('ai-assistant:getMemoryMaintenanceAuditPage', (_, options?: any) =>
+    aiAssistantService.getMemoryMaintenanceAuditPage(options))
+  ipcMain.handle('ai-assistant:retryMemoryMaintenanceAuditDelivery', () =>
+    aiAssistantService.retryMemoryMaintenanceAuditDelivery())
+  ipcMain.handle('ai-assistant:getMemoryChangeLogPage', (_, options?: any) =>
+    aiAssistantService.getMemoryChangeLogPage(options))
+  ipcMain.handle('ai-assistant:getMemoryChangeOriginDossier', (
+    _, changeId: number, expectedRevision: string
+  ) => aiAssistantService.getMemoryChangeOriginDossier(changeId, expectedRevision))
+  ipcMain.handle('ai-assistant:getMergeHistoryPage', (_, options?: any) =>
+    aiAssistantService.getMergeHistoryPage(options))
+  ipcMain.handle('ai-assistant:sync', () => aiAssistantService.sync())
+  ipcMain.handle('ai-assistant:cancelSync', () => aiAssistantService.cancelSync())
+  ipcMain.handle('ai-assistant:auditActiveTaskLifecycles', () =>
+    aiAssistantService.auditActiveTaskLifecycles())
+  ipcMain.handle('ai-assistant:getSettings', () => aiAssistantService.getSettings())
+  ipcMain.handle('ai-assistant:setSettings', (_, input: any) => aiAssistantService.setSettings(input))
+  ipcMain.handle('ai-assistant:updateTask', (
+    _, id: string, patch: any, mutationToken?: string
+  ) => aiAssistantService.updateTask(id, patch, mutationToken))
+  ipcMain.handle('ai-assistant:reviewMineTaskOwnership', (
+    _, id: string, decision: 'mine' | 'rejected', mutationToken?: string,
+    sampleContext?: unknown, reasonCode?: unknown
+  ) => aiAssistantService.reviewMineTaskOwnership(
+    id, decision, mutationToken, sampleContext, reasonCode
+  ))
+  ipcMain.handle('ai-assistant:updateTasks', (_, updates: any[]) => aiAssistantService.updateTasks(updates))
+  ipcMain.handle('ai-assistant:previewTaskFromMemory', (_, input: any) =>
+    aiAssistantService.previewTaskFromMemory(input))
+  ipcMain.handle('ai-assistant:createTaskFromMemory', (_, input: any) => aiAssistantService.createTaskFromMemory(input))
+  ipcMain.handle('ai-assistant:updateTaskReview', (
+    _, id: string, decision: 'mine' | 'rejected', expectedRevision?: string,
+    reasonCode?: any
+  ) => aiAssistantService.updateTaskReview(id, decision, expectedRevision, reasonCode))
+  ipcMain.handle('ai-assistant:revertTaskReview', (
+    _, evidenceFingerprint: string, expectedRevision?: string
+  ) => aiAssistantService.revertTaskReview(evidenceFingerprint, expectedRevision))
+  ipcMain.handle('ai-assistant:updateReminderPreference', (_, input: any) => aiAssistantService.updateReminderPreference(input))
+  ipcMain.handle('ai-assistant:retryNotificationOutbox', () =>
+    aiAssistantService.retryNotificationOutbox())
+  ipcMain.handle('ai-assistant:updateGraphReview', (
+    _,
+    id: string,
+    decision: 'confirmed' | 'rejected',
+    options?: {
+      expectedRevision?: string
+      mergeTargetEntityId?: string
+      correctedCanonicalName?: string
+      correctedSummaryText?: string
+      correctedAliasText?: string
+      relationCorrection?: { subjectId?: string; predicate?: string; objectId?: string }
+    }
+  ) => aiAssistantService.updateGraphReview(id, decision, options))
+  ipcMain.handle('ai-assistant:previewRestoreRejectedEntity', (
+    _, id: string, expectedRevision?: string
+  ) => aiAssistantService.previewRestoreRejectedEntity(id, expectedRevision))
+  ipcMain.handle('ai-assistant:restoreRejectedEntity', (
+    _, id: string, input?: any
+  ) => aiAssistantService.restoreRejectedEntity(id, input))
+  ipcMain.handle('ai-assistant:previewRevertMerge', (
+    _, id: number, expectedRevision?: string
+  ) => aiAssistantService.previewRevertMerge(id, expectedRevision))
+  ipcMain.handle('ai-assistant:revertMerge', (
+    _, id: number, input?: any
+  ) => aiAssistantService.revertMerge(id, input))
+  ipcMain.handle('ai-assistant:updateMemoryItemStatus', (
+    _, kind: 'claim' | 'event', id: string, status: 'confirmed' | 'rejected',
+    expectedRevision?: string, reasonCode?: any
+  ) => aiAssistantService.updateMemoryItemStatus(kind, id, status, expectedRevision, reasonCode))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryItem', (
+    _, kind: 'claim' | 'event' | 'relation', id: string, reason?: any
+  ) => aiAssistantService.previewDeleteMemoryItem(kind, id, reason))
+  ipcMain.handle('ai-assistant:deleteMemoryItem', (
+    _, kind: 'claim' | 'event' | 'relation', id: string, input?: any
+  ) => aiAssistantService.deleteMemoryItem(kind, id, input))
+  ipcMain.handle('ai-assistant:ignoreMemoryItem', (
+    _, kind: 'claim' | 'event', id: string, input?: any
+  ) => aiAssistantService.ignoreMemoryItem(kind, id, input))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryResource', (_, id: string) =>
+    aiAssistantService.previewDeleteMemoryResource(id))
+  ipcMain.handle('ai-assistant:getResourceArchive', (_, options?: any) =>
+    aiAssistantService.getResourceArchive(options))
+  ipcMain.handle('ai-assistant:retryResourceEnrichment', (_, input?: any) =>
+    aiAssistantService.retryResourceEnrichment(input))
+  ipcMain.handle('ai-assistant:previewResourceEnrichmentBatch', (_, input?: any) =>
+    aiAssistantService.previewResourceEnrichmentBatch(input))
+  ipcMain.handle('ai-assistant:retryResourceEnrichmentBatch', (_, input?: any) =>
+    aiAssistantService.retryResourceEnrichmentBatch(input))
+  ipcMain.handle('ai-assistant:cancelResourceEnrichmentBatch', () =>
+    aiAssistantService.cancelResourceEnrichmentBatch())
+  ipcMain.handle('ai-assistant:getResourceDossier', (_, id: string, expectedRevision: string) =>
+    aiAssistantService.getResourceDossier(id, expectedRevision))
+  ipcMain.handle('ai-assistant:getCurrentResourceDossier', (_, id: string) =>
+    aiAssistantService.getCurrentResourceDossier(id))
+  ipcMain.handle('ai-assistant:getStructuredMemoryDossier',
+    (_, kind: string, id: string, expectedSearchRevision: string) =>
+      aiAssistantService.getStructuredMemoryDossier(kind, id, expectedSearchRevision))
+  ipcMain.handle('ai-assistant:getCurrentStructuredMemoryDossier',
+    (_, kind: string, id: string) =>
+      aiAssistantService.getCurrentStructuredMemoryDossier(kind, id))
+  ipcMain.handle('ai-assistant:getEventDossierParticipantPage',
+    (_, eventId: string, options?: any) =>
+      aiAssistantService.getEventDossierParticipantPage(eventId, options))
+  ipcMain.handle('ai-assistant:getRelationDossierAuditPage',
+    (_, relationId: string, kind: string, options?: any) =>
+      aiAssistantService.getRelationDossierAuditPage(relationId, kind, options))
+  ipcMain.handle('ai-assistant:getResourceTrashArchive', (_, options?: any) =>
+    aiAssistantService.getResourceTrashArchive(options))
+  ipcMain.handle('ai-assistant:deleteMemoryResource', (_, id: string, input?: any) =>
+    aiAssistantService.deleteMemoryResource(id, input))
+  ipcMain.handle('ai-assistant:restoreMemoryResource', (
+    _,
+    id: string,
+    expectedMutationToken: string
+  ) => aiAssistantService.restoreMemoryResource(id, expectedMutationToken))
+  ipcMain.handle('ai-assistant:previewPurgeMemoryResourceTrash', (_, id: string) =>
+    aiAssistantService.previewPurgeMemoryResourceTrash(id))
+  ipcMain.handle('ai-assistant:purgeMemoryResourceTrash', (_, id: string, input?: any) =>
+    aiAssistantService.purgeMemoryResourceTrash(id, input))
+  ipcMain.handle('ai-assistant:previewRelationCorrectionFromMemoryDocument', (
+    _, id: string, input?: any
+  ) => aiAssistantService.previewRelationCorrectionFromMemoryDocument(id, input))
+  ipcMain.handle('ai-assistant:reviewMemoryDocument', (
+    _, kind: 'relation' | 'claim' | 'event', id: string,
+    decision: 'confirmed' | 'rejected' | 'corrected', input?: any
+  ) => aiAssistantService.reviewMemoryDocument(kind, id, decision, input))
+  ipcMain.handle('ai-assistant:previewForgetEntity', (_, id: string) => aiAssistantService.previewForgetEntity(id))
+  ipcMain.handle('ai-assistant:forgetEntity', (_, id: string, input?: any) =>
+    aiAssistantService.forgetEntity(id, input))
+  ipcMain.handle('ai-assistant:searchMemory', (_, query: string, options?: any) =>
+    aiAssistantService.searchMemoryWithTrustedScope(query, options))
+  ipcMain.handle('ai-assistant:searchMemoryPage', (_, query: string, options?: any, pagination?: any) =>
+    aiAssistantService.searchMemoryPage(query, options, pagination))
+  ipcMain.handle('ai-assistant:updateMemorySearchFeedback', (_, input: any) =>
+    aiAssistantService.updateMemorySearchFeedback(input))
+  ipcMain.handle('ai-assistant:getMemorySearchFeedbackArchive', (_, options?: any) =>
+    aiAssistantService.getMemorySearchFeedbackArchive(options))
+  ipcMain.handle('ai-assistant:deleteMemorySearchFeedback', (_, input?: any) =>
+    aiAssistantService.deleteMemorySearchFeedback(input))
+  ipcMain.handle('ai-assistant:getMemoryEvidencePage', (_, documentType: string, sourceId: string, pagination?: any) =>
+    aiAssistantService.getMemoryEvidencePage(documentType, sourceId, pagination))
+  ipcMain.handle('ai-assistant:indexMemoryVectors', () => aiAssistantService.ensureVectorIndex())
+  ipcMain.handle('ai-assistant:findGraphPath', (
+    _, fromId: string, toId: string, maxDepth?: number, entityDirectoryRevision?: string
+  ) => aiAssistantService.findGraphPath(fromId, toId, maxDepth, null, entityDirectoryRevision))
+  ipcMain.handle('ai-assistant:findCommonNeighbors', (
+    _, fromId: string, toId: string, entityDirectoryRevision?: string, pagination?: any
+  ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision, pagination))
+  ipcMain.handle('ai-assistant:getMemoryDiagnostics', async (_, options?: any) => {
+    const persistentRetries = getLegacyBackgroundRetries()
+    return {
+    ...(await aiAssistantService.getMemoryDiagnostics({
+      forceIntegrityCheck: options?.forceIntegrityCheck === true
+    })),
+    legacyBackgroundServices: {
+      version: 'legacy-background-services-v2',
+      insight: { ...insightService.getRuntimeHealth(), retry: persistentRetries.insight },
+      groupSummary: { ...groupSummaryService.getRuntimeHealth(), retry: persistentRetries.groupSummary },
+      messagePush: { ...messagePushService.getRuntimeHealth(), retry: persistentRetries.messagePush }
+    }
+  }})
+  ipcMain.handle('ai-assistant:repairMemorySearchIndexes', () =>
+    aiAssistantService.repairMemorySearchIndexes())
+  ipcMain.handle('ai-assistant:getIngestionRunPage', (_, options?: any) =>
+    aiAssistantService.getIngestionRunPage(options))
+  ipcMain.handle('ai-assistant:getIngestionRunDossier', (_, runId: string, options?: any) =>
+    aiAssistantService.getIngestionRunDossier(runId, options))
+  ipcMain.handle('ai-assistant:getIngestionRecoveryPage', (_, options?: any) =>
+    aiAssistantService.getIngestionRecoveryPage(options))
+  ipcMain.handle('ai-assistant:retryPreparedIngestion', () =>
+    aiAssistantService.retryPreparedIngestion())
+  ipcMain.handle('ai-assistant:getCrossStoreRecoveryPage', (_, options?: any) =>
+    aiAssistantService.getCrossStoreRecoveryPage(options))
+  ipcMain.handle('ai-assistant:getCrossStoreRecoveryArchivePage', (_, options?: any) =>
+    aiAssistantService.getCrossStoreRecoveryArchivePage(options))
+  ipcMain.handle('ai-assistant:retryCrossStoreRecovery', () =>
+    aiAssistantService.retryCrossStoreRecovery())
+  ipcMain.handle('ai-assistant:previewAbandonCrossStoreRecovery', (
+    _, kind: 'task' | 'source', commitId: string
+  ) => aiAssistantService.previewAbandonCrossStoreRecovery(kind, commitId))
+  ipcMain.handle('ai-assistant:abandonCrossStoreRecovery', (
+    _, kind: 'task' | 'source', commitId: string, input?: any
+  ) => aiAssistantService.abandonCrossStoreRecovery(kind, commitId, input))
+  ipcMain.handle('ai-assistant:createMemoryBackup', () => aiAssistantService.createMemoryBackup())
+  ipcMain.handle('ai-assistant:inspectMemoryBackup', (_, path: string) => aiAssistantService.inspectMemoryBackup(path))
+  ipcMain.handle('ai-assistant:restoreMemoryBackup', (_, path: string, input?: any) =>
+    aiAssistantService.restoreMemoryBackup(path, input))
+  ipcMain.handle('ai-assistant:previewDeleteMemoryBackup', (_, path: string) =>
+    aiAssistantService.previewDeleteMemoryBackup(path))
+  ipcMain.handle('ai-assistant:deleteMemoryBackup', (_, path: string, input?: any) =>
+    aiAssistantService.deleteMemoryBackup(path, input))
+  ipcMain.handle('ai-assistant:previewDiscardImportedBackupStagingConflict', (_, id: string) =>
+    aiAssistantService.previewDiscardImportedBackupStagingConflict(id))
+  ipcMain.handle('ai-assistant:discardImportedBackupStagingConflict', (_, id: string, input?: any) =>
+    aiAssistantService.discardImportedBackupStagingConflict(id, input))
+  ipcMain.handle('ai-assistant:previewResolveMemoryBackupTrashConflict', (
+    _, id: string, action: 'restore' | 'discard'
+  ) => aiAssistantService.previewResolveMemoryBackupTrashConflict(id, action))
+  ipcMain.handle('ai-assistant:resolveMemoryBackupTrashConflict', (
+    _, id: string, action: 'restore' | 'discard', input?: any
+  ) => aiAssistantService.resolveMemoryBackupTrashConflict(id, action, input))
+  ipcMain.handle('ai-assistant:exportMemoryBundle', (_, path: string, passphrase: string) =>
+    aiAssistantService.exportMemoryBundle(path, passphrase))
+  ipcMain.handle('ai-assistant:inspectMemoryBundle', (_, path: string, passphrase?: string) =>
+    aiAssistantService.inspectMemoryBundle(path, passphrase))
+  ipcMain.handle('ai-assistant:importMemoryBundle', (_, path: string, passphrase?: string, input?: any) =>
+    aiAssistantService.importMemoryBundle(path, passphrase, input))
+  ipcMain.handle('ai-assistant:correctClaim', (
+    _, id: string, input: any, expectedRevision?: string
+  ) => aiAssistantService.correctClaim(id, input, expectedRevision))
+  ipcMain.handle('ai-assistant:correctEvent', (
+    _, id: string, input: any, expectedRevision?: string
+  ) => aiAssistantService.correctEvent(id, input, expectedRevision))
+  ipcMain.handle('ai-assistant:getMemoryClaim', (_, id: string) => aiAssistantService.getMemoryClaim(id))
+  ipcMain.handle('ai-assistant:getMemoryEvent', (_, id: string) => aiAssistantService.getMemoryEvent(id))
+  ipcMain.handle('ai-assistant:getEventCorrectionParticipantPage',
+    (_, eventId: string, options?: any) =>
+      aiAssistantService.getEventCorrectionParticipantPage(eventId, options))
+  ipcMain.handle('ai-assistant:getMemoryRelation', (_, id: string) =>
+    aiAssistantService.getMemoryRelation(id))
+  ipcMain.handle('ai-assistant:previewRelationCorrection', (_, id: string, input?: any) =>
+    aiAssistantService.previewRelationCorrection(id, input))
+  ipcMain.handle('ai-assistant:correctRelation', (_, id: string, input?: any) =>
+    aiAssistantService.correctRelation(id, input))
+  ipcMain.handle('ai-assistant:rejectRelation', (_, id: string, expectedRevision: string) =>
+    aiAssistantService.rejectRelation(id, expectedRevision))
+  ipcMain.handle('ai-assistant:restoreRelation', (_, id: string, expectedRevision: string) =>
+    aiAssistantService.restoreRelation(id, expectedRevision))
+  ipcMain.handle('ai-assistant:askMemory', (_, question: string, conversationId?: string, options?: any) => aiAssistantService.askMemory(question, conversationId, options))
+  ipcMain.handle('ai-assistant:getAssistantConversations', (_, options?: any) => aiAssistantService.getAssistantConversations(options))
+  ipcMain.handle('ai-assistant:getAssistantModelRequestAudits', (_, options?: any) =>
+    aiAssistantService.getAssistantModelRequestAudits(options))
+  ipcMain.handle('ai-assistant:getAssistantAnswerReviews', (_, options?: any) =>
+    aiAssistantService.getAssistantAnswerReviews(options))
+  ipcMain.handle('ai-assistant:reviewAssistantAnswer', (
+    _,
+    messageId: string,
+    action: 'acknowledged' | 'reopened',
+    expectedMutationToken: string
+  ) => aiAssistantService.reviewAssistantAnswer(messageId, action, expectedMutationToken))
+  ipcMain.handle('ai-assistant:getAssistantAnswerReviewDecisions', (
+    _,
+    messageId: string,
+    options?: any
+  ) => aiAssistantService.getAssistantAnswerReviewDecisions(messageId, options))
+  ipcMain.handle('ai-assistant:getAssistantConversation', (_, id: string, options?: any) =>
+    aiAssistantService.getAssistantConversation(id, options))
+  ipcMain.handle('ai-assistant:previewDeleteAssistantConversation', (_, id: string) =>
+    aiAssistantService.previewDeleteAssistantConversation(id))
+  ipcMain.handle('ai-assistant:deleteAssistantConversation', (_, id: string, input?: any) =>
+    aiAssistantService.deleteAssistantConversation(id, input))
+  ipcMain.handle('ai-assistant:getConversationSources', (_, options?: any) =>
+    aiAssistantService.getConversationSources(options))
+  ipcMain.handle('ai-assistant:getDataSources', () => aiAssistantService.getDataSources())
+  ipcMain.handle('ai-assistant:getEventTimeline', (_, options?: any) => aiAssistantService.getEventTimeline(options))
+  ipcMain.handle('ai-assistant:getEntityRelationPage', (_, options?: any) =>
+    aiAssistantService.getEntityRelationPage(options))
+  ipcMain.handle('ai-assistant:getEntityIdentityAnchorPage', (_, options?: any) =>
+    aiAssistantService.getEntityIdentityAnchorPage(options))
+  ipcMain.handle('ai-assistant:getEntityEvidencePage', (_, options?: any) =>
+    aiAssistantService.getEntityEvidencePage(options))
+  ipcMain.handle('ai-assistant:getClaimArchive', (_, options?: any) => aiAssistantService.getClaimArchive(options))
+  ipcMain.handle('ai-assistant:getCalendarAuthorization', () => aiAssistantService.getCalendarAuthorization())
+  ipcMain.handle('ai-assistant:requestCalendarAccess', () => aiAssistantService.requestCalendarAccess())
+  ipcMain.handle('ai-assistant:listCalendars', () => aiAssistantService.listCalendars())
+  ipcMain.handle('ai-assistant:getMailAuthorization', () => aiAssistantService.getMailAuthorization())
+  ipcMain.handle('ai-assistant:requestMailAccess', () => aiAssistantService.requestMailAccess())
+  ipcMain.handle('ai-assistant:listMailboxes', () => aiAssistantService.listMailboxes())
+  ipcMain.handle('ai-assistant:setDataSourceEnabled', (
+    _, sourceId: string, enabled: boolean, expectedMutationToken: string
+  ) => aiAssistantService.setDataSourceEnabled(sourceId, enabled, expectedMutationToken))
+  ipcMain.handle('ai-assistant:configureDataSource', (_, sourceId: string, input: any) =>
+    aiAssistantService.configureDataSource(sourceId, input))
+  ipcMain.handle('ai-assistant:setConversationSource', (_, input: any) => aiAssistantService.setConversationSource(input))
+  ipcMain.handle('ai-assistant:setConversationSourcesBulk', (_, input: any) => aiAssistantService.setConversationSourcesBulk(input))
+
   // 自动下载原图
   ipcMain.handle('image:startAutoDownload', async (_, whitelist?: string[]) => {
     return await imageDownloadService.startAutoDownload(whitelist || [])
@@ -4550,29 +5057,36 @@ function checkForUpdatesOnStartup() {
 }
 
 app.whenReady().then(async () => {
-  // 先初始化配置，以便在启动早期判定是否需要静默启动
+  installRendererPermissionPolicy()
+
+  // 先显示本地 Splash，再读取加密配置和初始化较重的本机服务，
+  // 确保冷启动始终有可见进度，不会在第一个窗口出现前长时间无响应。
+  createSplashWindow({ themeId: 'cloud-dancer', themeMode: 'system' })
+  if (splashWindow) {
+    await new Promise<void>((resolve) => {
+      if (splashWindow!.webContents.isLoading()) {
+        splashWindow!.webContents.once('did-finish-load', () => resolve())
+      } else {
+        resolve()
+      }
+    })
+  }
+  updateSplashProgress(5, '正在读取本机加密配置...')
+
+  // Splash 已可见后再初始化本机加密配置。
   configService = new ConfigService()
-  applyAutoUpdateChannel('startup')
+  const localCacheEncryptionKey = configService.initializeLocalCacheEncryption()
+  chatService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
+  snsService.initializeRuntimeCacheEncryption(localCacheEncryptionKey)
+  if (AUTO_UPDATE_ENABLED) applyAutoUpdateChannel('startup')
   syncLaunchAtStartupPreference()
   const onboardingDone = configService.get('onboardingDone') === true
   const startInBackground = onboardingDone && isSilentStartupEnabled()
   shouldShowMain = onboardingDone
 
-  if (!startInBackground) {
-    // 非静默模式下显示 Splash，提供启动反馈（主题/版本号通过 URL 参数传入）
-    createSplashWindow()
-
-    // 等待 Splash 页面加载完成，确保后续 executeJavaScript 推送的进度可靠送达
-    if (splashWindow) {
-      await new Promise<void>((resolve) => {
-        if (splashWindow!.webContents.isLoading()) {
-          splashWindow!.webContents.once('did-finish-load', () => resolve())
-        } else {
-          resolve()
-        }
-      })
-    }
-  }
+  // 静默启动仍先显示 Splash；配置成功读取后立即隐藏，
+  // 后续保持原有托盘启动语义。
+  if (startInBackground) closeSplash()
 
   const withTimeout = <T>(task: () => Promise<T>, timeoutMs: number): Promise<{ timedOut: boolean; value?: T; error?: string }> => {
     return new Promise((resolve) => {
@@ -4607,8 +5121,16 @@ app.whenReady().then(async () => {
   const fallbackResources = join(process.cwd(), 'resources')
   const resourcesPath = existsSync(candidateResources) ? candidateResources : fallbackResources
   const userDataPath = app.getPath('userData')
+  applySensitiveLogPolicy(userDataPath, configService.get('logEnabled') === true)
+  await analyticsService.migrateLegacyCachePrivacy(
+    join(app.getPath('documents'), 'WeFlow', 'analytics_cache.json')
+  )
+  insightRecordService.migratePrivacy()
+  insightProfileService.migratePrivacy()
+  exportRecordService.migratePrivacy()
+  groupSummaryService.migrateRecordPrivacy()
   wcdbService.setPaths(resourcesPath, userDataPath)
-  wcdbService.setLogEnabled(configService.get('logEnabled') === true)
+  await wcdbService.setLogEnabledAndWait(configService.get('logEnabled') === true)
   registerIpcHandlers()
   chatService.addDbMonitorListener((type, json) => {
     messagePushService.handleDbMonitorChange(type, json)
@@ -4620,10 +5142,8 @@ app.whenReady().then(async () => {
   ensureWeChatRequestHeaderInterceptor()
   mainWindow = createWindow({ autoShow: false })
 
-  const resolvedTrayIcon = resolveAppIconPath()
-
   try {
-    tray = new Tray(resolvedTrayIcon)
+    tray = new Tray(resolveTrayIcon())
     tray.setToolTip('WeFlow')
     const contextMenu = Menu.buildFromTemplate([
       {
@@ -4712,6 +5232,7 @@ app.whenReady().then(async () => {
 
   // 加载完成，收尾
   updateSplashProgress(100, '启动完成')
+  appRunRecoveryService.markReady()
   closeSplash()
 
   if (!onboardingDone) {
@@ -4722,10 +5243,6 @@ app.whenReady().then(async () => {
     mainWindow?.show()
   }
 
-  // 依赖数据库的后台服务在窗口显示后再启动，避免与启动预热争抢数据库 worker
-  messagePushService.start()
-  insightService.start()
-  groupSummaryService.start()
   if (configService.get('autoDownloadHighRes')) {
     const whitelistArr = configService.get('autoDownloadWhitelist') || []
     const whitelistStr = (Array.isArray(whitelistArr) && whitelistArr.length > 0)
@@ -4738,6 +5255,56 @@ app.whenReady().then(async () => {
   checkForUpdatesOnStartup()
 
   await httpService.autoStart()
+  await aiAssistantService.initialize()
+  // Retry checkpoints for these services live in the assistant's encrypted
+  // state, so start them only after that authority has been loaded.
+  messagePushService.start()
+  insightService.start()
+  groupSummaryService.start()
+  const updateAiAssistantPowerState = () => {
+    try {
+      let memoryTotalBytes = 0
+      let memoryAvailableBytes = 0
+      const memory = process.getSystemMemoryInfo()
+      memoryTotalBytes = Math.max(0, Number(memory.total || 0)) * 1024
+      memoryAvailableBytes = Math.min(memoryTotalBytes, Math.max(0,
+        Number(memory.free || 0) + Number(memory.purgeable || 0)
+          + Number(memory.fileBacked || 0)) * 1024)
+      aiAssistantService.updatePowerState({
+        onBattery: powerMonitor.isOnBatteryPower(),
+        thermalState: process.platform === 'darwin'
+          ? powerMonitor.getCurrentThermalState()
+          : 'unknown',
+        memoryTotalBytes,
+        memoryAvailableBytes
+      })
+    } catch (error) {
+      console.warn('[AI Assistant] 系统资源预算测量失败:', error)
+      try {
+        aiAssistantService.reportPowerStateMeasurementFailure(error)
+      } catch (reportError) {
+        console.warn('[AI Assistant] 无法更新系统资源预算诊断:', reportError)
+      }
+    }
+  }
+  updateAiAssistantPowerState()
+  const aiAssistantResourceMonitor = setInterval(updateAiAssistantPowerState, 30_000)
+  aiAssistantResourceMonitor.unref()
+  powerMonitor.on('on-ac', updateAiAssistantPowerState)
+  powerMonitor.on('on-battery', updateAiAssistantPowerState)
+  powerMonitor.on('thermal-state-change', updateAiAssistantPowerState)
+  powerMonitor.on('suspend', () => {
+    try {
+      aiAssistantService.handleSystemSuspend()
+    } catch (error) {
+      console.warn('[AI Assistant] 休眠 checkpoint 最终保护边界捕获异常:', error)
+    }
+  })
+  powerMonitor.on('resume', () => {
+    void aiAssistantService.handleSystemResume().catch(error =>
+      console.warn('[AI Assistant] 唤醒补齐检查失败:', error))
+  })
+  appRunRecoveryService.markServicesReady()
 
   app.on('activate', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4758,6 +5325,16 @@ const shutdownAppServices = async (): Promise<void> => {
   if (shutdownPromise) return shutdownPromise
   shutdownPromise = (async () => {
     isAppQuitting = true
+    const runShutdownStep = async (name: string, action: () => unknown | Promise<unknown>) => {
+      appRunRecoveryService.startShutdownStep(name)
+      try {
+        const result = await action()
+        const detail = result && typeof result === 'object' ? JSON.stringify(result) : undefined
+        appRunRecoveryService.finishShutdownStep(name, 'completed', detail)
+      } catch (error) {
+        appRunRecoveryService.finishShutdownStep(name, 'failed', error)
+      }
+    }
     // 销毁 tray 图标
     if (tray) { try { tray.destroy() } catch {} tray = null }
     // 通知窗使用 hide 而非 close，退出时主动销毁，避免残留窗口阻塞进程退出。
@@ -4765,27 +5342,39 @@ const shutdownAppServices = async (): Promise<void> => {
     messagePushService.stop()
     insightService.stop()
     groupSummaryService.stop()
-    // 兜底：5秒后强制退出，防止某个异步任务卡住导致进程残留
+    // 兜底：10秒后强制退出，防止某个异步任务卡住导致进程残留。
+    // 正常路径会等待服务和 WCDB worker 完整清理后立即退出。
     const forceExitTimer = setTimeout(() => {
       console.warn('[App] Force exit after timeout')
+      appRunRecoveryService.finishShutdown('forced_timeout')
       app.exit(0)
-    }, 5000)
+    }, 10_000)
     forceExitTimer.unref()
-    try { await cloudControlService.stop() } catch {}
+    await runShutdownStep('ai-assistant-stop', () => aiAssistantService.prepareForAppShutdown())
+    await runShutdownStep('cloud-control-stop', () => cloudControlService.prepareForAppShutdown())
     // 停止自动下载服务
-    try { await imageDownloadService.stopAutoDownload() } catch {}
-    // 停止 chatService（内部会关闭 cursor 与 DB），避免退出阶段仍触发监控回调
-    try { chatService.close() } catch {}
+    await runShutdownStep('image-download-stop', () => imageDownloadService.stopAutoDownload())
+    // 清理 JS 状态；native 端只由下面的 wcdbService.shutdown 顺序关闭一次，
+    // 避免重复的 fire-and-forget cursor/DB close 请求堵塞 worker 退出队列。
+    await runShutdownStep('chat-js-state-stop', () => chatService.prepareForAppShutdown())
     // 停止 HTTP 服务器，释放 TCP 端口占用，避免进程无法退出
-    try { await httpService.stop() } catch {}
+    await runShutdownStep('http-server-stop', () => httpService.stop())
     // 终止 wcdb Worker 线程，避免线程阻止进程退出
-    try { await wcdbService.shutdown() } catch {}
+    await runShutdownStep('wcdb-worker-stop', () => wcdbService.shutdown())
+    appRunRecoveryService.finishShutdown()
+    clearTimeout(forceExitTimer)
   })()
   return shutdownPromise
 }
 
-app.on('before-quit', () => {
-  void shutdownAppServices()
+app.on('before-quit', (event) => {
+  if (appExitCommitted) return
+  event.preventDefault()
+  appRunRecoveryService.beginShutdown('normal')
+  void shutdownAppServices().finally(() => {
+    appExitCommitted = true
+    app.exit(0)
+  })
 })
 
 app.on('window-all-closed', () => {
