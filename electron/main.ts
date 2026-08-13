@@ -15,6 +15,7 @@ import { chatService } from './services/chatService'
 import { imageDecryptService } from './services/imageDecryptService'
 import { imagePreloadService } from './services/imagePreloadService'
 import { analyticsService } from './services/analyticsService'
+import { exportRecordService } from './services/exportRecordService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { annualReportService } from './services/annualReportService'
 import { exportService, ExportOptions, ExportProgress } from './services/export'
@@ -49,6 +50,8 @@ import { isAllowedRendererPermission } from './services/rendererPermissionPolicy
 import { releaseNotesToSafeText } from '../src/utils/releaseNotesPresentation'
 import { normalizeRendererPageIncident } from '../shared/rendererPageIncident'
 import { RendererPageIncidentAdmission } from './services/rendererPageIncidentAdmission'
+import { sanitizeDiagnosticText } from './services/diagnosticRedaction'
+import { getLegacyBackgroundRetries } from './services/legacyBackgroundRetryController.ts'
 
 // 桌面产品名可独立定制，但始终沿用原 WeFlow 数据目录，避免升级后
 // 配置、解密信息和 AI 助理游标被 Electron 视为一套全新的应用数据。
@@ -2150,9 +2153,19 @@ function registerIpcHandlers() {
       await wcdbService.setLogEnabledAndWait(enabled)
       if (!enabled) applySensitiveLogPolicy(app.getPath('userData'), false)
     }
-    void messagePushService.handleConfigChanged(key)
-    void insightService.handleConfigChanged(key)
-    void groupSummaryService.handleConfigChanged(key)
+    void Promise.allSettled([
+      messagePushService.handleConfigChanged(key),
+      insightService.handleConfigChanged(key),
+      groupSummaryService.handleConfigChanged(key)
+    ]).then(results => {
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          console.warn('[Background Services] 配置刷新最终边界捕获异常:', sanitizeDiagnosticText(result.reason))
+        }
+      }
+    }).catch(error => {
+      console.warn('[Background Services] 配置刷新聚合异常:', sanitizeDiagnosticText(error))
+    })
     return result
   })
 
@@ -4860,10 +4873,19 @@ function registerIpcHandlers() {
   ipcMain.handle('ai-assistant:findCommonNeighbors', (
     _, fromId: string, toId: string, entityDirectoryRevision?: string, pagination?: any
   ) => aiAssistantService.findCommonNeighbors(fromId, toId, entityDirectoryRevision, pagination))
-  ipcMain.handle('ai-assistant:getMemoryDiagnostics', (_, options?: any) =>
-    aiAssistantService.getMemoryDiagnostics({
+  ipcMain.handle('ai-assistant:getMemoryDiagnostics', async (_, options?: any) => {
+    const persistentRetries = getLegacyBackgroundRetries()
+    return {
+    ...(await aiAssistantService.getMemoryDiagnostics({
       forceIntegrityCheck: options?.forceIntegrityCheck === true
-    }))
+    })),
+    legacyBackgroundServices: {
+      version: 'legacy-background-services-v2',
+      insight: { ...insightService.getRuntimeHealth(), retry: persistentRetries.insight },
+      groupSummary: { ...groupSummaryService.getRuntimeHealth(), retry: persistentRetries.groupSummary },
+      messagePush: { ...messagePushService.getRuntimeHealth(), retry: persistentRetries.messagePush }
+    }
+  }})
   ipcMain.handle('ai-assistant:repairMemorySearchIndexes', () =>
     aiAssistantService.repairMemorySearchIndexes())
   ipcMain.handle('ai-assistant:getIngestionRunPage', (_, options?: any) =>
@@ -5100,7 +5122,12 @@ app.whenReady().then(async () => {
   const resourcesPath = existsSync(candidateResources) ? candidateResources : fallbackResources
   const userDataPath = app.getPath('userData')
   applySensitiveLogPolicy(userDataPath, configService.get('logEnabled') === true)
+  await analyticsService.migrateLegacyCachePrivacy(
+    join(app.getPath('documents'), 'WeFlow', 'analytics_cache.json')
+  )
   insightRecordService.migratePrivacy()
+  insightProfileService.migratePrivacy()
+  exportRecordService.migratePrivacy()
   groupSummaryService.migrateRecordPrivacy()
   wcdbService.setPaths(resourcesPath, userDataPath)
   await wcdbService.setLogEnabledAndWait(configService.get('logEnabled') === true)
@@ -5216,10 +5243,6 @@ app.whenReady().then(async () => {
     mainWindow?.show()
   }
 
-  // 依赖数据库的后台服务在窗口显示后再启动，避免与启动预热争抢数据库 worker
-  messagePushService.start()
-  insightService.start()
-  groupSummaryService.start()
   if (configService.get('autoDownloadHighRes')) {
     const whitelistArr = configService.get('autoDownloadWhitelist') || []
     const whitelistStr = (Array.isArray(whitelistArr) && whitelistArr.length > 0)
@@ -5233,24 +5256,36 @@ app.whenReady().then(async () => {
 
   await httpService.autoStart()
   await aiAssistantService.initialize()
+  // Retry checkpoints for these services live in the assistant's encrypted
+  // state, so start them only after that authority has been loaded.
+  messagePushService.start()
+  insightService.start()
+  groupSummaryService.start()
   const updateAiAssistantPowerState = () => {
-    let memoryTotalBytes = 0
-    let memoryAvailableBytes = 0
     try {
+      let memoryTotalBytes = 0
+      let memoryAvailableBytes = 0
       const memory = process.getSystemMemoryInfo()
       memoryTotalBytes = Math.max(0, Number(memory.total || 0)) * 1024
       memoryAvailableBytes = Math.min(memoryTotalBytes, Math.max(0,
         Number(memory.free || 0) + Number(memory.purgeable || 0)
           + Number(memory.fileBacked || 0)) * 1024)
-    } catch {}
-    aiAssistantService.updatePowerState({
-      onBattery: powerMonitor.isOnBatteryPower(),
-      thermalState: process.platform === 'darwin'
-        ? powerMonitor.getCurrentThermalState()
-        : 'unknown',
-      memoryTotalBytes,
-      memoryAvailableBytes
-    })
+      aiAssistantService.updatePowerState({
+        onBattery: powerMonitor.isOnBatteryPower(),
+        thermalState: process.platform === 'darwin'
+          ? powerMonitor.getCurrentThermalState()
+          : 'unknown',
+        memoryTotalBytes,
+        memoryAvailableBytes
+      })
+    } catch (error) {
+      console.warn('[AI Assistant] 系统资源预算测量失败:', error)
+      try {
+        aiAssistantService.reportPowerStateMeasurementFailure(error)
+      } catch (reportError) {
+        console.warn('[AI Assistant] 无法更新系统资源预算诊断:', reportError)
+      }
+    }
   }
   updateAiAssistantPowerState()
   const aiAssistantResourceMonitor = setInterval(updateAiAssistantPowerState, 30_000)
@@ -5258,7 +5293,13 @@ app.whenReady().then(async () => {
   powerMonitor.on('on-ac', updateAiAssistantPowerState)
   powerMonitor.on('on-battery', updateAiAssistantPowerState)
   powerMonitor.on('thermal-state-change', updateAiAssistantPowerState)
-  powerMonitor.on('suspend', () => aiAssistantService.handleSystemSuspend())
+  powerMonitor.on('suspend', () => {
+    try {
+      aiAssistantService.handleSystemSuspend()
+    } catch (error) {
+      console.warn('[AI Assistant] 休眠 checkpoint 最终保护边界捕获异常:', error)
+    }
+  })
   powerMonitor.on('resume', () => {
     void aiAssistantService.handleSystemResume().catch(error =>
       console.warn('[AI Assistant] 唤醒补齐检查失败:', error))

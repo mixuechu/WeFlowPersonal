@@ -8,6 +8,7 @@ import {
   writeEncryptedSensitiveCache,
   type SensitiveCachePrivacy
 } from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
 
 let electronApp: any = null
 try { electronApp = require('electron').app } catch {}
@@ -24,6 +25,7 @@ export class ContactCacheService {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private persistenceRetry = emptyCachePersistenceRetry()
   private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
   private encryptionKey: Buffer | string
 
@@ -87,7 +89,8 @@ export class ContactCacheService {
     return {
       ...this.privacy,
       ...inspectSensitiveCacheFile(this.cacheFilePath),
-      entries: Object.keys(this.cache).length
+      entries: Object.keys(this.cache).length,
+      persistenceRetry: { ...this.persistenceRetry }
     }
   }
 
@@ -118,12 +121,12 @@ export class ContactCacheService {
   }
 
   /** 防抖异步落盘：启动阶段批量补全联系人时避免连续同步写盘阻塞主线程 */
-  private persist() {
+  private persist(delayMs = 1000) {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persistNow()
-    }, 1000)
+    }, Math.max(0, delayMs))
     this.persistTimer.unref?.()
   }
 
@@ -139,13 +142,16 @@ export class ContactCacheService {
         ...writeEncryptedSensitiveCache(this.cacheFilePath, this.cache, this.encryptionKey),
         migratedPlaintext: this.privacy.migratedPlaintext
       }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('ContactCacheService: 保存缓存失败', error)
+      this.persistDirty = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistDirty) {
         this.persistDirty = false
-        void this.persistNow()
+        this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
     }
   }

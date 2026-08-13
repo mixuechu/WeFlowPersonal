@@ -35,7 +35,7 @@ test('trusted project tasks and risks stay paginated inside SQLCipher', () => {
   const riskPage = service.slice(riskPageStart, nextMethod)
   assert.match(workspace, /getDerivedProjectIdentityById\(id\)/)
   assert.match(workspace, /listProjectTaskPage\(projectNames, \{[\s\S]*?limit: 40[\s\S]*?explicitProjectOnly/)
-  assert.match(workspace, /listProjectRiskPage\(projectNames, shanghaiDate\(\), \{/)
+  assert.match(workspace, /const today = shanghaiDate\(\)[\s\S]*listProjectRiskPage\(projectNames, today, \{/)
   assert.match(workspace, /sqlcipher_paginated_40/)
   assert.match(workspace, /sqlcipher_union_paginated_40/)
   assert.match(workspace, /sqlcipher_explicit_project_paginated_40/)

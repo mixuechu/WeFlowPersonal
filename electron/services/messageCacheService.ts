@@ -1,7 +1,17 @@
 import { join, dirname } from 'path'
-import { existsSync, mkdirSync, readFileSync, rmSync, promises as fsPromises } from 'fs'
-import { app } from 'electron'
-import { ConfigService } from './config'
+import { existsSync, mkdirSync, rmSync } from 'fs'
+import { ConfigService } from './config.ts'
+import {
+  emptySensitiveCachePrivacy,
+  inspectSensitiveCacheFile,
+  loadEncryptedSensitiveCache,
+  writeEncryptedSensitiveCache,
+  type SensitiveCachePrivacy
+} from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
+
+let electronApp: any = null
+try { electronApp = require('electron').app } catch {}
 
 export interface SessionMessageCacheEntry {
   version?: number
@@ -20,14 +30,19 @@ export class MessageCacheService {
   private persistTimer: ReturnType<typeof setTimeout> | null = null
   private persistInFlight = false
   private persistQueued = false
+  private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
+  private persistenceRetry = emptyCachePersistenceRetry()
+  private encryptionKey: Buffer | string
 
-  constructor(cacheBasePath?: string) {
+  constructor(cacheBasePath?: string, encryptionKey: Buffer | string = '') {
+    this.encryptionKey = encryptionKey
     const basePath = cacheBasePath && cacheBasePath.trim().length > 0
       ? cacheBasePath
       : ConfigService.getInstance().getCacheBasePath()
     this.cacheFilePath = join(basePath, 'session-messages.json')
     this.ensureCacheDir()
     this.loadCache()
+    electronApp?.once?.('will-quit', () => this.flushSync())
   }
 
   private ensureCacheDir() {
@@ -38,10 +53,13 @@ export class MessageCacheService {
   }
 
   private loadCache() {
-    if (!existsSync(this.cacheFilePath)) return
     try {
-      const raw = readFileSync(this.cacheFilePath, 'utf8')
-      const parsed = JSON.parse(raw)
+      const loaded = loadEncryptedSensitiveCache<Record<string, SessionMessageCacheEntry>>(
+        this.cacheFilePath,
+        this.encryptionKey
+      )
+      const parsed = loaded.value
+      this.privacy = loaded.privacy
       if (parsed && typeof parsed === 'object') {
         this.cache = Object.fromEntries(
           Object.entries(parsed as Record<string, SessionMessageCacheEntry>)
@@ -52,6 +70,11 @@ export class MessageCacheService {
     } catch (error) {
       console.error('MessageCacheService: 载入缓存失败', error)
       this.cache = {}
+      this.privacy = {
+        ...emptySensitiveCachePrivacy(),
+        writable: false,
+        error: String(error instanceof Error ? error.message : error)
+      }
     }
   }
 
@@ -86,13 +109,14 @@ export class MessageCacheService {
     this.schedulePersist()
   }
 
-  private schedulePersist(): void {
+  private schedulePersist(delayMs = 250): void {
     this.persistQueued = true
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persist()
-    }, 250)
+    }, Math.max(0, delayMs))
+    this.persistTimer.unref?.()
   }
 
   private async persist() {
@@ -104,14 +128,61 @@ export class MessageCacheService {
     this.persistQueued = false
     this.persistInFlight = true
     try {
-      await fsPromises.writeFile(this.cacheFilePath, JSON.stringify(this.cache), 'utf8')
+      if (!this.privacy.writable) return
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.cache, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('MessageCacheService: 保存缓存失败', error)
+      this.persistQueued = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistQueued) {
-        this.schedulePersist()
+        this.schedulePersist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
+    }
+  }
+
+  initializeEncryption(encryptionKey: Buffer | string): void {
+    if (!encryptionKey || (this.encryptionKey && this.privacy.writable)) return
+    const pending = this.cache
+    this.encryptionKey = encryptionKey
+    this.cache = {}
+    this.privacy = emptySensitiveCachePrivacy()
+    this.loadCache()
+    this.cache = { ...this.cache, ...pending }
+    this.pruneSessionEntries()
+    if (Object.keys(this.cache).length > 0 && this.privacy.writable) this.schedulePersist(0)
+  }
+
+  getPrivacyStatus(): unknown {
+    return {
+      ...this.privacy,
+      ...inspectSensitiveCacheFile(this.cacheFilePath),
+      entries: Object.keys(this.cache).length,
+      messages: Object.values(this.cache).reduce((total, entry) =>
+        total + (Array.isArray(entry.messages) ? entry.messages.length : 0), 0),
+      persistenceRetry: { ...this.persistenceRetry }
+    }
+  }
+
+  private flushSync(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer)
+    this.persistTimer = null
+    if (!this.persistQueued || !this.privacy.writable) return
+    try {
+      this.privacy = {
+        ...writeEncryptedSensitiveCache(this.cacheFilePath, this.cache, this.encryptionKey),
+        migratedPlaintext: this.privacy.migratedPlaintext
+      }
+      this.persistQueued = false
+      this.persistenceRetry = emptyCachePersistenceRetry()
+    } catch (error) {
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
+      console.error('MessageCacheService: 退出前保存缓存失败', error)
     }
   }
 

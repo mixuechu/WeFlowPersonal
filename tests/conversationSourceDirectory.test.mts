@@ -23,7 +23,8 @@ test('conversation source directory covers ten thousand sessions with stable ser
     type: 'group',
     offset: 5_000,
     limit: 100,
-    expectedRevision: first.revision
+    expectedRevision: first.revision,
+    directoryScopeToken: first.directoryScopeToken
   })
   assert.equal(last.items.length, 3)
   assert.equal(last.hasMore, false)
@@ -89,7 +90,8 @@ test('pagination revision and item mutation token reject stale directory state',
   }], {
     offset: 2,
     limit: 2,
-    expectedRevision: first.revision
+    expectedRevision: first.revision,
+    directoryScopeToken: first.directoryScopeToken
   })
   assert.equal(changed.stale, true)
   assert.deepEqual(changed.items, [])
@@ -101,6 +103,38 @@ test('pagination revision and item mutation token reject stale directory state',
     ),
     /目录已经变化/
   )
+})
+
+test('pagination token binds query, type and enabled filters even at one revision', () => {
+  const first = buildConversationSourceDirectory(sessions.slice(0, 20), [], {
+    query: '项目',
+    type: 'group',
+    enabled: 'all',
+    limit: 2
+  })
+  const changedScope = buildConversationSourceDirectory(sessions.slice(0, 20), [], {
+    query: '联系人',
+    type: 'private',
+    enabled: 'enabled',
+    offset: 2,
+    limit: 2,
+    expectedRevision: first.revision,
+    directoryScopeToken: first.directoryScopeToken
+  })
+  assert.equal(changedScope.revision, first.revision)
+  assert.equal(changedScope.stale, true)
+  assert.equal(changedScope.directoryScopeStale, true)
+  assert.deepEqual(changedScope.items, [])
+
+  const missingToken = buildConversationSourceDirectory(sessions.slice(0, 20), [], {
+    query: '项目',
+    type: 'group',
+    offset: 2,
+    limit: 2,
+    expectedRevision: first.revision
+  })
+  assert.equal(missingToken.directoryScopeStale, true)
+  assert.deepEqual(missingToken.items, [])
 })
 
 test('conversation scope selection binds one durable id and rejects renamed or policy-changed state', () => {

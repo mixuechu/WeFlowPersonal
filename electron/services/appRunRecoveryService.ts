@@ -149,6 +149,12 @@ export class AppRunRecoveryService {
   private readonly ledgerPath: string
   private ledger: AppRunLedger = emptyLedger()
   private heartbeatTimer: NodeJS.Timeout | null = null
+  private ledgerPersistence = {
+    failureCount: 0,
+    lastErrorAt: '',
+    lastError: '',
+    lastSuccessAt: ''
+  }
 
   constructor(userDataPath: string) {
     this.ledgerPath = join(userDataPath, 'diagnostics', 'app-run-recovery.json')
@@ -180,8 +186,8 @@ export class AppRunRecoveryService {
       incidents: []
     }
     this.ledger.current = current
-    this.trimAndWrite()
-    this.heartbeatTimer = setInterval(() => this.heartbeat(), 30_000)
+    this.persistLedgerSafely(null, now)
+    this.heartbeatTimer = setInterval(() => this.heartbeatSafely(), 30_000)
     this.heartbeatTimer.unref()
     return current
   }
@@ -192,7 +198,7 @@ export class AppRunRecoveryService {
       stage: 'ready',
       readyAt: session.readyAt || now.toISOString(),
       lastHeartbeatAt: now.toISOString()
-    }))
+    }), now)
   }
 
   markServicesReady(now = new Date()): void {
@@ -201,7 +207,7 @@ export class AppRunRecoveryService {
       stage: 'services_ready',
       servicesReadyAt: session.servicesReadyAt || now.toISOString(),
       lastHeartbeatAt: now.toISOString()
-    }))
+    }), now)
   }
 
   beginShutdown(reason: 'normal' | 'update_restart' = 'normal', now = new Date()): void {
@@ -212,7 +218,7 @@ export class AppRunRecoveryService {
       shutdownStartedAt: now.toISOString(),
       lastHeartbeatAt: now.toISOString(),
       exitReason: reason
-    }))
+    }), now)
   }
 
   startShutdownStep(name: string, now = new Date()): void {
@@ -225,7 +231,7 @@ export class AppRunRecoveryService {
         ...(session.shutdownSteps || []),
         { name: normalizedName, status: 'running', startedAt: now.toISOString() } as AppRunShutdownStep
       ].slice(-20)
-    }))
+    }), now)
   }
 
   finishShutdownStep(
@@ -248,7 +254,7 @@ export class AppRunRecoveryService {
         ...(detail == null ? {} : { detail: sanitizeDiagnosticText(detail).slice(0, 300) })
       }
       return { ...session, lastHeartbeatAt: now.toISOString(), shutdownSteps: steps }
-    })
+    }, now)
   }
 
   finishShutdown(
@@ -257,6 +263,7 @@ export class AppRunRecoveryService {
   ): void {
     this.stopHeartbeat()
     if (!this.ledger.current) return
+    const previousLedger = this.ledger
     const completed: AppRunSession = {
       ...this.ledger.current,
       stage: 'ended',
@@ -265,9 +272,12 @@ export class AppRunRecoveryService {
       exitReason: reason || this.ledger.current.exitReason || 'normal',
       cleanExit: !['forced_timeout', 'uncaught_exception'].includes(reason || this.ledger.current.exitReason || 'normal')
     }
-    this.ledger.history.unshift(completed)
-    this.ledger.current = null
-    this.trimAndWrite()
+    this.ledger = {
+      ...previousLedger,
+      current: null,
+      history: [completed, ...previousLedger.history]
+    }
+    this.persistLedgerSafely(previousLedger, now)
   }
 
   recordIncident(
@@ -289,7 +299,7 @@ export class AppRunRecoveryService {
           fatal
         }
       ].slice(-20)
-    }))
+    }), now)
   }
 
   getDiagnostics(): {
@@ -298,6 +308,7 @@ export class AppRunRecoveryService {
     history: AppRunSession[]
     recoveredFromInterruption: boolean
     recoveryMessage: string
+    ledgerPersistence: typeof this.ledgerPersistence
   } {
     const history = this.ledger.history.slice(0, 12)
     const previous = history[0] || null
@@ -311,6 +322,7 @@ export class AppRunRecoveryService {
       previous,
       history,
       recoveredFromInterruption,
+      ledgerPersistence: { ...this.ledgerPersistence },
       recoveryMessage: !previous
         ? '尚无历史运行记录'
         : previous.cleanExit || previousExpectedExit
@@ -330,13 +342,49 @@ export class AppRunRecoveryService {
   }
 
   private heartbeat(now = new Date()): void {
-    this.updateCurrent(session => ({ ...session, lastHeartbeatAt: now.toISOString() }))
+    this.updateCurrent(session => ({ ...session, lastHeartbeatAt: now.toISOString() }), now)
   }
 
-  private updateCurrent(update: (session: AppRunSession) => AppRunSession): void {
-    if (!this.ledger.current) return
-    this.ledger.current = update(this.ledger.current)
-    this.trimAndWrite()
+  private heartbeatSafely(now = new Date()): void {
+    this.heartbeat(now)
+  }
+
+  private updateCurrent(
+    update: (session: AppRunSession) => AppRunSession,
+    now = new Date()
+  ): boolean {
+    if (!this.ledger.current) return false
+    const previousLedger = this.ledger
+    this.ledger = {
+      ...previousLedger,
+      current: update(previousLedger.current),
+      history: [...previousLedger.history]
+    }
+    return this.persistLedgerSafely(previousLedger, now)
+  }
+
+  private persistLedgerSafely(previousLedger: AppRunLedger | null, now = new Date()): boolean {
+    try {
+      this.trimAndWrite()
+      this.ledgerPersistence = {
+        failureCount: 0,
+        lastErrorAt: '',
+        lastError: '',
+        lastSuccessAt: now.toISOString()
+      }
+      return true
+    } catch (error) {
+      if (previousLedger) this.ledger = previousLedger
+      this.ledgerPersistence = {
+        ...this.ledgerPersistence,
+        failureCount: Math.min(1_000_000,
+          Math.max(0, Number(this.ledgerPersistence.failureCount || 0)) + 1),
+        lastErrorAt: now.toISOString(),
+        lastError: sanitizeDiagnosticText(error)
+      }
+      console.warn('[App Recovery] 运行恢复账本暂未持久化:', this.ledgerPersistence.lastError)
+      return false
+    }
   }
 
   private readLedger(): AppRunLedger {

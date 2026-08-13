@@ -63,6 +63,8 @@ test('scheduler cools down before querying any enrichment queue and exposes reco
   assert.match(continuation, /planResourceEnrichmentDiscoveryFailure/)
   assert.match(continuation, /persistCrossStoreMutationState/)
   assert.match(continuation, /EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY/)
+  assert.match(continuation, /commitPersistedRuntimeTransition/)
+  assert.doesNotMatch(continuation, /resourceEnrichmentRetry = planResourceEnrichmentDiscoveryFailure/)
 
   const page = readFileSync(
     new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8'

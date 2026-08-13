@@ -120,10 +120,21 @@ export const appRunShutdownDetailLabel = (name: unknown, detail: unknown): strin
   if (String(name || '') === 'ai-assistant-stop') {
     const waited = Math.max(0, Math.floor(Number(parsed.waited) || 0))
     const pending = Array.isArray(parsed.pending) ? parsed.pending.length : 0
+    const cleanupFailures = new Set(
+      (Array.isArray(parsed.cleanupFailures) ? parsed.cleanupFailures : [])
+        .map(String)
+        .filter(value => value === 'embedding_dispose' || value === 'personal_memory_close')
+    )
     if (parsed.timedOut === true) {
       return `等待后台任务达到上限，仍有 ${pending} 项交由进程退出回收`
     }
-    return `后台任务已落定${waited ? `（等待 ${waited} 项）` : ''}，记忆数据库${parsed.databaseClosed === false ? '由进程退出回收' : '已安全关闭'}`
+    const embedding = cleanupFailures.has('embedding_dispose') || parsed.embeddingDisposed === false
+      ? '本地语义运行时由进程退出回收'
+      : '本地语义运行时已释放'
+    const memory = cleanupFailures.has('personal_memory_close') || parsed.databaseClosed === false
+      ? '个人记忆数据库由进程退出回收'
+      : '个人记忆数据库已安全关闭'
+    return `后台任务已落定${waited ? `（等待 ${waited} 项）` : ''}，${embedding}，${memory}`
   }
 
   return '已记录结构化诊断详情'
@@ -139,7 +150,14 @@ export const appRunShutdownDetailNeedsAttention = (
     return parsed.boundedFallback === true ||
       String(parsed.shutdownStrategy || '') === 'forced_terminate'
   }
-  if (String(name || '') === 'ai-assistant-stop') return parsed.timedOut === true
+  if (String(name || '') === 'ai-assistant-stop') {
+    const cleanupFailures = Array.isArray(parsed.cleanupFailures)
+      ? parsed.cleanupFailures.map(String)
+      : []
+    return parsed.timedOut === true || parsed.databaseClosed === false ||
+      parsed.embeddingDisposed === false || cleanupFailures.some(value =>
+        value === 'embedding_dispose' || value === 'personal_memory_close')
+  }
   return false
 }
 

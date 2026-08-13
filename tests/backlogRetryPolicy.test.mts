@@ -1,13 +1,34 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   EMPTY_BACKLOG_RETRY_STATE,
+  classifyBacklogCatchupResult,
   didBacklogProgress,
   isBacklogRetryDue,
   planBacklogRetry
 } from '../electron/services/backlogRetryPolicy.ts'
 
 const now = new Date('2026-07-31T02:00:00.000Z')
+
+test('backlog scheduler outcome distinguishes complete, partial, paused and failed runs', () => {
+  assert.equal(classifyBacklogCatchupResult({ success: true }), 'backlog_catchup_completed')
+  assert.equal(classifyBacklogCatchupResult({ success: true, partial: true }), 'backlog_catchup_partial')
+  assert.equal(classifyBacklogCatchupResult({ success: false, partial: true }), 'backlog_catchup_partial')
+  assert.equal(classifyBacklogCatchupResult({ cancelled: true }), 'backlog_catchup_paused')
+  assert.equal(classifyBacklogCatchupResult({ success: false }), 'backlog_catchup_failed')
+  assert.equal(classifyBacklogCatchupResult(null, true), 'backlog_catchup_failed')
+})
+
+test('scheduler publishes the classified backlog result instead of an ambiguous attempt', () => {
+  const service = readFileSync(new URL('../electron/services/aiAssistantService.ts', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8')
+  assert.match(service, /return classifyBacklogCatchupResult\(await this\.sync\('backlog'\)\)/)
+  assert.doesNotMatch(service, /return 'backlog_catchup_attempted'/)
+  for (const outcome of ['completed', 'partial', 'paused', 'failed']) {
+    assert.match(page, new RegExp(`backlog_catchup_${outcome}`))
+  }
+})
 
 test('backlog progress includes advancing and completing a persisted session', () => {
   assert.equal(didBacklogProgress({ a: 9_980 }, { a: 19_960 }), true)

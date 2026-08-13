@@ -1,6 +1,7 @@
 import { Worker } from 'worker_threads'
 import { join } from 'path'
 import { existsSync } from 'fs'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
 
 /**
  * Worker 消息接口
@@ -36,8 +37,52 @@ export class WcdbService {
   private queueRejectedCount = 0
   private queueLastRejectedAt = ''
   private queueLastRejectedType = ''
+  private monitorDeliveryFailures = 0
+  private monitorDeliveryLastErrorAt = ''
+  private monitorDeliveryLastError = ''
+  private monitorDeliveryLastSuccessAt = ''
+  private unexpectedWorkerExitCount = 0
+  private workerLastExitAt = ''
+  private workerLastExitCode: number | null = null
+  private workerLastExitRejectedRequests = 0
 
   constructor() {}
+
+  private deliverMonitorEvent(payload: unknown): void {
+    if (!this.monitorListener) return
+    try {
+      const event = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+      this.monitorListener(
+        String(event.type || 'update').slice(0, 80),
+        String(event.json || '')
+      )
+      this.monitorDeliveryLastSuccessAt = new Date().toISOString()
+      this.monitorDeliveryFailures = 0
+      this.monitorDeliveryLastErrorAt = ''
+      this.monitorDeliveryLastError = ''
+    } catch (monitorError) {
+      this.monitorDeliveryFailures = Math.min(1_000_000, this.monitorDeliveryFailures + 1)
+      this.monitorDeliveryLastErrorAt = new Date().toISOString()
+      this.monitorDeliveryLastError = sanitizeDiagnosticText(monitorError).slice(0, 500)
+      console.warn('[WCDB Monitor] 上层事件回调异常:', this.monitorDeliveryLastError)
+    }
+  }
+
+  private handleWorkerExit(code: number): void {
+    const unexpected = !this.shuttingDown
+    if (unexpected) {
+      const rejected = this.pending.size
+      this.unexpectedWorkerExitCount = Math.min(1_000_000, this.unexpectedWorkerExitCount + 1)
+      this.workerLastExitAt = new Date().toISOString()
+      this.workerLastExitCode = Number.isFinite(code) ? Math.trunc(code) : -1
+      this.workerLastExitRejectedRequests = rejected
+      const errorMessage = `WCDB Worker 意外退出（退出码 ${this.workerLastExitCode}），${rejected} 个请求已安全结束，可直接重试`
+      console.warn(errorMessage)
+      for (const pending of this.pending.values()) pending.reject(new Error(errorMessage))
+      this.pending.clear()
+    }
+    this.worker = null
+  }
 
   /**
    * 初始化 Worker 线程
@@ -62,9 +107,7 @@ export class WcdbService {
         const { id, result, error, type, payload } = msg
 
         if (type === 'monitor') {
-          if (this.monitorListener) {
-            this.monitorListener(payload.type, payload.json)
-          }
+          this.deliverMonitorEvent(payload)
           return
         }
 
@@ -78,8 +121,8 @@ export class WcdbService {
 
       this.worker.on('error', (err) => {
         // Worker 发生错误，需要 reject 所有 pending promises
-        console.error('WCDB Worker 错误:', err)
-        const errorMsg = err instanceof Error ? err.message : String(err)
+        const errorMsg = sanitizeDiagnosticText(err)
+        console.error('WCDB Worker 错误:', errorMsg)
         for (const [id, p] of this.pending) {
           p.reject(new Error(`Worker 错误: ${errorMsg}`))
         }
@@ -87,16 +130,7 @@ export class WcdbService {
       })
 
       this.worker.on('exit', (code) => {
-        // Worker 退出，需要 reject 所有 pending promises
-        if (code !== 0 && !this.shuttingDown) {
-          console.error('WCDB Worker 异常退出，退出码:', code)
-          const errorMsg = `Worker 异常退出 (退出码: ${code})。可能是数据服务加载失败，请检查是否安装了 Visual C++ Redistributable。`
-          for (const [id, p] of this.pending) {
-            p.reject(new Error(errorMsg))
-          }
-          this.pending.clear()
-        }
-        this.worker = null
+        this.handleWorkerExit(code)
       })
 
       // 如果已有路径配置，重新发送给新的 worker
@@ -140,18 +174,48 @@ export class WcdbService {
   getQueueHealth(): {
     pending: number
     capacity: number
+    currentlyBackpressured: boolean
     highWatermark: number
     rejectedCount: number
     lastRejectedAt: string
     lastRejectedType: string
+    monitorDelivery: {
+      failures: number
+      lastErrorAt: string
+      lastError: string
+      lastSuccessAt: string
+    }
+    workerLifecycle: {
+      unexpectedExitCount: number
+      lastExitAt: string
+      lastExitCode: number | null
+      lastExitRejectedRequests: number
+      awaitingRestart: boolean
+      workerActive: boolean
+    }
   } {
     return {
       pending: this.pending.size,
       capacity: WCDB_MAX_PENDING_REQUESTS,
+      currentlyBackpressured: this.pending.size >= WCDB_MAX_PENDING_REQUESTS,
       highWatermark: this.queueHighWatermark,
       rejectedCount: this.queueRejectedCount,
       lastRejectedAt: this.queueLastRejectedAt,
-      lastRejectedType: this.queueLastRejectedType
+      lastRejectedType: this.queueLastRejectedType,
+      monitorDelivery: {
+        failures: this.monitorDeliveryFailures,
+        lastErrorAt: this.monitorDeliveryLastErrorAt,
+        lastError: this.monitorDeliveryLastError,
+        lastSuccessAt: this.monitorDeliveryLastSuccessAt
+      },
+      workerLifecycle: {
+        unexpectedExitCount: this.unexpectedWorkerExitCount,
+        lastExitAt: this.workerLastExitAt,
+        lastExitCode: this.workerLastExitCode,
+        lastExitRejectedRequests: this.workerLastExitRejectedRequests,
+        awaitingRestart: this.unexpectedWorkerExitCount > 0 && this.worker === null && !this.shuttingDown,
+        workerActive: this.worker !== null && !this.shuttingDown
+      }
     }
   }
 

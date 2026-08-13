@@ -16,6 +16,19 @@ import {
   type GroupSummaryTriggerType
 } from './groupSummaryRecordService'
 import { readBoundedIncomingMessage } from './boundedNodeResponse.ts'
+import { runScheduledTaskSafely } from './scheduledTaskBoundary.ts'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
+import {
+  emptyLegacyBackgroundHealth,
+  recordLegacyBackgroundFailure,
+  recordLegacyBackgroundSuccess,
+  type LegacyBackgroundHealth
+} from './legacyBackgroundHealth.ts'
+import {
+  getLegacyBackgroundRetryDelayMs,
+  recordPersistentLegacyBackgroundFailure,
+  recordPersistentLegacyBackgroundSuccess
+} from './legacyBackgroundRetryController.ts'
 
 const API_TIMEOUT_MS = 90_000
 const API_TEMPERATURE = 0.4
@@ -263,6 +276,7 @@ class GroupSummaryService {
   private processing = false
   private pendingAutoRun = false
   private dbConnected = false
+  private runtimeHealth = emptyLegacyBackgroundHealth()
 
   constructor() {
     this.config = ConfigService.getInstance()
@@ -271,7 +285,50 @@ class GroupSummaryService {
   start(): void {
     if (this.started) return
     this.started = true
-    void this.refreshConfiguration('startup')
+    void this.runBackgroundTask(
+      () => this.refreshConfiguration('startup'),
+      '启动配置刷新',
+      undefined,
+      false
+    ).then(() => this.runBackgroundTask(
+      () => this.queueDueAutoSummaries(),
+      '启动自动总结扫描'
+    ))
+  }
+
+  getRuntimeHealth(): LegacyBackgroundHealth & { started: boolean; processing: boolean } {
+    return { ...this.runtimeHealth, started: this.started, processing: this.processing }
+  }
+
+  private runBackgroundTask(
+    task: () => void | Promise<void>,
+    label: string,
+    onFinally?: () => void,
+    persistentRetry = true
+  ): Promise<void> {
+    if (persistentRetry && getLegacyBackgroundRetryDelayMs('groupSummary') > 0) {
+      try { onFinally?.() } catch (error) {
+        this.runtimeHealth = recordLegacyBackgroundFailure(this.runtimeHealth, error)
+      }
+      return Promise.resolve()
+    }
+    return runScheduledTaskSafely({
+      task,
+      onSuccess: () => {
+        if (persistentRetry) recordPersistentLegacyBackgroundSuccess('groupSummary')
+        this.runtimeHealth = recordLegacyBackgroundSuccess(this.runtimeHealth)
+      },
+      onError: error => {
+        this.runtimeHealth = recordLegacyBackgroundFailure(this.runtimeHealth, error)
+        console.warn(`[GroupSummaryService] ${label}异常:`, sanitizeDiagnosticText(error))
+        if (persistentRetry) {
+          try { recordPersistentLegacyBackgroundFailure('groupSummary', error) } catch (persistError) {
+            console.warn('[GroupSummaryService] 退避状态保存异常:', sanitizeDiagnosticText(persistError))
+          }
+        }
+      },
+      onFinally
+    })
   }
 
   stop(): void {
@@ -290,7 +347,16 @@ class GroupSummaryService {
       this.dbConnected = false
       groupSummaryRecordService.clearRuntimeCache()
     }
-    await this.refreshConfiguration(`config:${normalizedKey}`)
+    await this.runBackgroundTask(
+      () => this.refreshConfiguration(`config:${normalizedKey}`),
+      `配置刷新（${normalizedKey}）`,
+      undefined,
+      false
+    )
+    await this.runBackgroundTask(
+      () => this.queueDueAutoSummaries(),
+      `配置变更后的自动总结扫描（${normalizedKey}）`
+    )
   }
 
   handleConfigCleared(): void {
@@ -394,7 +460,6 @@ class GroupSummaryService {
     if (!this.started) return
     this.clearTimers()
     if (!this.isEnabled()) return
-    await this.queueDueAutoSummaries()
     this.scheduleNextAutoRun()
   }
 
@@ -417,12 +482,17 @@ class GroupSummaryService {
     const intervalSeconds = intervalHours * 60 * 60
     const elapsed = Math.max(0, now - dayStart)
     const nextBoundary = dayStart + (Math.floor(elapsed / intervalSeconds) + 1) * intervalSeconds
-    const delayMs = Math.max(1_000, (nextBoundary - now) * 1000 + 1_000)
+    const boundaryDelayMs = Math.max(1_000, (nextBoundary - now) * 1000 + 1_000)
+    const retryDelayMs = getLegacyBackgroundRetryDelayMs('groupSummary')
+    const delayMs = retryDelayMs > 0 ? Math.min(boundaryDelayMs, retryDelayMs) : boundaryDelayMs
 
-    this.scanTimer = setTimeout(async () => {
+    this.scanTimer = setTimeout(() => {
       this.scanTimer = null
-      await this.queueDueAutoSummaries()
-      this.scheduleNextAutoRun()
+      void this.runBackgroundTask(
+        () => this.queueDueAutoSummaries(),
+        '自动总结定时器',
+        () => this.scheduleNextAutoRun()
+      )
     }, delayMs)
   }
 
@@ -533,7 +603,7 @@ class GroupSummaryService {
       if (!apiBaseUrl || !apiKey) return
       const scopeSessionIds = this.getAutoScopeSessionIds()
       if (scopeSessionIds.length === 0) return
-      if (!await this.ensureConnected()) return
+      if (!await this.ensureConnected()) throw new Error('群聊自动总结暂时无法连接微信数据库')
 
       const contacts = (await chatService.enrichSessionsContactInfo(scopeSessionIds).catch(() => null))?.contacts || {}
 
@@ -554,7 +624,8 @@ class GroupSummaryService {
         }
       }
     } catch (error) {
-      console.warn('[GroupSummaryService] 自动总结失败:', error)
+      console.warn('[GroupSummaryService] 自动总结失败:', sanitizeDiagnosticText(error))
+      throw error
     }
   }
 

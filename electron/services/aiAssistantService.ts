@@ -12,6 +12,11 @@ import { basename, dirname, join, resolve } from 'path'
 import JSZip from 'jszip'
 import { ConfigService } from './config'
 import { httpService } from './httpService'
+import { insightRecordService } from './insightRecordService'
+import { insightProfileService } from './insightProfileService'
+import { groupSummaryRecordService } from './groupSummaryRecordService'
+import { analyticsService } from './analyticsService'
+import { exportRecordService } from './exportRecordService'
 import { wcdbService } from './wcdbService'
 import { collectRuntimeMemoryDiagnostics } from './runtimeMemoryDiagnostics'
 import { showSystemNotification } from './systemNotificationService'
@@ -80,6 +85,7 @@ import {
 } from './memoryBackupTrashPolicy'
 import { ModelRequestCoordinator, RequestCoordinator } from './modelRequestCoordinator'
 import { writePrivateFileAtomically } from './privateAtomicFile'
+import { commitPersistedRuntimeTransition } from './persistedRuntimeTransition.ts'
 import { parseModelJsonObject } from './modelJsonParser'
 import { extractScannedPdfText, getPdfOcrStatus } from './pdfOcrService'
 import { exportService } from './export'
@@ -213,6 +219,52 @@ import {
   type TrustedEntityDirectoryOptions
 } from './trustedEntityDirectory.ts'
 import { buildTaskArchiveScopeToken } from './taskArchiveScope.ts'
+import {
+  buildActiveTaskWorksetScopeToken,
+  buildTaskCalendarScopeToken
+} from './taskDirectoryScope.ts'
+import { computeProjectDirectoryScopeToken } from './projectDirectoryScope.ts'
+import {
+  buildClaimPageScopeToken,
+  buildEntityEvidencePageScopeToken,
+  buildEventPageScopeToken,
+  buildIdentityAnchorPageScopeToken,
+  buildRelationPageScopeToken
+} from './structuredMemoryPageScope.ts'
+import {
+  buildDeletionAuditScopeToken,
+  buildCrossStoreRecoveryArchiveScopeToken,
+  buildCrossStoreRecoveryScopeToken,
+  buildIngestionRecoveryScopeToken,
+  buildIngestionRunScopeToken,
+  buildMaintenanceAuditScopeToken,
+  buildMemoryGrowthScopeToken,
+  buildMergeHistoryScopeToken,
+  buildMemoryItemAuditScopeToken,
+  buildEventCorrectionSnapshotScopeToken,
+  buildEntityAuditScopeToken,
+  buildEventDossierParticipantScopeToken,
+  buildRelationDossierAuditScopeToken,
+  buildTaskHistoryScopeToken,
+  buildEntityTaskScopeToken,
+  buildProjectMemberScopeToken,
+  buildProjectTaskScopeToken,
+  buildProjectRiskScopeToken,
+  buildTaskReminderScopeToken,
+  buildAssistantConversationScopeToken,
+  buildAssistantModelAuditScopeToken,
+  buildAssistantAnswerReviewScopeToken,
+  buildAssistantAnswerDecisionScopeToken,
+  buildEventCorrectionParticipantScopeToken,
+  buildAssistantConversationMessageScopeToken,
+  buildIngestionRunDossierScopeToken,
+  buildTaskFeedbackDossierScopeToken,
+  buildMemorySearchFeedbackArchiveScopeToken,
+  buildResourceArchiveScopeToken,
+  buildResourceTrashScopeToken,
+  buildTaskFeedbackScopeToken,
+  buildTaskOwnershipScopeToken
+} from './auditArchiveScope.ts'
 import { resolveOwnerEntityBinding } from './ownerEntityBindingPolicy.ts'
 import {
   assertEntityForgetConfirmation,
@@ -351,6 +403,7 @@ import {
   mergeRelationEvidenceHotset
 } from './graphEvidenceHotset'
 import {
+  classifyBacklogCatchupResult,
   EMPTY_BACKLOG_RETRY_STATE,
   isBacklogRetryDue,
   planBacklogRetry,
@@ -457,6 +510,23 @@ import {
   resourceEnrichmentDiscoveryCoolingDown,
   type ResourceEnrichmentSchedulerRetry
 } from './resourceEnrichmentSchedulerPolicy'
+import {
+  EMPTY_SCHEDULER_RUNTIME_RETRY,
+  clearSchedulerRuntimeFailure,
+  normalizeSchedulerRuntimeRetry,
+  planSchedulerRuntimeFailure,
+  schedulerRuntimeCoolingDown,
+  type SchedulerRuntimeRetry
+} from './schedulerRuntimePolicy'
+import {
+  configureLegacyBackgroundRetries,
+  getLegacyBackgroundRetries
+} from './legacyBackgroundRetryController.ts'
+import {
+  emptyLegacyBackgroundRetries,
+  normalizeLegacyBackgroundRetries,
+  type LegacyBackgroundRetries
+} from './legacyBackgroundRetryPolicy.ts'
 import {
   assertEntityRelationMutationRevision,
   entityRelationMutationRevision
@@ -678,6 +748,9 @@ type AssistantState = {
     pendingSessionBacklogCount: number
     backlogRetry: BacklogRetryState
     resourceEnrichmentRetry: ResourceEnrichmentSchedulerRetry
+    schedulerRuntimeRetry: SchedulerRuntimeRetry
+    preparedRecoveryRetry: SchedulerRuntimeRetry
+    legacyBackgroundRetries: LegacyBackgroundRetries
   }
   graph: {
     entities: GraphEntity[]
@@ -789,7 +862,10 @@ const EMPTY_STATE: AssistantState = {
     pendingSessionRetryCount: 0,
     pendingSessionBacklogCount: 0,
     backlogRetry: { ...EMPTY_BACKLOG_RETRY_STATE },
-    resourceEnrichmentRetry: { ...EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY }
+    resourceEnrichmentRetry: { ...EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY },
+    schedulerRuntimeRetry: { ...EMPTY_SCHEDULER_RUNTIME_RETRY },
+    preparedRecoveryRetry: { ...EMPTY_SCHEDULER_RUNTIME_RETRY },
+    legacyBackgroundRetries: emptyLegacyBackgroundRetries()
   },
   graph: { entities: [], relations: [], lastSqlCommitId: null, reviewQueue: [], identityScan: {
     lastFullScanAt: null, lastRunAt: null, lastMode: null, lastCandidateCount: 0,
@@ -1129,6 +1205,8 @@ export class AiAssistantService {
   private vectorIndexPowerPolicy: VectorIndexPowerPolicy & {
     lastChangedAt: string
     lastMeasuredAt: string
+    lastMeasurementErrorAt: string
+    lastMeasurementError: string
   } = {
     onBattery: false,
     thermalState: 'unknown',
@@ -1140,7 +1218,9 @@ export class AiAssistantService {
     deferred: false,
     reason: '',
     lastChangedAt: '',
-    lastMeasuredAt: ''
+    lastMeasuredAt: '',
+    lastMeasurementErrorAt: '',
+    lastMeasurementError: ''
   }
   private vectorQueryHealth: VectorQueryHealth = {
     fallbackCount: 0,
@@ -1448,6 +1528,19 @@ export class AiAssistantService {
     )
     this.migrateLegacyData()
     this.loadState()
+    configureLegacyBackgroundRetries(
+      this.state.cursor.legacyBackgroundRetries,
+      next => {
+        const previous = this.state.cursor.legacyBackgroundRetries
+        this.state.cursor.legacyBackgroundRetries = normalizeLegacyBackgroundRetries(next)
+        try {
+          this.persistCrossStoreMutationState()
+        } catch (error) {
+          this.state.cursor.legacyBackgroundRetries = previous
+          throw error
+        }
+      }
+    )
     const sourceMutationRecovery = this.recoverPreparedConversationSourceMutationCommits()
     const taskMutationRecovery = this.recoverPreparedTaskMutationCommits()
     this.restoreActiveTaskEvidenceHotsets()
@@ -1490,7 +1583,11 @@ export class AiAssistantService {
     }
     this.startupNotificationTimer = setTimeout(() => {
       this.startupNotificationTimer = null
-      if (!this.disposed) void this.flushNotificationOutbox(new Date())
+      if (!this.disposed) {
+        void this.flushNotificationOutbox(new Date()).catch(error => {
+          console.warn('[AI Assistant] 启动通知队列投递暂未完成:', sanitizeDiagnosticText(error))
+        })
+      }
     }, 8_000)
     this.startupNotificationTimer.unref()
     if (this.config.get('aiAssistantEnabled')) this.scheduleVectorIndexContinuation(12_000)
@@ -1505,6 +1602,8 @@ export class AiAssistantService {
     localApiRequestsAborted: number
     timedOut: boolean
     pending: string[]
+    embeddingDisposed: boolean
+    cleanupFailures: Array<'embedding_dispose' | 'personal_memory_close'>
   }> {
     if (this.disposed) {
       return {
@@ -1515,7 +1614,9 @@ export class AiAssistantService {
         modelRequestsAborted: 0,
         localApiRequestsAborted: 0,
         timedOut: false,
-        pending: []
+        pending: [],
+        embeddingDisposed: false,
+        cleanupFailures: []
       }
     }
     this.disposed = true
@@ -1556,14 +1657,31 @@ export class AiAssistantService {
         promise
       }))
     ], 4_000)
-    const databaseClosed = !settled.timedOut && settled.pending.length === 0
-    if (databaseClosed) {
-      await localEmbeddingService.dispose()
-      personalMemoryStore.close()
+    const safeToClose = !settled.timedOut && settled.pending.length === 0
+    let databaseClosed = false
+    let embeddingDisposed = false
+    const cleanupFailures: Array<'embedding_dispose' | 'personal_memory_close'> = []
+    if (safeToClose) {
+      try {
+        await localEmbeddingService.dispose()
+        embeddingDisposed = true
+      } catch (error) {
+        cleanupFailures.push('embedding_dispose')
+        console.warn('[AI Assistant] 本地语义运行时退出清理失败:', sanitizeDiagnosticText(error))
+      }
+      try {
+        personalMemoryStore.close()
+        databaseClosed = true
+      } catch (error) {
+        cleanupFailures.push('personal_memory_close')
+        console.warn('[AI Assistant] 个人记忆数据库退出关闭失败:', sanitizeDiagnosticText(error))
+      }
     }
     return {
       ...settled,
       databaseClosed,
+      embeddingDisposed,
+      cleanupFailures,
       modelRequestsAborted,
       localApiRequestsAborted
     }
@@ -1572,7 +1690,11 @@ export class AiAssistantService {
   handleSystemSuspend(observedAt = new Date()): void {
     if (this.disposed) return
     this.state.cursor.lastSystemSuspendAt = observedAt.toISOString()
-    this.saveState()
+    try {
+      this.saveState()
+    } catch (error) {
+      this.recordSchedulerRuntimeFailure(error, observedAt)
+    }
   }
 
   async handleSystemResume(observedAt = new Date()): Promise<string> {
@@ -1589,12 +1711,42 @@ export class AiAssistantService {
     this.state.cursor.lastSystemResumeAt = observedAt.toISOString()
     this.state.cursor.systemResumeCount =
       Math.max(0, Number(this.state.cursor.systemResumeCount || 0)) + 1
-    this.saveState()
+    try {
+      this.saveState()
+    } catch (error) {
+      this.recordSchedulerRuntimeFailure(error, observedAt)
+      return 'system_resume_checkpoint_failed'
+    }
     const result = await this.schedulerTick('system_resume', observedAt)
     this.state.cursor.lastResumeCatchupAt = new Date().toISOString()
     this.state.cursor.lastResumeCatchupResult = result
-    this.saveState()
+    try {
+      this.saveState()
+    } catch (error) {
+      this.recordSchedulerRuntimeFailure(error, new Date())
+      return 'system_resume_result_checkpoint_failed'
+    }
     return result
+  }
+
+  private recordSchedulerRuntimeFailure(error: unknown, now = new Date()): void {
+    const previousRetry = this.state.cursor.schedulerRuntimeRetry
+    const failedRetry = planSchedulerRuntimeFailure(
+      previousRetry,
+      now,
+      sanitizeDiagnosticText(error)
+    )
+    try {
+      commitPersistedRuntimeTransition(
+        previousRetry,
+        failedRetry,
+        value => { this.state.cursor.schedulerRuntimeRetry = value },
+        () => this.persistCrossStoreMutationState()
+      )
+    } catch {
+      // The encrypted state remains authoritative. Storage diagnostics expose
+      // the write failure; do not publish a retry checkpoint that never landed.
+    }
   }
 
   private migrateLegacyData(): void {
@@ -1668,6 +1820,15 @@ export class AiAssistantService {
           },
           resourceEnrichmentRetry: normalizeResourceEnrichmentSchedulerRetry(
             loaded.cursor?.resourceEnrichmentRetry
+          ),
+          schedulerRuntimeRetry: normalizeSchedulerRuntimeRetry(
+            loaded.cursor?.schedulerRuntimeRetry
+          ),
+          preparedRecoveryRetry: normalizeSchedulerRuntimeRetry(
+            loaded.cursor?.preparedRecoveryRetry
+          ),
+          legacyBackgroundRetries: normalizeLegacyBackgroundRetries(
+            loaded.cursor?.legacyBackgroundRetries
           )
         },
         notifications: {
@@ -2299,33 +2460,75 @@ export class AiAssistantService {
 
   private schedulePreparedRecoveryContinuation(): void {
     if (this.preparedRecoveryContinuation) return
+    const retryAt = Date.parse(String(this.state.cursor.preparedRecoveryRetry.nextAttemptAt || ''))
+    const delayMs = Number.isFinite(retryAt)
+      ? Math.max(1_000, retryAt - Date.now())
+      : 1_000
     this.preparedRecoveryContinuation = setTimeout(() => {
       this.preparedRecoveryContinuation = null
-      if (shouldDeferPreparedRecovery({
-        syncing: Boolean(this.activeSync),
-        vectorIndexing: Boolean(this.vectorIndexPromise),
-        searchRepairing: Boolean(this.memorySearchRepairPromise),
-        resourceEnriching: Boolean(this.resourceEnrichmentPromise)
-      })) {
+      if (this.disposed) return
+      const now = new Date()
+      if (schedulerRuntimeCoolingDown(
+        this.state.cursor.preparedRecoveryRetry,
+        now.getTime()
+      )) {
         this.schedulePreparedRecoveryContinuation()
         return
       }
-      const ingestion = personalMemoryStore.getIngestionCommitHealth().unattempted > 0
-        ? this.recoverPreparedIngestionBatchCommits()
-        : { unattempted: 0 }
-      const taskMutation = personalMemoryStore.getTaskMutationCommitHealth().unattempted > 0
-        ? this.recoverPreparedTaskMutationCommits()
-        : { unattempted: 0 }
-      const sourceMutation =
-        personalMemoryStore.getConversationSourceMutationCommitHealth().unattempted > 0
-          ? this.recoverPreparedConversationSourceMutationCommits()
+      try {
+        if (shouldDeferPreparedRecovery({
+          syncing: Boolean(this.activeSync),
+          vectorIndexing: Boolean(this.vectorIndexPromise),
+          searchRepairing: Boolean(this.memorySearchRepairPromise),
+          resourceEnriching: Boolean(this.resourceEnrichmentPromise)
+        })) {
+          this.schedulePreparedRecoveryContinuation()
+          return
+        }
+        const ingestion = personalMemoryStore.getIngestionCommitHealth().unattempted > 0
+          ? this.recoverPreparedIngestionBatchCommits()
           : { unattempted: 0 }
-      if (
-        ingestion.unattempted > 0 ||
-        taskMutation.unattempted > 0 ||
-        sourceMutation.unattempted > 0
-      ) this.schedulePreparedRecoveryContinuation()
-    }, 1_000)
+        const taskMutation = personalMemoryStore.getTaskMutationCommitHealth().unattempted > 0
+          ? this.recoverPreparedTaskMutationCommits()
+          : { unattempted: 0 }
+        const sourceMutation =
+          personalMemoryStore.getConversationSourceMutationCommitHealth().unattempted > 0
+            ? this.recoverPreparedConversationSourceMutationCommits()
+            : { unattempted: 0 }
+        if (this.state.cursor.preparedRecoveryRetry.failures > 0) {
+          const previousRetry = this.state.cursor.preparedRecoveryRetry
+          commitPersistedRuntimeTransition(
+            previousRetry,
+            clearSchedulerRuntimeFailure(previousRetry, now),
+            value => { this.state.cursor.preparedRecoveryRetry = value },
+            () => this.persistCrossStoreMutationState()
+          )
+        }
+        if (
+          ingestion.unattempted > 0 ||
+          taskMutation.unattempted > 0 ||
+          sourceMutation.unattempted > 0
+        ) this.schedulePreparedRecoveryContinuation()
+      } catch (error) {
+        const previousRetry = this.state.cursor.preparedRecoveryRetry
+        const failedRetry = planSchedulerRuntimeFailure(
+          previousRetry,
+          now,
+          sanitizeDiagnosticText(error)
+        )
+        try {
+          commitPersistedRuntimeTransition(
+            previousRetry,
+            failedRetry,
+            value => { this.state.cursor.preparedRecoveryRetry = value },
+            () => this.persistCrossStoreMutationState()
+          )
+        } catch {
+          // Keep the last durable checkpoint when retry-state storage fails.
+        }
+        this.schedulePreparedRecoveryContinuation()
+      }
+    }, delayMs)
     this.preparedRecoveryContinuation.unref?.()
   }
 
@@ -4243,21 +4446,35 @@ export class AiAssistantService {
     try {
       backlog = personalMemoryStore.getIdentityVectorScanBacklog(model)
     } catch (error) {
+      const previousIdentityScan = { ...this.state.graph.identityScan }
       const retry = planIdentityScanRetry(
-        this.state.graph.identityScan.vectorContinuationFailures,
+        previousIdentityScan.vectorContinuationFailures,
         now
       )
-      this.state.graph.identityScan.vectorContinuationAt = now.toISOString()
-      this.state.graph.identityScan.vectorContinuationError = sanitizeDiagnosticText(error)
-      this.state.graph.identityScan.vectorContinuationFailures = retry.failures
-      this.state.graph.identityScan.vectorNextAttemptAt = retry.nextAttemptAt
-      try { this.persistCrossStoreMutationState() } catch {}
+      const failedIdentityScan = {
+        ...previousIdentityScan,
+        vectorContinuationAt: now.toISOString(),
+        vectorContinuationError: sanitizeDiagnosticText(error),
+        vectorContinuationFailures: retry.failures,
+        vectorNextAttemptAt: retry.nextAttemptAt
+      }
+      try {
+        commitPersistedRuntimeTransition(
+          previousIdentityScan,
+          failedIdentityScan,
+          value => { this.state.graph.identityScan = value },
+          () => this.persistCrossStoreMutationState()
+        )
+      } catch {
+        // Do not publish an uncommitted vector retry checkpoint.
+      }
       return 'identity_vector_scan_failed'
     }
     this.state.graph.identityScan.vectorEligible = backlog.eligible
     this.state.graph.identityScan.vectorPendingBefore = backlog.pending
     this.state.graph.identityScan.vectorPendingAfter = backlog.pending
     if (!backlog.pending) {
+      const previousIdentityScan = { ...this.state.graph.identityScan }
       const retryStateChanged = Boolean(
         this.state.graph.identityScan.vectorContinuationError ||
         this.state.graph.identityScan.vectorContinuationFailures ||
@@ -4268,14 +4485,66 @@ export class AiAssistantService {
       this.state.graph.identityScan.vectorContinuationFailures = 0
       this.state.graph.identityScan.vectorNextAttemptAt = null
       if (retryStateChanged) {
-        try { this.persistCrossStoreMutationState() } catch {}
+        try {
+          const recoveredIdentityScan = { ...this.state.graph.identityScan }
+          commitPersistedRuntimeTransition(
+            previousIdentityScan,
+            recoveredIdentityScan,
+            value => { this.state.graph.identityScan = value },
+            () => this.persistCrossStoreMutationState()
+          )
+        } catch (error) {
+          const retry = planIdentityScanRetry(
+            previousIdentityScan.vectorContinuationFailures,
+            now
+          )
+          const failedIdentityScan = {
+            ...previousIdentityScan,
+            vectorContinuationAt: now.toISOString(),
+            vectorContinuationError: sanitizeDiagnosticText(error),
+            vectorContinuationFailures: retry.failures,
+            vectorNextAttemptAt: retry.nextAttemptAt
+          }
+          try {
+            commitPersistedRuntimeTransition(
+              previousIdentityScan,
+              failedIdentityScan,
+              value => { this.state.graph.identityScan = value },
+              () => this.persistCrossStoreMutationState()
+            )
+          } catch {
+            // The failed recovery checkpoint remains absent rather than fake.
+          }
+          return 'identity_vector_scan_failed'
+        }
       }
       return 'identity_vector_scan_complete'
     }
     const observedAt = now.toISOString()
+    const previousIdentityScan = { ...this.state.graph.identityScan }
     const result = this.runVectorIdentityScan(observedAt)
-    this.state.graph.identityScan.vectorContinuationAt = observedAt
-    this.persistCrossStoreMutationState()
+    const completedIdentityScan = {
+      ...this.state.graph.identityScan,
+      vectorContinuationAt: observedAt
+    }
+    if (result.committed) {
+      this.state.graph.identityScan = completedIdentityScan
+      this.persistCrossStoreMutationState()
+    } else {
+      // The failed SQL batch has no authoritative checkpoint. Publish its retry
+      // metadata only if the encrypted state accepts the same transition.
+      this.state.graph.identityScan = previousIdentityScan
+      try {
+        commitPersistedRuntimeTransition(
+          previousIdentityScan,
+          completedIdentityScan,
+          value => { this.state.graph.identityScan = value },
+          () => this.persistCrossStoreMutationState()
+        )
+      } catch {
+        // Keep the previous durable retry state.
+      }
+    }
     return result.committed
       ? result.pendingAfter > 0
         ? 'identity_vector_scan_advanced'
@@ -4323,14 +4592,24 @@ export class AiAssistantService {
         graphBefore.identityScan.fullScanContinuationFailures,
         now
       )
-      this.state.graph.identityScan = {
-        ...graphBefore.identityScan,
+      const previousIdentityScan = { ...this.state.graph.identityScan }
+      const failedIdentityScan = {
+        ...previousIdentityScan,
         fullScanContinuationAt: observedAt,
         fullScanContinuationError: sanitizeDiagnosticText(error),
         fullScanContinuationFailures: retry.failures,
         fullScanNextAttemptAt: retry.nextAttemptAt
       }
-      try { this.persistCrossStoreMutationState() } catch {}
+      try {
+        commitPersistedRuntimeTransition(
+          previousIdentityScan,
+          failedIdentityScan,
+          value => { this.state.graph.identityScan = value },
+          () => this.persistCrossStoreMutationState()
+        )
+      } catch {
+        // Retain the recovered durable identity checkpoint.
+      }
       return 'identity_name_scan_failed'
     }
   }
@@ -5738,7 +6017,9 @@ export class AiAssistantService {
     this.vectorIndexPowerPolicy = {
       ...next,
       lastChangedAt: changed ? new Date().toISOString() : this.vectorIndexPowerPolicy.lastChangedAt,
-      lastMeasuredAt: new Date().toISOString()
+      lastMeasuredAt: new Date().toISOString(),
+      lastMeasurementErrorAt: '',
+      lastMeasurementError: ''
     }
     if (next.deferred) {
       if (this.vectorIndexContinuation) clearTimeout(this.vectorIndexContinuation)
@@ -5752,6 +6033,14 @@ export class AiAssistantService {
     }
     if (wasDeferred && this.statePath && this.config.get('aiAssistantEnabled')) {
       this.scheduleVectorIndexContinuation()
+    }
+  }
+
+  reportPowerStateMeasurementFailure(error: unknown): void {
+    this.vectorIndexPowerPolicy = {
+      ...this.vectorIndexPowerPolicy,
+      lastMeasurementErrorAt: new Date().toISOString(),
+      lastMeasurementError: sanitizeDiagnosticText(error)
     }
   }
 
@@ -6197,13 +6486,26 @@ export class AiAssistantService {
   getProjectDirectory(options: any = {}): any {
     const revision = this.getProjectDirectoryRevision()
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    const today = shanghaiDate()
+    const projectDirectoryScopeToken = computeProjectDirectoryScopeToken({
+      ...options, today
+    })
+    if (offset > 0 && String(options?.projectDirectoryScopeToken || '').trim() !== projectDirectoryScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true,
+        projectDirectoryScopeStale: true, projectDirectoryScopeToken
+      }
+    }
     if (offset > 0 && String(options?.revision || '').trim() !== revision) {
-      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true,
+        projectDirectoryScopeToken
+      }
     }
     const page = personalMemoryStore.listProjectDirectoryPage({
       query: String(options?.query || ''),
       phase: String(options?.phase || ''),
-      today: shanghaiDate(),
+      today,
       offset,
       limit: Number(options?.limit || 40)
     })
@@ -6211,12 +6513,13 @@ export class AiAssistantService {
     if (completedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false, nextOffset: offset,
-        revision: completedRevision, stale: true
+        revision: completedRevision, stale: true, projectDirectoryScopeToken
       }
     }
     return {
       ...page,
       revision,
+      projectDirectoryScopeToken,
       stale: false
     }
   }
@@ -6504,6 +6807,18 @@ export class AiAssistantService {
         ...this.state.cursor.resourceEnrichmentRetry,
         policy: 'persistent_bounded_discovery_backoff_v1'
       },
+      schedulerRuntime: {
+        ...this.state.cursor.schedulerRuntimeRetry,
+        policy: 'unexpected_failure_circuit_breaker_v1'
+      },
+      preparedRecoveryScheduler: {
+        ...this.state.cursor.preparedRecoveryRetry,
+        policy: 'prepared_commit_recovery_backoff_v1'
+      },
+      legacyBackgroundRetries: {
+        ...getLegacyBackgroundRetries(),
+        policy: 'encrypted_cross_restart_backoff_v1'
+      },
       resourceTrash: [],
       ingestionStatus: personalMemoryStore.getIngestionStatus(),
       assistantArchive: {
@@ -6608,6 +6923,7 @@ export class AiAssistantService {
       },
       historyHasMore: historyPage.hasMore,
       historyRevision: historyPage.revision,
+      historyArchiveScopeToken: buildTaskHistoryScopeToken({ taskId: task.id }),
       payloadPolicy: {
         ...dossier.payloadPolicy,
         version: 'task-dossier-v3',
@@ -6636,6 +6952,16 @@ export class AiAssistantService {
     const taskRevision = personalMemoryStore.getTaskArchiveRevision()
     const authorityKey = this.buildTaskReminderAuthorityKey(taskRevision)
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    const archiveScopeToken = buildTaskReminderScopeToken({
+      reminderId: String(options?.reminderId || '')
+    })
+    if (offset > 0 && String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        items: [], offset, nextOffset: offset, limit: Number(options?.limit || 8),
+        total: 0, rawTotal: 0, suppressed: 0, hasMore: false, revision: '', stale: true,
+        target: null, nextBoundaryMs: null, archiveScopeStale: true, archiveScopeToken
+      }
+    }
     const page = personalMemoryStore.listTaskReminderPage({
       nowMs: now.getTime(), mutedKinds: preferences.mutedKinds,
       snoozedUntil: preferences.snoozedUntil,
@@ -6650,10 +6976,10 @@ export class AiAssistantService {
         items: [], offset, nextOffset: offset, limit: page.limit,
         total: page.total, rawTotal: page.rawTotal, suppressed: page.suppressed,
         hasMore: false, revision, stale: true, target: null,
-        nextBoundaryMs: page.nextBoundaryMs
+        nextBoundaryMs: page.nextBoundaryMs, archiveScopeToken
       }
     }
-    return { ...page, revision, stale: false }
+    return { ...page, revision, stale: false, archiveScopeToken }
   }
 
   private getTaskReminderDashboardPage(now = new Date()): any {
@@ -6680,13 +7006,15 @@ export class AiAssistantService {
 
   getTaskHistoryPage(taskId: string, options: any = {}): any {
     const id = String(taskId || '').trim()
-    return personalMemoryStore.listTaskHistoryPage({
+    const normalized = {
       taskId: id,
       requireCurrentTask: true,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildTaskHistoryScopeToken,
+      input => personalMemoryStore.listTaskHistoryPage(input))
   }
 
   getTaskDependencyCandidates(options: any = {}): any {
@@ -6751,6 +7079,15 @@ export class AiAssistantService {
   }
 
   getActiveTaskWorkset(options: any = {}): any {
+    const taskWorksetScopeToken = buildActiveTaskWorksetScopeToken(options)
+    const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    if (offset > 0 && String(options?.taskWorksetScopeToken || '').trim() !== taskWorksetScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, counts: {},
+        revision: personalMemoryStore.getTaskArchiveRevision(), stale: true,
+        taskWorksetScopeStale: true, taskWorksetScopeToken
+      }
+    }
     const page = personalMemoryStore.listActiveTaskWorkset({
       taskId: String(options?.taskId || ''),
       status: ['todo', 'doing', 'waiting'].includes(options?.status) ? options.status : 'all',
@@ -6758,13 +7095,14 @@ export class AiAssistantService {
       taskKind: ['action', 'delegated', 'waiting'].includes(options?.taskKind) ? options.taskKind : '',
       query: String(options?.query || ''),
       limit: Number(options?.limit || 100),
-      offset: Number(options?.offset || 0),
+      offset,
       revision: String(options?.revision || '')
     })
-    if (page.stale) return page
+    if (page.stale) return { ...page, taskWorksetScopeToken }
     const tasks = this.getTaskStateIndex()
     return {
       ...page,
+      taskWorksetScopeToken,
       items: page.items.map((item: any) => {
         const task = tasks.get(String(item.id || ''))
         return {
@@ -6777,6 +7115,15 @@ export class AiAssistantService {
   }
 
   getTaskCalendarPage(options: any = {}): any {
+    const taskCalendarScopeToken = buildTaskCalendarScopeToken(options)
+    const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    if (offset > 0 && String(options?.taskCalendarScopeToken || '').trim() !== taskCalendarScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false,
+        revision: personalMemoryStore.getTaskArchiveRevision(), stale: true,
+        taskCalendarScopeStale: true, taskCalendarScopeToken
+      }
+    }
     const page = personalMemoryStore.listTaskCalendarPage({
       month: String(options?.month || ''),
       status: ['todo', 'doing', 'waiting'].includes(options?.status) ? options.status : 'all',
@@ -6784,13 +7131,14 @@ export class AiAssistantService {
       taskKind: ['action', 'delegated', 'waiting'].includes(options?.taskKind) ? options.taskKind : '',
       query: String(options?.query || ''),
       limit: Number(options?.limit || 200),
-      offset: Number(options?.offset || 0),
+      offset,
       revision: String(options?.revision || '')
     })
-    if (page.stale) return page
+    if (page.stale) return { ...page, taskCalendarScopeToken }
     const tasks = this.getTaskStateIndex()
     return {
       ...page,
+      taskCalendarScopeToken,
       items: page.items.map((item: any) => {
         const task = tasks.get(String(item.id || ''))
         return {
@@ -6803,7 +7151,7 @@ export class AiAssistantService {
   }
 
   getTaskOwnershipReviews(options: any = {}): any {
-    return personalMemoryStore.listTaskOwnershipReviews({
+    const normalized = {
       classification: String(options?.classification || ''),
       priority: String(options?.priority || ''),
       query: String(options?.query || ''),
@@ -6812,11 +7160,13 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildTaskOwnershipScopeToken,
+      input => personalMemoryStore.listTaskOwnershipReviews(input))
   }
 
   getTaskReviewDecisionPage(options: any = {}): any {
-    const page = personalMemoryStore.listTaskReviewDecisionPage({
+    const normalized = {
       status: ['active', 'revoked', 'all'].includes(options?.status) ? options.status : 'all',
       decision: ['mine', 'rejected', 'all'].includes(options?.decision) ? options.decision : 'all',
       reasonCode: String(options?.reasonCode || '') as ReviewReasonCode | '',
@@ -6826,24 +7176,41 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
-    return page
+    }
+    return this.withAuditArchiveScope(normalized, options, buildTaskFeedbackScopeToken,
+      input => personalMemoryStore.listTaskReviewDecisionPage(input))
   }
 
   getTaskReviewDecisionDossier(evidenceFingerprint: string, options: any = {}): any {
+    const normalized = {
+      evidenceFingerprint: String(evidenceFingerprint || '').trim(),
+      historyOffset: Number(options?.historyOffset || 0),
+      offset: Number(options?.historyOffset || 0),
+      historyLimit: Number(options?.historyLimit || 50),
+      revision: String(options?.revision || '')
+    }
+    const archiveScopeToken = buildTaskFeedbackDossierScopeToken(normalized)
+    if (normalized.offset > 0 &&
+        String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        evidence_fingerprint: normalized.evidenceFingerprint,
+        history: [], historyTotal: 0, historyHasMore: false,
+        revision: '', stale: true, archiveScopeStale: true, archiveScopeToken
+      }
+    }
     const dossier = personalMemoryStore.getTaskReviewDecisionDossier(
-      String(evidenceFingerprint || '').trim(),
+      normalized.evidenceFingerprint,
       {
-        historyOffset: Number(options?.historyOffset || 0),
-        historyLimit: Number(options?.historyLimit || 50),
-        revision: String(options?.revision || '')
+        historyOffset: normalized.historyOffset,
+        historyLimit: normalized.historyLimit,
+        revision: normalized.revision
       }
     )
-    return dossier
+    return dossier ? { ...dossier, archiveScopeToken } : null
   }
 
   getMemoryDeletionAuditPage(options: any = {}): any {
-    return personalMemoryStore.listMemoryDeletionAuditPage({
+    const normalized = {
       kind: ['claim', 'event', 'relation', 'all'].includes(options?.kind)
         ? options.kind
         : 'all',
@@ -6856,7 +7223,9 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildDeletionAuditScopeToken,
+      input => personalMemoryStore.listMemoryDeletionAuditPage(input))
   }
 
   getMemoryMaintenanceAuditPage(options: any = {}): any {
@@ -6865,7 +7234,7 @@ export class AiAssistantService {
       'bundle_import', 'import_staging_discard', 'backup_trash_restore',
       'backup_trash_discard', 'all'
     ]
-    return personalMemoryStore.listMemoryMaintenanceAuditPage({
+    const normalized = {
       operation: operations.includes(options?.operation) ? options.operation : 'all',
       trigger: ['manual', 'automatic', 'recovery', 'all'].includes(options?.trigger)
         ? options.trigger
@@ -6875,7 +7244,26 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildMaintenanceAuditScopeToken,
+      input => personalMemoryStore.listMemoryMaintenanceAuditPage(input))
+  }
+
+  private withAuditArchiveScope(
+    normalized: any,
+    original: any,
+    buildToken: (scope: Record<string, unknown>) => string,
+    load: (scope: any) => any
+  ): any {
+    const archiveScopeToken = buildToken(normalized)
+    const offset = Math.max(0, Math.floor(Number(normalized.offset) || 0))
+    if (offset > 0 && String(original?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, revision: '', stale: true,
+        archiveScopeStale: true, archiveScopeToken
+      }
+    }
+    return { ...load(normalized), archiveScopeToken }
   }
 
   retryMemoryMaintenanceAuditDelivery(): any {
@@ -6893,7 +7281,7 @@ export class AiAssistantService {
   }
 
   getMemoryChangeLogPage(options: any = {}): any {
-    return personalMemoryStore.listMemoryChangeLogPage({
+    const normalized = {
       kind: ['entity', 'claim', 'relation', 'event', 'resource', 'all'].includes(options?.kind)
         ? options.kind
         : 'all',
@@ -6921,7 +7309,9 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildMemoryGrowthScopeToken,
+      input => personalMemoryStore.listMemoryChangeLogPage(input))
   }
 
   getMemoryChangeOriginDossier(changeId: number, expectedRevision: string): any {
@@ -6932,7 +7322,7 @@ export class AiAssistantService {
   }
 
   getMergeHistoryPage(options: any = {}): any {
-    return personalMemoryStore.listMergeHistoryPage({
+    const normalized = {
       status: ['active', 'reverted', 'all'].includes(options?.status)
         ? options.status
         : 'all',
@@ -6942,7 +7332,9 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildMergeHistoryScopeToken,
+      input => personalMemoryStore.listMergeHistoryPage(input))
   }
 
   getGraphReviewPage(options?: Partial<GraphReviewPageOptions>): any {
@@ -7102,11 +7494,12 @@ export class AiAssistantService {
           item.after_object_id
         ])
       ].map(value => String(value || '')).filter(Boolean))
-      const auditPageMeta = (page: any) => ({
+      const auditPageMeta = (page: any, kind: string) => ({
         total: Number(page.total || 0),
         hasMore: Boolean(page.hasMore),
         revision: String(page.revision || ''),
-        stale: Boolean(page.stale)
+        stale: Boolean(page.stale),
+        archiveScopeToken: buildEntityAuditScopeToken({ entityId: focusEntity.id, kind })
       })
       const identityPresentation = boundEntityIdentityPresentation(focusEntity)
       focus = {
@@ -7134,10 +7527,10 @@ export class AiAssistantService {
         relationCorrections,
         entityProfileCorrections,
         auditPages: {
-          relationHistory: auditPageMeta(relationHistoryPage),
-          entityCorrections: auditPageMeta(entityCorrectionsPage),
-          relationCorrections: auditPageMeta(relationCorrectionsPage),
-          entityProfileCorrections: auditPageMeta(entityProfileCorrectionsPage)
+          relationHistory: auditPageMeta(relationHistoryPage, 'relation_history'),
+          entityCorrections: auditPageMeta(entityCorrectionsPage, 'name_correction'),
+          relationCorrections: auditPageMeta(relationCorrectionsPage, 'relation_correction'),
+          entityProfileCorrections: auditPageMeta(entityProfileCorrectionsPage, 'profile_correction')
         },
         tasks: relatedTasks.items.map(task => {
           const current = currentTasksById.get(String(task.id))
@@ -7158,6 +7551,7 @@ export class AiAssistantService {
         taskHasMore: relatedTasks.hasMore,
         taskOffset: relatedTasks.nextOffset,
         taskRevision: entityTaskRevision,
+        taskArchiveScopeToken: buildEntityTaskScopeToken({ entityId: focusEntity.id }),
         entityNames: personalMemoryStore.getEntityCanonicalNames([...namedEntityIds])
       }
     }
@@ -7280,12 +7674,19 @@ export class AiAssistantService {
 
   getEntityTaskPage(entityId: string, options: any = {}): any {
     const id = String(entityId || '').trim()
+    const archiveScopeToken = buildEntityTaskScopeToken({ entityId: id })
     const entity = personalMemoryStore.getGraphEntityById(id, { trust: 'visible' })
     if (!entity) throw new Error('人物或实体不存在')
     const revision = this.getProjectDirectoryRevision()
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
+    if (offset > 0 && String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset, revision: '', stale: true,
+        archiveScopeStale: true, archiveScopeToken
+      }
+    }
     if (offset > 0 && String(options?.revision || '').trim() !== revision) {
-      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true, archiveScopeToken }
     }
     const page = personalMemoryStore.listEntityRelatedTaskPage(
       personalMemoryStore.listGraphEntityTaskSearchNames(id), {
@@ -7297,13 +7698,14 @@ export class AiAssistantService {
     if (completedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false,
-        nextOffset: offset, revision: completedRevision, stale: true
+        nextOffset: offset, revision: completedRevision, stale: true, archiveScopeToken
       }
     }
     const currentTasksById = this.getTaskStateIndex()
     return {
       ...page,
       revision,
+      archiveScopeToken,
       stale: false,
       items: page.items.map(task => {
         const current = currentTasksById.get(String(task.id))
@@ -7334,13 +7736,15 @@ export class AiAssistantService {
     ])
     const kind = String(options?.kind || '')
     if (!kinds.has(kind)) throw new Error('无效的人物审计类型')
-    return personalMemoryStore.listEntityAuditPage({
+    const normalized = {
       entityId: id,
       kind: kind as any,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildEntityAuditScopeToken,
+      input => personalMemoryStore.listEntityAuditPage(input))
   }
 
   getMemoryItemAuditPage(kind: string, itemId: string, options: any = {}): any {
@@ -7348,13 +7752,15 @@ export class AiAssistantService {
     if (!['claim', 'event'].includes(normalizedKind)) throw new Error('无效的记忆类型')
     const id = String(itemId || '').trim()
     if (!id) throw new Error('记忆 ID 不能为空')
-    return personalMemoryStore.listMemoryItemAuditPage({
+    const normalized = {
       kind: normalizedKind as 'claim' | 'event',
       itemId: id,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildMemoryItemAuditScopeToken,
+      input => personalMemoryStore.listMemoryItemAuditPage(input))
   }
 
   getEventCorrectionParticipantSnapshotPage(
@@ -7365,14 +7771,18 @@ export class AiAssistantService {
     if (!['before', 'after'].includes(String(phase || ''))) {
       throw new Error('无效的事件纠正快照阶段')
     }
-    return personalMemoryStore.listEventCorrectionParticipantSnapshotPage({
+    const normalized = {
       correctionId: Number(correctionId || 0),
       phase: phase as 'before' | 'after',
       revision: String(options?.revision || ''),
       query: String(options?.query || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40)
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildEventCorrectionSnapshotScopeToken,
+      input => personalMemoryStore.listEventCorrectionParticipantSnapshotPage(input)
+    )
   }
 
   getProjectWorkspace(projectId: string): any {
@@ -7420,28 +7830,35 @@ export class AiAssistantService {
     const projectNames = projectEntity
       ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true })
       : [derivedProject!.normalizedName]
+    const today = shanghaiDate()
     const taskPage: any = {
       ...personalMemoryStore.listProjectTaskPage(projectNames, {
         limit: 40, explicitProjectOnly: Boolean(derivedProject)
       }),
       revision: taskRevision,
+      archiveScopeToken: buildProjectTaskScopeToken({ projectId: id }),
       stale: false
     }
-    const riskRevision = `${taskRevision}:day=${shanghaiDate()}`
+    const riskRevision = `${taskRevision}:day=${today}`
     const riskPage: any = {
-      ...personalMemoryStore.listProjectRiskPage(projectNames, shanghaiDate(), {
+      ...personalMemoryStore.listProjectRiskPage(projectNames, today, {
         limit: 40, explicitProjectOnly: Boolean(derivedProject)
       }),
       revision: riskRevision,
+      archiveScopeToken: buildProjectRiskScopeToken({ projectId: id, today }),
       stale: false
     }
     const memberPage = projectEntity
-      ? personalMemoryStore.listProjectMemberPage({ projectId: id, limit: 40 })
+      ? {
+          ...personalMemoryStore.listProjectMemberPage({ projectId: id, limit: 40 }),
+          archiveScopeToken: buildProjectMemberScopeToken({ projectId: id })
+        }
       : {
           items: project.members || [],
           total: Number(project.members?.length || 0),
           hasMore: false,
           revision: '',
+          archiveScopeToken: buildProjectMemberScopeToken({ projectId: id }),
           stale: false
         }
     if (this.getProjectDirectoryRevision() !== taskRevision) {
@@ -7501,15 +7918,18 @@ export class AiAssistantService {
         taskHasMore: taskPage.hasMore,
         taskOffset: taskPage.nextOffset ?? taskPage.items.length,
         taskRevision: taskPage.revision,
+        taskArchiveScopeToken: taskPage.archiveScopeToken,
         risks: riskPage.items,
         riskTotal: riskPage.total,
         riskHasMore: riskPage.hasMore,
         riskOffset: riskPage.nextOffset ?? riskPage.items.length,
         riskRevision: riskPage.revision,
+        riskArchiveScopeToken: riskPage.archiveScopeToken,
         members: memberPage.items,
         memberTotal: memberPage.total,
         memberHasMore: memberPage.hasMore,
-        memberRevision: memberPage.revision
+        memberRevision: memberPage.revision,
+        memberArchiveScopeToken: memberPage.archiveScopeToken
       },
       payloadPolicy: {
         version: 'project-dossier-v3',
@@ -7532,16 +7952,19 @@ export class AiAssistantService {
       trust: 'confirmed', type: 'project'
     })
     if (!projectEntity) throw new Error('项目不存在或已经不在当前可信视图中')
-    return personalMemoryStore.listProjectMemberPage({
+    const normalized = {
       projectId: id,
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildProjectMemberScopeToken,
+      input => personalMemoryStore.listProjectMemberPage(input))
   }
 
   getProjectTaskPage(projectId: string, options: any = {}): any {
     const id = String(projectId || '').trim()
+    const archiveScopeToken = buildProjectTaskScopeToken({ projectId: id })
     if (!id) throw new Error('请选择项目')
     const revision = this.getProjectDirectoryRevision()
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
@@ -7550,8 +7973,14 @@ export class AiAssistantService {
     })
     const derivedProject = projectEntity ? null : personalMemoryStore.getDerivedProjectIdentityById(id)
     if (!projectEntity && !derivedProject) throw new Error('项目不存在或已经不在当前目录中')
+    if (offset > 0 && String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset, revision: '', stale: true,
+        archiveScopeStale: true, archiveScopeToken
+      }
+    }
     if (offset > 0 && String(options?.revision || '').trim() !== revision) {
-      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true, archiveScopeToken }
     }
     const names = projectEntity
       ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true })
@@ -7564,12 +7993,13 @@ export class AiAssistantService {
     if (completedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false,
-        revision: completedRevision, stale: true
+        revision: completedRevision, stale: true, archiveScopeToken
       }
     }
     return {
       ...page,
       revision,
+      archiveScopeToken,
       stale: false,
       items: page.items.map((item: any) => {
         const task = this.getTaskStateIndex().get(String(item.id || ''))
@@ -7587,36 +8017,44 @@ export class AiAssistantService {
   getProjectRiskPage(projectId: string, options: any = {}): any {
     const id = String(projectId || '').trim()
     if (!id) throw new Error('请选择项目')
+    const today = shanghaiDate()
+    const archiveScopeToken = buildProjectRiskScopeToken({ projectId: id, today })
     const projectRevision = this.getProjectDirectoryRevision()
-    const revision = `${projectRevision}:day=${shanghaiDate()}`
+    const revision = `${projectRevision}:day=${today}`
     const offset = Math.max(0, Math.floor(Number(options?.offset) || 0))
     const projectEntity = personalMemoryStore.getGraphEntityById(id, {
       trust: 'confirmed', type: 'project'
     })
     const derivedProject = projectEntity ? null : personalMemoryStore.getDerivedProjectIdentityById(id)
     if (!projectEntity && !derivedProject) throw new Error('项目不存在或已经不在当前目录中')
+    if (offset > 0 && String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        items: [], total: 0, hasMore: false, nextOffset: offset, revision: '', stale: true,
+        archiveScopeStale: true, archiveScopeToken
+      }
+    }
     if (offset > 0 && String(options?.revision || '').trim() !== revision) {
-      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true }
+      return { items: [], total: 0, hasMore: false, nextOffset: offset, revision, stale: true, archiveScopeToken }
     }
     const names = projectEntity
       ? personalMemoryStore.listGraphEntityTaskSearchNames(id, { projectOnly: true })
       : [derivedProject!.normalizedName]
-    const page = personalMemoryStore.listProjectRiskPage(names, shanghaiDate(), {
+    const page = personalMemoryStore.listProjectRiskPage(names, today, {
       limit: Number(options?.limit || 40), offset,
       explicitProjectOnly: Boolean(derivedProject)
     })
-    const completedRevision = `${this.getProjectDirectoryRevision()}:day=${shanghaiDate()}`
+    const completedRevision = `${this.getProjectDirectoryRevision()}:day=${today}`
     if (completedRevision !== revision) {
       return {
         items: [], total: 0, hasMore: false,
-        revision: completedRevision, stale: true
+        revision: completedRevision, stale: true, archiveScopeToken
       }
     }
-    return { ...page, revision, stale: false }
+    return { ...page, revision, stale: false, archiveScopeToken }
   }
 
   getEventTimeline(options: any = {}): any {
-    const page = personalMemoryStore.listEventTimeline({
+    const normalized = {
       entityId: String(options?.entityId || ''),
       eventTypes: Array.isArray(options?.eventTypes)
         ? options.eventTypes.map((value: unknown) => String(value || '').trim()).filter(Boolean)
@@ -7634,8 +8072,12 @@ export class AiAssistantService {
       limit: Number(options?.limit || 100),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
-    return page
+    }
+    const pageScopeToken = buildEventPageScopeToken(normalized)
+    if (normalized.offset > 0 && String(options?.pageScopeToken || '').trim() !== pageScopeToken) {
+      return { items: [], total: 0, hasMore: false, revision: personalMemoryStore.getStructuredMemoryRevision(), stale: true, pageScopeStale: true, pageScopeToken }
+    }
+    return { ...personalMemoryStore.listEventTimeline(normalized), pageScopeToken }
   }
 
   getEntityRelationPage(options: any = {}): any {
@@ -7650,7 +8092,7 @@ export class AiAssistantService {
         stale: false
       }
     }
-    const page = personalMemoryStore.listEntityRelationPage({
+    const normalized = {
       entityId,
       direction: ['outgoing', 'incoming'].includes(String(options?.direction || ''))
         ? options.direction
@@ -7665,9 +8107,15 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    const pageScopeToken = buildRelationPageScopeToken(normalized)
+    if (normalized.offset > 0 && String(options?.pageScopeToken || '').trim() !== pageScopeToken) {
+      return { items: [], total: 0, hasMore: false, revision: `${personalMemoryStore.getGraphReviewRevision()}:${personalMemoryStore.getStructuredMemoryRevision()}`, stale: true, pageScopeStale: true, pageScopeToken }
+    }
+    const page = personalMemoryStore.listEntityRelationPage(normalized)
     return {
       ...page,
+      pageScopeToken,
       items: page.items.map((relation: any) => ({
         ...relation,
         subjectId: relation.subject_id,
@@ -7690,7 +8138,7 @@ export class AiAssistantService {
         platforms: [], revision: '0', stale: false
       }
     }
-    return personalMemoryStore.listEntityIdentityAnchorPage({
+    const normalized = {
       entityId,
       kind: ['alias', 'identity'].includes(String(options?.kind || ''))
         ? options.kind
@@ -7703,7 +8151,12 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    const pageScopeToken = buildIdentityAnchorPageScopeToken(normalized)
+    if (normalized.offset > 0 && String(options?.pageScopeToken || '').trim() !== pageScopeToken) {
+      return { items: [], total: 0, unfilteredTotal: 0, hasMore: false, counts: {}, platforms: [], revision: personalMemoryStore.getGraphReviewRevision(), stale: true, pageScopeStale: true, pageScopeToken }
+    }
+    return { ...personalMemoryStore.listEntityIdentityAnchorPage(normalized), pageScopeToken }
   }
 
   getEntityEvidencePage(options: any = {}): any {
@@ -7719,7 +8172,7 @@ export class AiAssistantService {
         stale: false
       }
     }
-    return personalMemoryStore.listEntityEvidencePage({
+    const normalized = {
       entityId,
       sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(String(options?.sourceId || ''))
         ? options.sourceId
@@ -7740,11 +8193,16 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    const pageScopeToken = buildEntityEvidencePageScopeToken(normalized)
+    if (normalized.offset > 0 && String(options?.pageScopeToken || '').trim() !== pageScopeToken) {
+      return { items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: `${personalMemoryStore.getGraphReviewRevision()}:${personalMemoryStore.getStructuredMemoryRevision()}`, stale: true, pageScopeStale: true, pageScopeToken }
+    }
+    return { ...personalMemoryStore.listEntityEvidencePage(normalized), pageScopeToken }
   }
 
   getClaimArchive(options: any = {}): any {
-    const page = personalMemoryStore.listClaimArchive({
+    const normalized = {
       entityId: String(options?.entityId || ''),
       sourceId: ['wechat', 'documents', 'calendar', 'mail', 'legacy'].includes(options?.sourceId)
         ? options.sourceId
@@ -7759,8 +8217,12 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
-    return page
+    }
+    const pageScopeToken = buildClaimPageScopeToken(normalized)
+    if (normalized.offset > 0 && String(options?.pageScopeToken || '').trim() !== pageScopeToken) {
+      return { items: [], total: 0, hasMore: false, revision: personalMemoryStore.getStructuredMemoryRevision(), stale: true, pageScopeStale: true, pageScopeToken }
+    }
+    return { ...personalMemoryStore.listClaimArchive(normalized), pageScopeToken }
   }
 
   private inspectJointMemoryBackup(path: string) {
@@ -8047,6 +8509,11 @@ export class AiAssistantService {
           ocr: ocr.privacy,
           imageSemantics: imageSemantics.privacy,
           voiceTranscripts: chatService.getTranscriptCachePrivacyStatus(),
+          insightRecords: insightRecordService.getPrivacyStatus(),
+          insightProfiles: insightProfileService.getPrivacyStatus(),
+          groupSummaryRecords: groupSummaryRecordService.getPrivacyStatus(),
+          analyticsAggregate: analyticsService.getCachePrivacyStatus(),
+          exportRecords: exportRecordService.getPrivacyStatus(),
           ...chatService.getRuntimeCachePrivacyStatus(),
           cacheMaps: this.config.getCacheMapPrivacyStatus()
         },
@@ -8109,7 +8576,7 @@ export class AiAssistantService {
   }
 
   getIngestionRunPage(options: any = {}): any {
-    return personalMemoryStore.listIngestionRunPage({
+    const normalized = {
       status: ['running', 'completed', 'partial', 'failed', 'all'].includes(options?.status)
         ? options.status
         : 'all',
@@ -8127,27 +8594,46 @@ export class AiAssistantService {
       limit: Number(options?.limit || 40),
       offset: Number(options?.offset || 0),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildIngestionRunScopeToken,
+      input => personalMemoryStore.listIngestionRunPage(input))
   }
 
   getIngestionRunDossier(runId: string, options: any = {}): any {
-    return personalMemoryStore.getIngestionRunDossier(
-      String(runId || '').trim(),
-      {
-        batchOffset: Number(options?.batchOffset || 0),
-        batchLimit: Number(options?.batchLimit || 40),
-        revision: String(options?.revision || '')
+    const normalized = {
+      runId: String(runId || '').trim(),
+      batchOffset: Number(options?.batchOffset || 0),
+      offset: Number(options?.batchOffset || 0),
+      batchLimit: Number(options?.batchLimit || 40),
+      revision: String(options?.revision || '')
+    }
+    const archiveScopeToken = buildIngestionRunDossierScopeToken(normalized)
+    if (normalized.offset > 0 &&
+        String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        id: normalized.runId, batches: [], batchTotal: 0,
+        batchOffset: normalized.batchOffset, batchLimit: normalized.batchLimit,
+        batchHasMore: false, revision: '', stale: true,
+        archiveScopeStale: true, archiveScopeToken
       }
-    )
+    }
+    const dossier = personalMemoryStore.getIngestionRunDossier(normalized.runId, {
+      batchOffset: normalized.batchOffset,
+      batchLimit: normalized.batchLimit,
+      revision: normalized.revision
+    })
+    return dossier ? { ...dossier, archiveScopeToken } : null
   }
 
   getIngestionRecoveryPage(options: any = {}): any {
-    return personalMemoryStore.listIngestionRecoveryPage({
+    const normalized = {
       query: String(options?.query || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildIngestionRecoveryScopeToken,
+      input => personalMemoryStore.listIngestionRecoveryPage(input))
   }
 
   retryPreparedIngestion(): any {
@@ -8168,13 +8654,17 @@ export class AiAssistantService {
   }
 
   getCrossStoreRecoveryPage(options: any = {}): any {
-    const page = personalMemoryStore.listCrossStoreRecoveryPage({
+    const normalized = {
       kind: ['task', 'source'].includes(options?.kind) ? options.kind : 'all',
       query: String(options?.query || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30),
       revision: String(options?.revision || '')
-    })
+    }
+    const page = this.withAuditArchiveScope(
+      normalized, options, buildCrossStoreRecoveryScopeToken,
+      input => personalMemoryStore.listCrossStoreRecoveryPage(input)
+    )
     return {
       ...page,
       items: page.items.map((item: any) => ({
@@ -8193,7 +8683,7 @@ export class AiAssistantService {
   }
 
   getCrossStoreRecoveryArchivePage(options: any = {}): any {
-    const page = personalMemoryStore.listCrossStoreRecoveryArchivePage({
+    const normalized = {
       kind: ['task', 'source'].includes(options?.kind) ? options.kind : 'all',
       status: ['prepared', 'committed', 'abandoned'].includes(options?.status)
         ? options.status
@@ -8209,7 +8699,11 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40),
       revision: String(options?.revision || '')
-    })
+    }
+    const page = this.withAuditArchiveScope(
+      normalized, options, buildCrossStoreRecoveryArchiveScopeToken,
+      input => personalMemoryStore.listCrossStoreRecoveryArchivePage(input)
+    )
     return {
       ...page,
       items: page.items.map((item: any) => ({
@@ -9376,7 +9870,8 @@ export class AiAssistantService {
           enabled: input.currentEnabled,
           offset,
           limit: 100,
-          expectedRevision: directory.revision
+          expectedRevision: directory.revision,
+          directoryScopeToken: directory.directoryScopeToken
         }
       ).items)
     }
@@ -10684,15 +11179,23 @@ export class AiAssistantService {
     const enrichmentStatus = [
       'pending', 'deferred', 'completed', 'terminal', 'waiting'
     ].includes(String(options?.enrichmentStatus || '')) ? options.enrichmentStatus : undefined
-    return personalMemoryStore.listResourceArchive({
-      ...(options || {}),
+    const normalized = {
+      resourceType: String(options?.resourceType || ''),
       sourceId,
       enrichmentKind,
       enrichmentStatus,
       resourceId: undefined,
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || ''),
       attachmentStructureParserVersion: ATTACHMENT_STRUCTURE_PARSER_VERSION,
       imageSemanticModelVersion: localImageSemanticService.getStatus().modelVersion
-    })
+    }
+    return this.withAuditArchiveScope(normalized, options, buildResourceArchiveScopeToken,
+      input => personalMemoryStore.listResourceArchive(input))
   }
 
   private assertResourceEnrichmentCapability(
@@ -11052,11 +11555,11 @@ export class AiAssistantService {
     }
     const sourceId = String(id || '').trim()
     if (!sourceId) throw new Error('结构化记忆 ID 不能为空')
-    return personalMemoryStore.getStructuredMemoryDossier(
+    return this.decorateStructuredMemoryDossier(personalMemoryStore.getStructuredMemoryDossier(
       normalizedKind as 'claim' | 'event' | 'relation',
       sourceId,
       expectedSearchRevision
-    )
+    ))
   }
 
   getCurrentStructuredMemoryDossier(kind: string, id: string): any {
@@ -11066,22 +11569,59 @@ export class AiAssistantService {
     }
     const sourceId = String(id || '').trim()
     if (!sourceId) throw new Error('结构化记忆 ID 不能为空')
-    return personalMemoryStore.getCurrentStructuredMemoryDossier(
+    return this.decorateStructuredMemoryDossier(personalMemoryStore.getCurrentStructuredMemoryDossier(
       normalizedKind as 'claim' | 'event' | 'relation',
       sourceId
-    )
+    ))
+  }
+
+  private decorateStructuredMemoryDossier(dossier: any): any {
+    if (!dossier?.item || dossier.stale) return dossier
+    const item = { ...dossier.item }
+    if (item.auditPage && (dossier.kind === 'claim' || dossier.kind === 'event')) {
+      item.auditPage = {
+        ...item.auditPage,
+        archiveScopeToken: buildMemoryItemAuditScopeToken({
+          kind: dossier.kind, itemId: dossier.sourceId
+        })
+      }
+    }
+    if (dossier.kind === 'event' && item.participantPage) {
+      item.participantPage = {
+        ...item.participantPage,
+        archiveScopeToken: buildEventDossierParticipantScopeToken({
+          eventId: dossier.sourceId, expectedSearchRevision: dossier.revision
+        })
+      }
+    }
+    if (dossier.kind === 'relation') {
+      for (const [field, kind] of [['historyPage', 'history'], ['correctionPage', 'correction']] as const) {
+        if (!item[field]) continue
+        item[field] = {
+          ...item[field],
+          archiveScopeToken: buildRelationDossierAuditScopeToken({
+            relationId: dossier.sourceId, kind, expectedSearchRevision: dossier.revision
+          })
+        }
+      }
+    }
+    return { ...dossier, item }
   }
 
   getEventDossierParticipantPage(eventId: string, options: any = {}): any {
     const id = String(eventId || '').trim()
     if (!id) throw new Error('事件 ID 不能为空')
-    return personalMemoryStore.listEventDossierParticipantPage({
+    const normalized = {
       eventId: id,
       expectedSearchRevision: String(options?.expectedSearchRevision || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildEventDossierParticipantScopeToken,
+      input => personalMemoryStore.listEventDossierParticipantPage(input)
+    )
   }
 
   getRelationDossierAuditPage(
@@ -11095,18 +11635,29 @@ export class AiAssistantService {
     }
     const id = String(relationId || '').trim()
     if (!id) throw new Error('关系 ID 不能为空')
-    return personalMemoryStore.listRelationDossierAuditPage({
+    const normalized = {
       relationId: id,
       kind: normalizedKind as 'history' | 'correction',
       expectedSearchRevision: String(options?.expectedSearchRevision || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildRelationDossierAuditScopeToken,
+      input => personalMemoryStore.listRelationDossierAuditPage(input)
+    )
   }
 
   getResourceTrashArchive(options?: any): any {
-    return personalMemoryStore.listResourceTrashArchive(options || {})
+    const normalized = {
+      query: String(options?.query || ''),
+      limit: Number(options?.limit || 40),
+      offset: Number(options?.offset || 0),
+      revision: String(options?.revision || '')
+    }
+    return this.withAuditArchiveScope(normalized, options, buildResourceTrashScopeToken,
+      input => personalMemoryStore.listResourceTrashArchive(input))
   }
 
   deleteMemoryResource(
@@ -11743,24 +12294,38 @@ export class AiAssistantService {
   }
 
   getMemorySearchFeedbackArchive(options?: any): any {
-    const archive = personalMemoryStore.getMemorySearchFeedbackArchive(options || {})
-    return {
-      ...archive,
-      items: (archive.items || []).map((item: any) => {
-        const scope = item.scope && typeof item.scope === 'object' ? item.scope : {}
-        const document = personalMemoryStore.getSearchDocumentById(
-          String(item.documentId || ''),
-          scope
-        )
-        return {
-          ...item,
-          feedbackMutationToken: document
-            ? this.memorySearchFeedbackMutationToken(item.queryText, scope, document)
-            : ''
-        }
-      }),
-      version: MEMORY_SEARCH_FEEDBACK_VERSION
+    const normalized = {
+      action: String(options?.action || ''),
+      query: String(options?.query || ''),
+      from: String(options?.from || ''),
+      to: String(options?.to || ''),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 40),
+      revision: String(options?.revision || '')
     }
+    return this.withAuditArchiveScope(
+      normalized, options, buildMemorySearchFeedbackArchiveScopeToken,
+      input => {
+        const archive = personalMemoryStore.getMemorySearchFeedbackArchive(input)
+        return {
+          ...archive,
+          items: (archive.items || []).map((item: any) => {
+            const scope = item.scope && typeof item.scope === 'object' ? item.scope : {}
+            const document = personalMemoryStore.getSearchDocumentById(
+              String(item.documentId || ''),
+              scope
+            )
+            return {
+              ...item,
+              feedbackMutationToken: document
+                ? this.memorySearchFeedbackMutationToken(item.queryText, scope, document)
+                : ''
+            }
+          }),
+          version: MEMORY_SEARCH_FEEDBACK_VERSION
+        }
+      }
+    )
   }
 
   deleteMemorySearchFeedback(input?: any): any {
@@ -11856,6 +12421,8 @@ export class AiAssistantService {
     }
     const allowedIds = personalMemoryStore.createSearchDocumentScope(scopedOptions)
     try {
+    let searchFacets: any = null
+    if (offset === 0) {
     const sourceFacetOptions = {
       ...scopedOptions,
       sourceIds: undefined
@@ -11962,6 +12529,29 @@ export class AiAssistantService {
           return [preset, total]
         })
     )
+    searchFacets = {
+      typeCounts: typeFacet.counts,
+      typeCountsBasis: text ? 'lexical_archive' : 'scope_browse',
+      typeCountsSearchMode: typeFacet.searchMode,
+      trustCounts: trustFacet.counts,
+      trustCountsBasis: text ? 'lexical_archive' : 'scope_browse',
+      trustCountsSearchMode: trustFacet.searchMode,
+      sourceCounts,
+      sourceCountsBasis: text ? 'lexical_archive' : 'scope_browse',
+      supportCounts: supportFacet.counts,
+      supportCountsBasis: text ? 'lexical_archive' : 'scope_browse',
+      supportCountsSearchMode: supportFacet.searchMode,
+      contradictionCount: conflictFacet.count,
+      noContradictionCount: Math.max(0, conflictFacetTotal - conflictFacet.count),
+      contradictionCountBasis: text ? 'lexical_archive' : 'scope_browse',
+      evidenceStrengthCounts,
+      evidenceStrengthCountsBasis: text ? 'lexical_archive' : 'scope_browse',
+      evidenceBreadthCounts,
+      evidenceBreadthCountsBasis: text ? 'lexical_archive' : 'scope_browse',
+      reviewPresetCounts,
+      reviewPresetCountsBasis: text ? 'lexical_archive' : 'scope_browse'
+    }
+    }
     if (text && searchMode === 'lexical_archive') {
       const lexicalPage = personalMemoryStore.listSearchDocumentsByKeywordPage(
         text,
@@ -12057,26 +12647,7 @@ export class AiAssistantService {
         retrievalMode: page.retrievalMode
       }
     }
-    page.typeCounts = typeFacet.counts
-    page.typeCountsBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.typeCountsSearchMode = typeFacet.searchMode
-    page.trustCounts = trustFacet.counts
-    page.trustCountsBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.trustCountsSearchMode = trustFacet.searchMode
-    page.sourceCounts = sourceCounts
-    page.sourceCountsBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.supportCounts = supportFacet.counts
-    page.supportCountsBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.supportCountsSearchMode = supportFacet.searchMode
-    page.contradictionCount = conflictFacet.count
-    page.noContradictionCount = Math.max(0, conflictFacetTotal - conflictFacet.count)
-    page.contradictionCountBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.evidenceStrengthCounts = evidenceStrengthCounts
-    page.evidenceStrengthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.evidenceBreadthCounts = evidenceBreadthCounts
-    page.evidenceBreadthCountsBasis = text ? 'lexical_archive' : 'scope_browse'
-    page.reviewPresetCounts = reviewPresetCounts
-    page.reviewPresetCountsBasis = text ? 'lexical_archive' : 'scope_browse'
+    if (searchFacets) Object.assign(page, searchFacets)
     const feedback = this.memorySearchFeedbackContext(text, scopedOptions).entries
     const completedRevision = personalMemoryStore.getMemorySearchRevision()
     const completedEntitySelection = options.entityId
@@ -12235,8 +12806,21 @@ export class AiAssistantService {
       { type: 'scheduled', at: new Date().toISOString() }
     )
     this.vectorIndexContinuation = setTimeout(() => {
-      this.vectorIndexContinuation = null
-      if (this.disposed) return
+      void this.runVectorIndexContinuation().catch(error => {
+        console.warn(
+          '[AI Assistant] 向量索引接力最终保护边界捕获异常:',
+          sanitizeDiagnosticText(error)
+        )
+        this.handleVectorIndexContinuationFailure(error)
+      })
+    }, vectorIndexScheduleDelayMs(this.vectorIndexContinuationHealth, delayMs))
+    this.vectorIndexContinuation.unref()
+  }
+
+  private async runVectorIndexContinuation(): Promise<void> {
+    this.vectorIndexContinuation = null
+    if (this.disposed) return
+    try {
       if (this.vectorIndexPowerPolicy.deferred) {
         this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
           this.vectorIndexContinuationHealth,
@@ -12261,39 +12845,58 @@ export class AiAssistantService {
         this.vectorIndexContinuationHealth,
         { type: 'started', at: new Date().toISOString() }
       )
-      void this.ensureVectorIndex({ maxBatches: 2 }).then(result => {
-        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
-          this.vectorIndexContinuationHealth,
-          {
-            type: 'succeeded',
-            at: new Date().toISOString(),
-            indexed: Number(result.indexed || 0),
-            pending: Number(result.pending || 0)
-          }
-        )
-        this.persistVectorIndexContinuationHealth()
-        if (Number(result.pending || 0) > 0 || approximateVectorIndexNeedsRecovery(result.ann)) {
-          this.scheduleVectorIndexContinuation()
+      const result = await this.ensureVectorIndex({ maxBatches: 2 })
+      this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+        this.vectorIndexContinuationHealth,
+        {
+          type: 'succeeded',
+          at: new Date().toISOString(),
+          indexed: Number(result.indexed || 0),
+          pending: Number(result.pending || 0)
         }
-      }).catch(error => {
-        if (!this.config.get('aiAssistantEnabled')) {
-          this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
-            this.vectorIndexContinuationHealth,
-            { type: 'cancelled', at: new Date().toISOString() }
-          )
-          this.persistVectorIndexContinuationHealth()
-          return
-        }
-        console.warn('[AI Assistant] 本地向量索引暂未完成:', error)
-        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
-          this.vectorIndexContinuationHealth,
-          { type: 'failed', at: new Date().toISOString(), error: sanitizeDiagnosticText(error) }
-        )
-        this.persistVectorIndexContinuationHealth()
+      )
+      this.persistVectorIndexContinuationHealth()
+      if (Number(result.pending || 0) > 0 || approximateVectorIndexNeedsRecovery(result.ann)) {
         this.scheduleVectorIndexContinuation()
-      })
-    }, vectorIndexScheduleDelayMs(this.vectorIndexContinuationHealth, delayMs))
-    this.vectorIndexContinuation.unref()
+      }
+    } catch (error) {
+      let enabled = true
+      try {
+        enabled = Boolean(this.config.get('aiAssistantEnabled'))
+      } catch {
+        // A configuration read failure is itself an operational failure and must
+        // enter the persisted retry path instead of escaping this timer.
+      }
+      if (!enabled || this.disposed) {
+        this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+          this.vectorIndexContinuationHealth,
+          { type: 'cancelled', at: new Date().toISOString() }
+        )
+        this.persistVectorIndexContinuationHealth()
+        return
+      }
+      this.handleVectorIndexContinuationFailure(error)
+    }
+  }
+
+  private handleVectorIndexContinuationFailure(error: unknown): void {
+    console.warn('[AI Assistant] 本地向量索引暂未完成:', sanitizeDiagnosticText(error))
+    try {
+      this.vectorIndexContinuationHealth = recordVectorIndexContinuation(
+        this.vectorIndexContinuationHealth,
+        { type: 'failed', at: new Date().toISOString(), error: sanitizeDiagnosticText(error) }
+      )
+    } catch (healthError) {
+      console.warn('[AI Assistant] 无法更新向量续建失败状态:', sanitizeDiagnosticText(healthError))
+    }
+    try {
+      this.persistVectorIndexContinuationHealth()
+    } catch {}
+    try {
+      this.scheduleVectorIndexContinuation()
+    } catch (scheduleError) {
+      console.warn('[AI Assistant] 无法重新安排向量续建:', sanitizeDiagnosticText(scheduleError))
+    }
   }
 
   private persistVectorIndexContinuationHealth(): void {
@@ -12966,7 +13569,7 @@ export class AiAssistantService {
   }
 
   getAssistantConversations(options?: any): any {
-    return personalMemoryStore.listAssistantConversationsPage({
+    const normalized = {
       query: String(options?.query || ''),
       from: String(options?.from || ''),
       to: String(options?.to || ''),
@@ -12974,11 +13577,16 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildAssistantConversationScopeToken,
+      input => personalMemoryStore.listAssistantConversationsPage(input)
+    )
   }
 
   getAssistantModelRequestAudits(options?: any): any {
-    return personalMemoryStore.listAssistantModelRequestAuditsPage({
+    const normalized = {
+      requestKind: String(options?.requestKind || ''),
       status: String(options?.status || ''),
       answerOutcome: String(options?.answerOutcome || ''),
       answerOutcomeCode: String(options?.answerOutcomeCode || ''),
@@ -12987,11 +13595,15 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildAssistantModelAuditScopeToken,
+      input => personalMemoryStore.listAssistantModelRequestAuditsPage(input)
+    )
   }
 
   getAssistantAnswerReviews(options?: any): any {
-    return personalMemoryStore.listAssistantAnswerReviewsPage({
+    const normalized = {
       status: options?.status,
       reviewState: options?.reviewState,
       invalidReason: options?.invalidReason,
@@ -13001,7 +13613,11 @@ export class AiAssistantService {
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 30),
       revision: String(options?.revision || '')
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildAssistantAnswerReviewScopeToken,
+      input => personalMemoryStore.listAssistantAnswerReviewsPage(input)
+    )
   }
 
   reviewAssistantAnswer(
@@ -13017,13 +13633,15 @@ export class AiAssistantService {
   }
 
   getAssistantAnswerReviewDecisions(messageId: string, options?: any): any {
-    return personalMemoryStore.listAssistantAnswerReviewDecisionsPage(
-      String(messageId || '').trim(),
-      {
-        offset: Number(options?.offset || 0),
-        limit: Number(options?.limit || 20),
-        revision: String(options?.revision || '')
-      }
+    const normalized = {
+      messageId: String(messageId || '').trim(),
+      offset: Number(options?.offset || 0),
+      limit: Number(options?.limit || 20),
+      revision: String(options?.revision || '')
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildAssistantAnswerDecisionScopeToken,
+      input => personalMemoryStore.listAssistantAnswerReviewDecisionsPage(input.messageId, input)
     )
   }
 
@@ -13223,13 +13841,31 @@ export class AiAssistantService {
   }
 
   getAssistantConversation(id: string, options?: any): any {
-    const page = personalMemoryStore.getAssistantConversation(String(id || '').trim(), {
-      offset: Number(options?.offset || 0),
+    const conversationId = String(id || '').trim()
+    const offset = Number(options?.offset || 0)
+    const scopeAnchorMessageId = String(
+      options?.conversationScopeAnchorMessageId ?? options?.anchorMessageId ?? ''
+    ).trim()
+    const archiveScopeToken = buildAssistantConversationMessageScopeToken({
+      conversationId, anchorMessageId: scopeAnchorMessageId
+    })
+    if (offset > 0 && String(options?.archiveScopeToken || '').trim() !== archiveScopeToken) {
+      return {
+        id: conversationId, messages: [], total: 0, offset, limit: Number(options?.limit || 40),
+        anchorMessageId: scopeAnchorMessageId, anchorFound: false,
+        hasNewer: false, hasOlder: false, revision: '', stale: true,
+        archiveScopeStale: true, archiveScopeToken
+      }
+    }
+    const storedPage = personalMemoryStore.getAssistantConversation(conversationId, {
+      offset,
       limit: Number(options?.limit || 40),
       anchorMessageId: String(options?.anchorMessageId || ''),
       revision: String(options?.revision || '')
     })
-    if (!page || page.stale) return page
+    if (!storedPage) return null
+    const page = { ...storedPage, archiveScopeToken }
+    if (page.stale) return page
     const enriched = this.enrichAssistantCitationFeedback(page)
     const completedRevision = personalMemoryStore.getAssistantHistoryRevision()
     if (completedRevision !== page.revision) {
@@ -13244,7 +13880,8 @@ export class AiAssistantService {
         hasNewer: false,
         hasOlder: false,
         revision: completedRevision,
-        stale: true
+        stale: true,
+        archiveScopeToken
       }
     }
     return enriched
@@ -13417,19 +14054,24 @@ export class AiAssistantService {
         }
       }),
       participantTotal: participantPage.total,
-      participantEditingSupported: !participantPage.truncated
+      participantEditingSupported: !participantPage.truncated,
+      participantArchiveScopeToken: buildEventCorrectionParticipantScopeToken({ eventId: id })
     } : null
   }
 
   getEventCorrectionParticipantPage(eventId: string, options: any = {}): any {
     const id = String(eventId || '').trim()
     if (!id) throw new Error('事件 ID 不能为空')
-    return personalMemoryStore.listEventCorrectionParticipantPage({
+    const normalized = {
       eventId: id,
       revision: String(options?.revision || ''),
       offset: Number(options?.offset || 0),
       limit: Number(options?.limit || 40)
-    })
+    }
+    return this.withAuditArchiveScope(
+      normalized, options, buildEventCorrectionParticipantScopeToken,
+      input => personalMemoryStore.listEventCorrectionParticipantPage(input)
+    )
   }
 
   getMemoryRelation(id: string): any {
@@ -13701,20 +14343,55 @@ export class AiAssistantService {
         attachment_structure: Number(structure.pending || 0) > 0
       }, now.getTime())
     } catch (error) {
-      this.state.cursor.resourceEnrichmentRetry = planResourceEnrichmentDiscoveryFailure(
-        this.state.cursor.resourceEnrichmentRetry,
+      const previousRetry = this.state.cursor.resourceEnrichmentRetry
+      const failedRetry = planResourceEnrichmentDiscoveryFailure(
+        previousRetry,
         now,
         sanitizeDiagnosticText(error)
       )
-      try { this.persistCrossStoreMutationState() } catch {}
+      try {
+        commitPersistedRuntimeTransition(
+          previousRetry,
+          failedRetry,
+          value => { this.state.cursor.resourceEnrichmentRetry = value },
+          () => this.persistCrossStoreMutationState()
+        )
+      } catch {
+        // Keep the last durable discovery checkpoint.
+      }
       return Promise.resolve('resource_enrichment_discovery_failed')
     }
     if (this.state.cursor.resourceEnrichmentRetry.failures) {
-      this.state.cursor.resourceEnrichmentRetry = {
+      const previousRetry = this.state.cursor.resourceEnrichmentRetry
+      const recoveredRetry = {
         ...EMPTY_RESOURCE_ENRICHMENT_SCHEDULER_RETRY,
         lastAttemptAt: now.toISOString()
       }
-      try { this.persistCrossStoreMutationState() } catch {}
+      try {
+        commitPersistedRuntimeTransition(
+          previousRetry,
+          recoveredRetry,
+          value => { this.state.cursor.resourceEnrichmentRetry = value },
+          () => this.persistCrossStoreMutationState()
+        )
+      } catch (error) {
+        const failedRetry = planResourceEnrichmentDiscoveryFailure(
+          previousRetry,
+          now,
+          sanitizeDiagnosticText(error)
+        )
+        try {
+          commitPersistedRuntimeTransition(
+            previousRetry,
+            failedRetry,
+            value => { this.state.cursor.resourceEnrichmentRetry = value },
+            () => this.persistCrossStoreMutationState()
+          )
+        } catch {
+          // Recovery-state write failed too; retain the prior durable retry.
+        }
+        return Promise.resolve('resource_enrichment_discovery_failed')
+      }
     }
     if (!kind) return null
     const runId = `maintenance_${crypto.randomUUID()}`
@@ -13752,11 +14429,38 @@ export class AiAssistantService {
         () => this.schedulerTick(source, observedNow)
       )
     }
-    const promise = this.runSchedulerTick(source, observedNow).finally(() => {
+    const promise = this.runSchedulerTickGuarded(source, observedNow).finally(() => {
       if (this.schedulerTickPromise === promise) this.schedulerTickPromise = null
     })
     this.schedulerTickPromise = promise
     return promise
+  }
+
+  private async runSchedulerTickGuarded(
+    source: 'timer' | 'system_resume',
+    observedNow?: Date
+  ): Promise<string> {
+    const now = observedNow || new Date()
+    if (schedulerRuntimeCoolingDown(
+      this.state.cursor.schedulerRuntimeRetry,
+      now.getTime()
+    )) return 'scheduler_runtime_cooling_down'
+    try {
+      const outcome = await this.runSchedulerTick(source, now)
+      if (this.state.cursor.schedulerRuntimeRetry.failures > 0) {
+        const previousRetry = this.state.cursor.schedulerRuntimeRetry
+        commitPersistedRuntimeTransition(
+          previousRetry,
+          clearSchedulerRuntimeFailure(previousRetry, new Date()),
+          value => { this.state.cursor.schedulerRuntimeRetry = value },
+          () => this.persistCrossStoreMutationState()
+        )
+      }
+      return outcome
+    } catch (error) {
+      this.recordSchedulerRuntimeFailure(error, now)
+      return 'scheduler_runtime_failed'
+    }
   }
 
   private async runSchedulerTick(
@@ -13817,9 +14521,10 @@ export class AiAssistantService {
       if (nowMs - this.lastSchedulerAttemptAt < 60_000) return 'backlog_throttled'
       this.lastSchedulerAttemptAt = nowMs
       try {
-        await this.sync('backlog')
-      } catch {}
-      return 'backlog_catchup_attempted'
+        return classifyBacklogCatchupResult(await this.sync('backlog'))
+      } catch {
+        return classifyBacklogCatchupResult(null, true)
+      }
     }
     const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(now)
     const today = shanghaiDate(nowMs)

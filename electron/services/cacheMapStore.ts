@@ -7,6 +7,7 @@ import {
   writeEncryptedSensitiveCache,
   type SensitiveCachePrivacy
 } from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
 
 // 条件导入 electron（Worker 环境中不可用）
 let app: any = null
@@ -30,6 +31,7 @@ export class CacheMapStore {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private persistenceRetry = emptyCachePersistenceRetry()
   private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
   private encryptionKey: Buffer | string
 
@@ -81,7 +83,8 @@ export class CacheMapStore {
     return {
       ...this.privacy,
       ...inspectSensitiveCacheFile(this.filePath),
-      entries: this.data.size
+      entries: this.data.size,
+      persistenceRetry: { ...this.persistenceRetry }
     }
   }
 
@@ -113,12 +116,12 @@ export class CacheMapStore {
     }
   }
 
-  private persist(): void {
+  private persist(delayMs = 500): void {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persistNow()
-    }, 500)
+    }, Math.max(0, delayMs))
     this.persistTimer.unref?.()
   }
 
@@ -134,13 +137,16 @@ export class CacheMapStore {
         ...writeEncryptedSensitiveCache(this.filePath, Object.fromEntries(this.data), this.encryptionKey),
         migratedPlaintext: this.privacy.migratedPlaintext
       }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('CacheMapStore: 保存缓存失败', error)
+      this.persistDirty = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistDirty) {
         this.persistDirty = false
-        void this.persistNow()
+        this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
     }
   }

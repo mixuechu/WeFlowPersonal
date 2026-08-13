@@ -68,6 +68,8 @@ test('scheduler advances one bounded name page without requiring messages or Dee
   assert.match(continuation, /planIdentityScanRetry/)
   assert.match(continuation, /fullScanNextAttemptAt: retry\.nextAttemptAt/)
   assert.match(continuation, /this\.persistCrossStoreMutationState\(\)/)
+  assert.match(continuation, /commitPersistedRuntimeTransition\(/)
+  assert.doesNotMatch(continuation, /persistCrossStoreMutationState\(\) \} catch \{\}/)
   assert.doesNotMatch(continuation, /callAi|collectMessages/)
   assert.match(scheduler, /continueFullIdentityScanWhileIdle\(now\)/)
   assert.ok(scheduler.indexOf('continueFullIdentityScanWhileIdle(now)') <

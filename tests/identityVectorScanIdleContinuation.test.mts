@@ -25,9 +25,12 @@ test('vector identity continuation checks persisted cooling before reading SQLCi
     continuation.indexOf('personalMemoryStore.getIdentityVectorScanBacklog(model)'))
   assert.match(continuation, /identity_vector_scan_cooling_down/)
   assert.match(continuation, /planIdentityScanRetry/)
-  assert.match(continuation, /vectorNextAttemptAt = retry\.nextAttemptAt/)
+  assert.match(continuation, /vectorNextAttemptAt: retry\.nextAttemptAt/)
   assert.match(continuation, /persistCrossStoreMutationState/)
   assert.match(continuation, /if \(!backlog\.pending\)[\s\S]*vectorContinuationFailures = 0/)
+  assert.match(continuation, /commitPersistedRuntimeTransition/)
+  assert.match(continuation, /failedIdentityScan/)
+  assert.doesNotMatch(continuation, /persistCrossStoreMutationState\(\) \} catch \{\}/)
   assert.match(continuation, /if \(!backlog\.pending\)[\s\S]*vectorNextAttemptAt = null/)
 
   const schedulerStart = source.indexOf('private async runSchedulerTick')

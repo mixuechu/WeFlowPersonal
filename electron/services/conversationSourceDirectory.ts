@@ -37,6 +37,7 @@ export interface ConversationSourceDirectoryOptions {
   offset?: number
   limit?: number
   expectedRevision?: string
+  directoryScopeToken?: string
 }
 
 const digest = (value: unknown): string =>
@@ -89,6 +90,8 @@ export function buildConversationSourceDirectory(
   limit: number
   revision: string
   stale: boolean
+  directoryScopeToken: string
+  directoryScopeStale: boolean
   counts: {
     total: number
     enabled: number
@@ -150,6 +153,9 @@ export function buildConversationSourceDirectory(
   const query = normalizeQuery(options.query)
   const type = options.type === 'group' || options.type === 'private' ? options.type : 'all'
   const enabled = options.enabled === 'enabled' || options.enabled === 'disabled' ? options.enabled : 'all'
+  const directoryScopeToken = digest([
+    'conversation-source-directory-v1', query, type, enabled
+  ])
   const filtered = all.filter(item => {
     if (type !== 'all' && item.type !== type) return false
     if (enabled === 'enabled' && !item.enabled) return false
@@ -159,7 +165,10 @@ export function buildConversationSourceDirectory(
   })
   const offset = Math.max(0, Math.floor(Number(options.offset) || 0))
   const limit = Math.min(100, Math.max(1, Math.floor(Number(options.limit) || 50)))
-  const stale = Boolean(options.expectedRevision && options.expectedRevision !== revision)
+  const directoryScopeStale = offset > 0 &&
+    String(options.directoryScopeToken || '').trim() !== directoryScopeToken
+  const stale = directoryScopeStale ||
+    Boolean(options.expectedRevision && options.expectedRevision !== revision)
   const items = stale ? [] : filtered.slice(offset, offset + limit)
 
   return {
@@ -170,6 +179,8 @@ export function buildConversationSourceDirectory(
     limit,
     revision,
     stale,
+    directoryScopeToken,
+    directoryScopeStale,
     counts: {
       total: all.length,
       enabled: all.filter(item => item.enabled).length,

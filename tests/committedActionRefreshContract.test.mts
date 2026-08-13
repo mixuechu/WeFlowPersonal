@@ -98,6 +98,8 @@ test('routine edits and human review decisions preserve their committed result',
 
 test('answer persistence cannot be reported as failed by follow-up hydration', () => {
   const body = functionBody('askMemory', 'selectMemoryEntityScope')
-  assert.match(body, /getAssistantConversation\(answer\.conversationId\)[\s\S]*\.catch\(\(\) => null\)/)
+  assert.match(body, /setMemoryAnswer\(\{ \.\.\.answer, question \}\)[\s\S]*getAssistantConversation\(answer\.conversationId\)/)
+  assert.match(body, /getAssistantConversation\(answer\.conversationId\)[\s\S]*\.catch\(\(error: any\) => \{[\s\S]*回答已生成并保存，但会话原文暂未加载：[\s\S]*return null/)
+  assert.match(body, /if \(!memoryConversationGate\.current\.isCurrent\(request\)\) return[\s\S]*else if \(conversation\) setMemoryConversation\(conversation\)/)
   assert.match(body, /await load\(\)\.catch\(\(\) => \{\}\)/)
 })

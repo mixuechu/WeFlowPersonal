@@ -1752,6 +1752,8 @@ export interface ElectronAPI {
         nextOffset: number
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getEntityAuditPage: (entityId: string, options?: any) => Promise<{
         items: any[]
@@ -1759,11 +1761,13 @@ export interface ElectronAPI {
         hasMore: boolean
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getMemoryItemAuditPage: (
         kind: 'claim' | 'event',
         itemId: string,
-        options?: { limit?: number; offset?: number; revision?: string }
+        options?: { limit?: number; offset?: number; revision?: string; archiveScopeToken?: string }
       ) => Promise<{
         items: any[]
         total: number
@@ -1774,7 +1778,10 @@ export interface ElectronAPI {
       getEventCorrectionParticipantSnapshotPage: (
         correctionId: number,
         phase: 'before' | 'after',
-        options: { revision: string; query?: string; offset?: number; limit?: number }
+        options: {
+          revision: string; query?: string; offset?: number; limit?: number
+          archiveScopeToken?: string
+        }
       ) => Promise<any>
       getProjectWorkspace: (projectId: string) => Promise<{
         project: any
@@ -1786,6 +1793,8 @@ export interface ElectronAPI {
         hasMore: boolean
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getProjectTaskPage: (projectId: string, options?: any) => Promise<{
         items: any[]
@@ -1794,6 +1803,8 @@ export interface ElectronAPI {
         nextOffset?: number
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getProjectRiskPage: (projectId: string, options?: any) => Promise<{
         items: any[]
@@ -1802,6 +1813,8 @@ export interface ElectronAPI {
         nextOffset?: number
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getProjectDirectory: (options?: any) => Promise<{
         items: any[]
@@ -1810,6 +1823,8 @@ export interface ElectronAPI {
         nextOffset?: number
         revision: string
         stale: boolean
+        projectDirectoryScopeToken?: string
+        projectDirectoryScopeStale?: boolean
       }>
       getTaskWorkspace: (taskId: string) => Promise<{
         task: any
@@ -1817,6 +1832,7 @@ export interface ElectronAPI {
         historyTotal: number
         historyHasMore: boolean
         historyRevision: string
+        historyArchiveScopeToken?: string
         payloadPolicy: { version: string; evidenceLimit: number; historyLimit: number; loadedOnDemand: boolean }
       } | null>
       getTaskHistoryPage: (taskId: string, options?: any) => Promise<{
@@ -1825,6 +1841,8 @@ export interface ElectronAPI {
         hasMore: boolean
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getTaskReminderPage: (options?: any) => Promise<{
         items: any[]
@@ -1838,6 +1856,8 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
         nextBoundaryMs: number | null
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getTaskDependencyCandidates: (options?: any) => Promise<{
         items: any[]
@@ -1852,6 +1872,8 @@ export interface ElectronAPI {
         counts: Record<string, number>
         revision: string
         stale: boolean
+        taskWorksetScopeToken?: string
+        taskWorksetScopeStale?: boolean
       }>
       auditActiveTaskLifecycles: () => Promise<{
         total: number
@@ -1866,6 +1888,8 @@ export interface ElectronAPI {
         hasMore: boolean
         revision: string
         stale: boolean
+        taskCalendarScopeToken?: string
+        taskCalendarScopeStale?: boolean
       }>
       getTaskArchive: (options?: any) => Promise<{
         items: any[]
@@ -1890,6 +1914,8 @@ export interface ElectronAPI {
         counts: Record<string, number>
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getTaskReviewDecisionPage: (options?: any) => Promise<{
         items: any[]
@@ -1898,6 +1924,8 @@ export interface ElectronAPI {
         counts: { active: number; revoked: number; all: number }
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getTaskReviewDecisionDossier: (evidenceFingerprint: string, options?: any) => Promise<any>
       getMemoryDeletionAuditPage: (options?: any) => Promise<{
@@ -1914,6 +1942,8 @@ export interface ElectronAPI {
         }
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getMemoryMaintenanceAuditPage: (options?: any) => Promise<{
         items: any[]
@@ -1922,6 +1952,8 @@ export interface ElectronAPI {
         counts: { all: number; manual: number; automatic: number; recovery: number }
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       retryMemoryMaintenanceAuditDelivery: () => Promise<{
         success: boolean
@@ -1941,6 +1973,8 @@ export interface ElectronAPI {
         revision: string
         stale: boolean
         trackedSince: string
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getMemoryChangeOriginDossier: (
         changeId: number,
@@ -1953,6 +1987,8 @@ export interface ElectronAPI {
         counts: { active: number; reverted: number; all: number }
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       sync: () => Promise<any>
       cancelSync: () => Promise<any>
@@ -2062,6 +2098,7 @@ export interface ElectronAPI {
         limit?: number
         offset?: number
         revision?: string
+        archiveScopeToken?: string
       }) => Promise<any>
       retryResourceEnrichment: (input: {
         resourceId: string
@@ -2090,6 +2127,7 @@ export interface ElectronAPI {
           offset?: number
           limit?: number
           revision?: string
+          archiveScopeToken?: string
         }
       ) => Promise<any>
       getRelationDossierAuditPage: (
@@ -2100,6 +2138,7 @@ export interface ElectronAPI {
           offset?: number
           limit?: number
           revision?: string
+          archiveScopeToken?: string
         }
       ) => Promise<any>
       getResourceTrashArchive: (options?: {
@@ -2107,6 +2146,7 @@ export interface ElectronAPI {
         limit?: number
         offset?: number
         revision?: string
+        archiveScopeToken?: string
       }) => Promise<any>
       deleteMemoryResource: (
         id: string,
@@ -2219,6 +2259,7 @@ export interface ElectronAPI {
         offset?: number
         limit?: number
         revision?: string
+        archiveScopeToken?: string
       }) => Promise<any>
       deleteMemorySearchFeedback: (input?: {
         id?: number
@@ -2280,6 +2321,8 @@ export interface ElectronAPI {
         counts: { running: number; completed: number; partial: number; failed: number; all: number }
         revision: string
         stale: boolean
+        archiveScopeToken?: string
+        archiveScopeStale?: boolean
       }>
       getIngestionRunDossier: (runId: string, options?: any) => Promise<any>
       getIngestionRecoveryPage: (options?: any) => Promise<any>
@@ -2336,7 +2379,9 @@ export interface ElectronAPI {
       getMemoryEvent: (id: string) => Promise<any>
       getEventCorrectionParticipantPage: (
         eventId: string,
-        options: { revision: string; offset?: number; limit?: number }
+        options: {
+          revision: string; offset?: number; limit?: number; archiveScopeToken?: string
+        }
       ) => Promise<any>
       getMemoryRelation: (id: string) => Promise<any>
       previewRelationCorrection: (id: string, input?: any) => Promise<any>
@@ -2382,6 +2427,8 @@ export interface ElectronAPI {
         limit: number
         revision: string
         stale: boolean
+        directoryScopeToken: string
+        directoryScopeStale: boolean
         counts: {
           total: number
           enabled: number
@@ -2395,21 +2442,26 @@ export interface ElectronAPI {
       getDataSources: () => Promise<any[]>
       getEventTimeline: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
       }>
       getEntityRelationPage: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
       }>
       getEntityIdentityAnchorPage: (options?: any) => Promise<{
         items: any[]; total: number; unfilteredTotal: number; hasMore: boolean
         counts: { alias: number; identity: number; wechat: number; external: number }
         platforms: string[]; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
       }>
       getEntityEvidencePage: (options?: any) => Promise<{
         items: any[]; total: number; unfilteredTotal: number
         hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
       }>
       getClaimArchive: (options?: any) => Promise<{
         items: any[]; total: number; hasMore: boolean; revision: string; stale: boolean
+        pageScopeToken?: string; pageScopeStale?: boolean
       }>
       getCalendarAuthorization: () => Promise<{ available: boolean; authorization: string }>
       requestCalendarAccess: () => Promise<{ available: boolean; authorization: string; granted: boolean }>

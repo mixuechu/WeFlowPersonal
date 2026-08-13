@@ -13827,6 +13827,35 @@ test('chunk ANN recalls a long-document tail without scanning every long documen
   assert.equal(store.getApproximateVectorIndexStats(model, 8).status, 'dirty')
 }))
 
+test('ANN rebuild refuses ready status when a persisted chunk vector is invalid', () => withStore(store => {
+  const model = 'test-ann-invalid-chunk:4d'
+  const vector = [1, 0.2, 0.1, 0.05]
+  store.syncTasks(Array.from({ length: 20 }, (_, index) => ({
+    id: `invalid-chunk-task-${index}`,
+    title: `向量完整性任务 ${index}`,
+    detail: '用于验证 ANN 分块资格与提交计数一致',
+    priority: 'medium',
+    status: 'todo',
+    classification: 'mine'
+  })))
+  for (let index = 0; index < 20; index += 1) {
+    store.saveEmbedding(`task:invalid-chunk-task-${index}`, model, vector)
+  }
+  ;(store as any).db.prepare(`
+    UPDATE search_document_embedding_chunks
+    SET vector_json='[0,0,0,0]'
+    WHERE document_id='task:invalid-chunk-task-0' AND chunk_index=0
+  `).run()
+  const rebuilt = store.ensureApproximateVectorIndex(model, { minimumDocuments: 20, force: true })
+  assert.equal(rebuilt.rebuilt, true)
+  assert.equal(rebuilt.status, 'dirty')
+  assert.equal(rebuilt.active, false)
+  assert.equal(rebuilt.coverageValidation, 'full_audit')
+  const result = store.searchVector(vector, model, 3, { minimumDocuments: 20 })
+  assert.ok(result.length > 0)
+  assert.equal(result[0].semantic_search_mode, 'exact')
+}))
+
 test('ANN signatures and one-bit probes are deterministic and bounded', () => {
   const vector = [0.5, -0.5, 0.25, 0.125]
   const first = computeAnnSignatures(vector, 'ann-signature-test', 4, 8)

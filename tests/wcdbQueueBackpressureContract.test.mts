@@ -30,12 +30,113 @@ test('WCDB admission rejects the first over-capacity RPC but still accepts close
   assert.deepEqual(service.getQueueHealth(), {
     pending: WCDB_MAX_PENDING_REQUESTS + 1,
     capacity: WCDB_MAX_PENDING_REQUESTS,
+    currentlyBackpressured: true,
     highWatermark: WCDB_MAX_PENDING_REQUESTS + 1,
     rejectedCount: 1,
     lastRejectedAt: service.getQueueHealth().lastRejectedAt,
-    lastRejectedType: 'overflow'
+    lastRejectedType: 'overflow',
+    monitorDelivery: {
+      failures: 0,
+      lastErrorAt: '',
+      lastError: '',
+      lastSuccessAt: ''
+    },
+    workerLifecycle: {
+      unexpectedExitCount: 0,
+      lastExitAt: '',
+      lastExitCode: null,
+      lastExitRejectedRequests: 0,
+      awaitingRestart: false,
+      workerActive: true
+    }
   })
   assert.match(service.getQueueHealth().lastRejectedAt, /^\d{4}-\d{2}-\d{2}T/)
+})
+
+test('an unexpected zero-code worker exit rejects every pending request and permits restart', async () => {
+  const service = new WcdbService() as any
+  service.worker = { marker: 'old-worker' }
+  const first = new Promise((_resolve, reject) => {
+    service.pending.set(1, { resolve: _resolve, reject, type: 'getSessions', startedAt: Date.now() })
+  })
+  const second = new Promise((_resolve, reject) => {
+    service.pending.set(2, { resolve: _resolve, reject, type: 'getMessages', startedAt: Date.now() })
+  })
+
+  assert.doesNotThrow(() => service.handleWorkerExit(0))
+  await assert.rejects(first, /意外退出.*退出码 0.*2 个请求已安全结束/)
+  await assert.rejects(second, /意外退出.*退出码 0.*2 个请求已安全结束/)
+  assert.equal(service.pending.size, 0)
+  assert.equal(service.worker, null)
+  assert.deepEqual(service.getQueueHealth().workerLifecycle, {
+    unexpectedExitCount: 1,
+    lastExitAt: service.getQueueHealth().workerLifecycle.lastExitAt,
+    lastExitCode: 0,
+    lastExitRejectedRequests: 2,
+    awaitingRestart: true,
+    workerActive: false
+  })
+  assert.match(service.getQueueHealth().workerLifecycle.lastExitAt, /^\d{4}-\d{2}-\d{2}T/)
+})
+
+test('an expected shutdown exit leaves shutdown-owned pending cleanup untouched', () => {
+  const service = new WcdbService() as any
+  let rejected = false
+  service.worker = { marker: 'closing-worker' }
+  service.shuttingDown = true
+  service.pending.set(1, {
+    resolve: () => {}, reject: () => { rejected = true }, type: 'close', startedAt: Date.now()
+  })
+  service.handleWorkerExit(0)
+  assert.equal(rejected, false)
+  assert.equal(service.pending.size, 1)
+  assert.equal(service.getQueueHealth().workerLifecycle.unexpectedExitCount, 0)
+  assert.equal(service.getQueueHealth().workerLifecycle.awaitingRestart, false)
+})
+
+test('a lazily recreated worker clears the current incident without erasing history', () => {
+  const service = new WcdbService() as any
+  service.unexpectedWorkerExitCount = 2
+  service.workerLastExitAt = new Date().toISOString()
+  service.workerLastExitCode = 0
+  service.workerLastExitRejectedRequests = 3
+  service.worker = { marker: 'replacement-worker' }
+  const health = service.getQueueHealth().workerLifecycle
+  assert.equal(health.awaitingRestart, false)
+  assert.equal(health.workerActive, true)
+  assert.equal(health.unexpectedExitCount, 2)
+  assert.equal(health.lastExitRejectedRequests, 3)
+})
+
+test('historical queue rejection does not remain a current backpressure incident', () => {
+  const service = new WcdbService() as any
+  service.queueRejectedCount = 4
+  service.queueLastRejectedAt = new Date().toISOString()
+  service.queueLastRejectedType = 'getMessages'
+  const health = service.getQueueHealth()
+  assert.equal(health.rejectedCount, 4)
+  assert.equal(health.currentlyBackpressured, false)
+})
+
+test('WCDB monitor delivery contains callback errors, redacts them, and recovers', () => {
+  const service = new WcdbService() as any
+  service.monitorListener = () => {
+    throw new Error('failed at /Users/private-name/Documents/chat.sqlite')
+  }
+  assert.doesNotThrow(() => service.deliverMonitorEvent({
+    type: 'update',
+    json: '{"private":"message body"}'
+  }))
+  const failed = service.getQueueHealth().monitorDelivery
+  assert.equal(failed.failures, 1)
+  assert.doesNotMatch(failed.lastError, /private-name|chat\.sqlite|message body/)
+
+  service.monitorListener = () => {}
+  service.deliverMonitorEvent({ type: 'update', json: '{}' })
+  const recovered = service.getQueueHealth().monitorDelivery
+  assert.equal(recovered.failures, 0)
+  assert.equal(recovered.lastError, '')
+  assert.match(recovered.lastSuccessAt, /^\d{4}-\d{2}-\d{2}T/)
 })
 
 test('idle WCDB shutdown uses an acknowledged process-exit detach without native close', async () => {
@@ -99,5 +200,9 @@ test('bounded WCDB queue health is visible in full diagnostics', () => {
   assert.match(service, /wcdbQueue: wcdbService\.getQueueHealth\(\)/)
   assert.match(page, /微信数据库请求队列/)
   assert.match(page, /累计背压/)
+  assert.match(page, /当前背压/)
   assert.match(page, /安全关闭请求始终保留入口/)
+  assert.match(page, /监控事件边界/)
+  assert.match(page, /原始数据库事件内容未写入诊断/)
+  assert.match(page, /Worker 生命周期/)
 })

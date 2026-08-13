@@ -29,6 +29,19 @@ import {
   type MessageInsightAnalysis
 } from './insightRecordService'
 import { readBoundedIncomingMessage } from './boundedNodeResponse.ts'
+import { runScheduledTaskSafely } from './scheduledTaskBoundary.ts'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
+import {
+  emptyLegacyBackgroundHealth,
+  recordLegacyBackgroundFailure,
+  recordLegacyBackgroundSuccess,
+  type LegacyBackgroundHealth
+} from './legacyBackgroundHealth.ts'
+import {
+  getLegacyBackgroundRetryDelayMs,
+  recordPersistentLegacyBackgroundFailure,
+  recordPersistentLegacyBackgroundSuccess
+} from './legacyBackgroundRetryController.ts'
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
@@ -449,6 +462,7 @@ class InsightService {
   private dbConnected = false
 
   private started = false
+  private runtimeHealth = emptyLegacyBackgroundHealth()
 
   constructor() {
     this.config = ConfigService.getInstance()
@@ -459,7 +473,42 @@ class InsightService {
   start(): void {
     if (this.started) return
     this.started = true
-    void this.refreshConfiguration('startup')
+    void this.runBackgroundTask(() => this.refreshConfiguration('startup'), '启动配置刷新', undefined, false)
+  }
+
+  getRuntimeHealth(): LegacyBackgroundHealth & { started: boolean; processing: boolean } {
+    return { ...this.runtimeHealth, started: this.started, processing: this.processing }
+  }
+
+  private runBackgroundTask(
+    task: () => void | Promise<void>,
+    label: string,
+    onFinally?: () => void,
+    persistentRetry = true
+  ): Promise<void> {
+    if (persistentRetry && getLegacyBackgroundRetryDelayMs('insight') > 0) {
+      try { onFinally?.() } catch (error) {
+        this.runtimeHealth = recordLegacyBackgroundFailure(this.runtimeHealth, error)
+      }
+      return Promise.resolve()
+    }
+    return runScheduledTaskSafely({
+      task,
+      onSuccess: () => {
+        if (persistentRetry) recordPersistentLegacyBackgroundSuccess('insight')
+        this.runtimeHealth = recordLegacyBackgroundSuccess(this.runtimeHealth)
+      },
+      onError: error => {
+        this.runtimeHealth = recordLegacyBackgroundFailure(this.runtimeHealth, error)
+        insightLog('ERROR', `${label}异常: ${sanitizeDiagnosticText(error)}`)
+        if (persistentRetry) {
+          try { recordPersistentLegacyBackgroundFailure('insight', error) } catch (persistError) {
+            insightLog('ERROR', `退避状态保存异常: ${sanitizeDiagnosticText(persistError)}`)
+          }
+        }
+      },
+      onFinally
+    })
   }
 
   stop(): void {
@@ -492,7 +541,12 @@ class InsightService {
       this.clearRuntimeCache()
     }
 
-    await this.refreshConfiguration(`config:${normalizedKey}`)
+    await this.runBackgroundTask(
+      () => this.refreshConfiguration(`config:${normalizedKey}`),
+      `配置刷新（${normalizedKey}）`,
+      undefined,
+      false
+    )
   }
 
   handleConfigCleared(): void {
@@ -555,7 +609,7 @@ class InsightService {
     }
     this.dbDebounceTimer = setTimeout(() => {
       this.dbDebounceTimer = null
-      void this.analyzeRecentActivity()
+      void this.runBackgroundTask(() => this.analyzeRecentActivity(), '活跃会话分析定时器')
     }, DB_CHANGE_DEBOUNCE_MS)
   }
 
@@ -1343,18 +1397,18 @@ ${afterText}
       if (!this.started || !this.isEnabled()) return
       const intervalHours = (this.config.get('aiInsightScanIntervalHours') as number) || 4
       const intervalMs = Math.max(0.1, intervalHours) * 60 * 60 * 1000
+      const retryDelayMs = getLegacyBackgroundRetryDelayMs('insight')
+      const nextDelayMs = retryDelayMs > 0 ? Math.min(intervalMs, retryDelayMs) : intervalMs
       insightLog('INFO', `下次沉默扫描将在 ${intervalHours} 小时后执行`)
-      this.silenceScanTimer = setTimeout(async () => {
+      this.silenceScanTimer = setTimeout(() => {
         this.silenceScanTimer = null
-        await this.runSilenceScan()
-        scheduleNext()
-      }, intervalMs)
+        void this.runBackgroundTask(() => this.runSilenceScan(), '沉默扫描定时器', scheduleNext)
+      }, nextDelayMs)
     }
 
-    this.silenceInitialDelayTimer = setTimeout(async () => {
+    this.silenceInitialDelayTimer = setTimeout(() => {
       this.silenceInitialDelayTimer = null
-      await this.runSilenceScan()
-      scheduleNext()
+      void this.runBackgroundTask(() => this.runSilenceScan(), '首次沉默扫描定时器', scheduleNext)
     }, SILENCE_SCAN_INITIAL_DELAY_MS)
   }
 
@@ -1415,7 +1469,8 @@ ${afterText}
       }
       insightLog('INFO', `沉默扫描完成，共发现 ${silentCount} 个沉默联系人`)
     } catch (e) {
-      insightLog('ERROR', `沉默扫描出错: ${(e as Error).message}`)
+      insightLog('ERROR', `沉默扫描出错: ${sanitizeDiagnosticText(e)}`)
+      throw e
     } finally {
       this.processing = false
     }
@@ -1535,7 +1590,8 @@ ${afterText}
         break
       }
     } catch (e) {
-      insightLog('ERROR', `活跃分析出错: ${(e as Error).message}`)
+      insightLog('ERROR', `活跃分析出错: ${sanitizeDiagnosticText(e)}`)
+      throw e
     } finally {
       this.processing = false
     }

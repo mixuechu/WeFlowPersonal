@@ -111,8 +111,14 @@ import {
 } from '../utils/appRecoveryPresentation'
 import { TrailingCoalescedRequest } from '../utils/trailingCoalescedRequest'
 import { ASSISTANT_MODULE_NAVIGATION } from '../utils/assistantModuleNavigation'
+import { buildBackgroundHealthPresentation } from '../utils/backgroundHealthPresentation'
+import {
+  sensitivePersistenceImpact,
+  type SensitivePersistenceKind
+} from '../utils/sensitivePersistencePresentation'
 import { shouldRenderDetachedEventEditor } from '../utils/detachedEventEditor'
 import { buildBriefingMemorySearchPlan } from '../utils/briefingMemorySearchNavigation'
+import { BoundedStaleReloadTracker } from '../utils/boundedStaleReload'
 import './AiAssistantPage.scss'
 
 const MEMORY_GROWTH_KIND_LABELS: Record<string, string> = {
@@ -527,7 +533,11 @@ function schedulerCatchupResultLabel(value: string): string {
     assistant_disabled: 'AI 助理当时处于关闭状态，未自动补齐',
     sync_already_running: '已有增量整理正在运行，无需重复启动',
     backlog_throttled: '积压补齐仍在一分钟防重复窗口内',
-    backlog_catchup_attempted: '已立即继续高流量积压补齐',
+    backlog_catchup_attempted: '旧版记录：已尝试继续高流量积压补齐',
+    backlog_catchup_completed: '高流量积压已完成本轮补齐',
+    backlog_catchup_partial: '高流量积压已保存成功部分，将按 checkpoint 继续',
+    backlog_catchup_paused: '高流量积压已在批次边界安全暂停',
+    backlog_catchup_failed: '高流量积压本轮未推进，已保留 checkpoint 并退避',
     before_daily_schedule: '尚未到每日整理时间，保留正常计划',
     daily_already_complete: '当天完整整理已经完成',
     scheduled_retry_cooling_down: '失败来源仍在持久退避期，未绕过冷却',
@@ -777,10 +787,26 @@ function TrustedEntityPicker({
   }, [value, selected])
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      requestGate.current.invalidate()
+      setLoading(false)
+      setOptions([])
+      setTotal(0)
+      setRevision('')
+      setDirectoryScopeToken('')
+      setNextOffset(0)
+      setHasMore(false)
+      return
+    }
     const request = requestGate.current.begin()
+    setOptions([])
+    setTotal(0)
+    setRevision('')
+    setDirectoryScopeToken('')
+    setNextOffset(0)
+    setHasMore(false)
+    setLoading(true)
     const timer = window.setTimeout(() => {
-      setLoading(true)
       void window.electronAPI.aiAssistant.getTrustedEntityDirectory({
         query: query.trim() || undefined,
         type,
@@ -860,6 +886,14 @@ function TrustedEntityPicker({
         value={query}
         onFocus={() => { if (!disabled) setOpen(true) }}
         onChange={event => {
+          requestGate.current.invalidate()
+          setOptions([])
+          setTotal(0)
+          setRevision('')
+          setDirectoryScopeToken('')
+          setNextOffset(0)
+          setHasMore(false)
+          setLoading(true)
           setQuery(event.target.value)
           onClear()
           setOpen(true)
@@ -978,6 +1012,7 @@ function EventParticipantEditor({
 }
 
 function AiAssistantPage() {
+  const boundedStaleReloads = useRef(new BoundedStaleReloadTracker())
   const location = useLocation()
   const handledNotificationFocusRef = useRef('')
   const [status, setStatus] = useState<any>(null)
@@ -1196,10 +1231,10 @@ function AiAssistantPage() {
   const documentConnectorGate = useRef(new LatestRequestGate())
   const calendarConnectorGate = useRef(new LatestRequestGate())
   const mailConnectorGate = useRef(new LatestRequestGate())
-  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean; error?: string }>({
+  const [eventTimeline, setEventTimeline] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; pageScopeToken?: string; stale?: boolean; loading?: boolean; error?: string }>({
     items: [], total: 0, hasMore: false
   })
-  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; stale?: boolean; loading?: boolean; error?: string }>({
+  const [claimArchive, setClaimArchive] = useState<{ items: any[]; total: number; hasMore: boolean; revision?: string; pageScopeToken?: string; stale?: boolean; loading?: boolean; error?: string }>({
     items: [], total: 0, hasMore: false
   })
   const [claimArchiveRefreshKey, setClaimArchiveRefreshKey] = useState(0)
@@ -1356,9 +1391,16 @@ function AiAssistantPage() {
     filters: MemoryEvidenceArchiveFilters
     revision?: string
     evidenceScopeToken?: string
+    openingSnapshot?: {
+      searchRevision?: string
+      contentHash?: string
+      evidenceAuthorityRevision?: number
+      origin?: 'search' | 'citation'
+    }
     stale?: boolean
     status: 'loading' | 'ready' | 'error'
     error?: string
+    loadMoreError?: string
   } | null>(null)
   const [memoryEvidenceFilters, setMemoryEvidenceFilters] = useState<MemoryEvidenceArchiveFilters>(
     EMPTY_MEMORY_EVIDENCE_FILTERS
@@ -1396,6 +1438,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: Record<string, number>
     revision?: string
+    archiveScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1449,6 +1492,7 @@ function AiAssistantPage() {
     trackedSince: '', status: 'idle'
   })
   const [entityMemoryGrowthLoadingMore, setEntityMemoryGrowthLoadingMore] = useState(false)
+  const [entityMemoryGrowthRefreshKey, setEntityMemoryGrowthRefreshKey] = useState(0)
   const entityMemoryGrowthGate = useRef(new LatestRequestGate())
   const [editingTask, setEditingTask] = useState<any>(null)
   const [taskDependencyQuery, setTaskDependencyQuery] = useState('')
@@ -1469,6 +1513,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: Record<string, number>
     revision?: string
+    taskWorksetScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1480,6 +1525,7 @@ function AiAssistantPage() {
     items: Task[]
     total: number
     revision: string
+    taskCalendarScopeToken?: string
     loading: boolean
     error?: string
   }>({ items: [], total: 0, revision: '', loading: false })
@@ -1491,6 +1537,7 @@ function AiAssistantPage() {
     hasMore: boolean
     revision: string
     nextOffset: number
+    archiveScopeToken?: string
   }>({ items: [], total: 0, hasMore: false, revision: '', nextOffset: 0 })
   const [taskReminderLoadingMore, setTaskReminderLoadingMore] = useState(false)
   const [taskReminderSaving, setTaskReminderSaving] = useState<Record<string, boolean>>({})
@@ -1529,6 +1576,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: Record<string, number>
     revision?: string
+    archiveScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1547,6 +1595,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: { active: number; revoked: number; all: number }
     revision?: string
+    archiveScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1649,6 +1698,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: { active: number; reverted: number; all: number }
     revision?: string
+    archiveScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1684,6 +1734,7 @@ function AiAssistantPage() {
     hasMore: boolean
     counts: Record<string, number>
     revision?: string
+    archiveScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1773,11 +1824,18 @@ function AiAssistantPage() {
   const [memoryAnswer, setMemoryAnswer] = useState<any>(null)
   const [memoryConversationId, setMemoryConversationId] = useState<string | null>(null)
   const [memoryConversation, setMemoryConversation] = useState<any>(null)
+  const [memoryConversationLoad, setMemoryConversationLoad] = useState<{
+    status: 'idle' | 'loading' | 'error'
+    targetId: string
+    anchorMessageId: string
+    error?: string
+  }>({ status: 'idle', targetId: '', anchorMessageId: '' })
   const [assistantArchive, setAssistantArchive] = useState<{
     items: any[]
     total: number
     hasMore: boolean
     revision?: string
+    archiveScopeToken?: string
     stale?: boolean
     loading?: boolean
     error?: string
@@ -1789,6 +1847,7 @@ function AiAssistantPage() {
   const [assistantArchiveLoadingMore, setAssistantArchiveLoadingMore] = useState(false)
   const [assistantArchiveRefreshKey, setAssistantArchiveRefreshKey] = useState(0)
   const [assistantMessagesLoadingMore, setAssistantMessagesLoadingMore] = useState(false)
+  const [assistantMessagesLoadError, setAssistantMessagesLoadError] = useState('')
   const assistantArchiveGate = useRef(new LatestRequestGate())
   const [modelRequestAuditsOpen, setModelRequestAuditsOpen] = useState(false)
   const [modelRequestAudits, setModelRequestAudits] = useState<any>({
@@ -1857,6 +1916,7 @@ function AiAssistantPage() {
   const memoryTaskPreviewGate = useRef(new LatestRequestGate())
   const [memoryEntityFilter, setMemoryEntityFilter] = useState('')
   const [memoryEntitySelection, setMemoryEntitySelection] = useState<any>(null)
+  const memoryEntityScopeGate = useRef(new LatestRequestGate())
   const [memorySessionFilter, setMemorySessionFilter] = useState('')
   const [memorySessionSelection, setMemorySessionSelection] = useState<any>(null)
   const [memorySessionQuery, setMemorySessionQuery] = useState('')
@@ -1928,6 +1988,7 @@ function AiAssistantPage() {
       return
     }
     memorySearchGate.current.invalidate()
+    memoryEntityScopeGate.current.invalidate()
     setMemoryQuery(plan.query)
     setMemorySearchMode(plan.mode)
     setMemoryEntityFilter(plan.entityId)
@@ -1976,14 +2037,37 @@ function AiAssistantPage() {
     'ocr',
     'imageSemantics',
     'voiceTranscripts',
+    'insightRecords',
+    'insightProfiles',
+    'groupSummaryRecords',
+    'exportRecords',
     'contacts',
+    'sessionMessages',
     'sessionStats',
     'groupMyMessageCounts',
     'cacheMaps'
   ].every(kind => {
     const cache = sensitiveCaches?.[kind]
-    return !cache?.exists || (cache.encrypted === true && cache.writable !== false && cache.mode === '600')
-  })
+    const hasArtifacts = cache?.exists || Number(cache?.logFiles || 0) > 0
+    return !hasArtifacts || (cache.encrypted === true && cache.writable !== false &&
+      cache.mode === '600' && cache.logsEncrypted !== false)
+  }) && sensitiveCaches?.analyticsAggregate?.legacyFilePresent !== true &&
+    !sensitiveCaches?.analyticsAggregate?.error
+  const sensitiveCachePersistenceFailures = [
+    { label: '联系人显示缓存', cache: sensitiveCaches?.contacts, kind: 'derived_cache' },
+    { label: '联系人年度画像', cache: sensitiveCaches?.insightProfiles, kind: 'model_result' },
+    { label: '联系人见解与消息分析', cache: sensitiveCaches?.insightRecords, kind: 'model_result' },
+    { label: '群聊总结与诊断', cache: sensitiveCaches?.groupSummaryRecords, kind: 'model_result' },
+    { label: '导出历史记录', cache: sensitiveCaches?.exportRecords, kind: 'operational_record' },
+    { label: '会话消息缓存', cache: sensitiveCaches?.sessionMessages, kind: 'derived_cache' },
+    { label: '会话统计缓存', cache: sensitiveCaches?.sessionStats, kind: 'derived_cache' },
+    { label: '群内本人消息计数', cache: sensitiveCaches?.groupMyMessageCounts, kind: 'derived_cache' },
+    { label: '界面缓存映射', cache: sensitiveCaches?.cacheMaps, kind: 'derived_cache' }
+  ].filter(item => item.cache?.persistenceRetry?.lastError) as Array<{
+    label: string
+    cache: any
+    kind: SensitivePersistenceKind
+  }>
   const eventTimelineOptions = useMemo(() => ({
     sourceId: eventSourceFilter || undefined,
     status: eventStatusFilter || undefined,
@@ -2289,13 +2373,16 @@ function AiAssistantPage() {
 
   const loadMoreBriefingArchive = async () => {
     if (briefingArchiveLoadingMore || !briefingArchive.hasMore) return
+    const request = briefingArchiveGate.current.begin()
     setBriefingArchiveLoadingMore(true)
+    setBriefingArchive((current: any) => ({ ...current, loadMoreError: '' }))
     try {
       const page = await window.electronAPI.aiAssistant.getBriefingArchivePage({
         offset: briefingArchive.nextOffset,
         limit: 7,
         revision: briefingArchive.revision
       })
+      if (!briefingArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
         setMessage('简报档案在浏览期间发生了变化，已从最新第一页重新加载。')
         setBriefingArchiveRefreshKey(value => value + 1)
@@ -2305,16 +2392,19 @@ function AiAssistantPage() {
         ...page,
         items: [...current.items, ...page.items],
         status: 'ready',
-        error: ''
+        error: '',
+        loadMoreError: ''
       }))
     } catch (error) {
+      if (!briefingArchiveGate.current.isCurrent(request)) return
       setBriefingArchive((current: any) => ({
         ...current,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error)
+        loadMoreError: error instanceof Error ? error.message : String(error)
       }))
     } finally {
-      setBriefingArchiveLoadingMore(false)
+      if (briefingArchiveGate.current.isCurrent(request)) {
+        setBriefingArchiveLoadingMore(false)
+      }
     }
   }
 
@@ -2411,10 +2501,18 @@ function AiAssistantPage() {
   }, [showDataSources, dataSourcesRefreshKey])
 
   useEffect(() => {
-    if (!memorySessionPickerOpen) return
+    if (!memorySessionPickerOpen) {
+      memorySessionPickerGate.current.invalidate()
+      setMemorySessionPickerLoading(false)
+      setMemorySessionOptions([])
+      setMemorySessionOptionTotal(0)
+      return
+    }
     const request = memorySessionPickerGate.current.begin()
+    setMemorySessionOptions([])
+    setMemorySessionOptionTotal(0)
+    setMemorySessionPickerLoading(true)
     const timer = window.setTimeout(() => {
-      setMemorySessionPickerLoading(true)
       void window.electronAPI.aiAssistant.getConversationSources({
         query: memorySessionQuery.trim() || undefined,
         enabled: 'all',
@@ -2445,14 +2543,26 @@ function AiAssistantPage() {
     void window.electronAPI.aiAssistant.getClaimArchive(claimArchiveOptions).then(result => {
       if (!claimArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'claim_archive', JSON.stringify(claimArchiveOptions)
+        )
+        if (!retry.retry) {
+          setClaimArchive({
+            items: [], total: 0, hasMore: false, loading: false,
+            error: '事实档案连续三次读取均发生变化，请手动重试最新范围'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (claimArchiveGate.current.isCurrent(request)) setClaimArchiveRefreshKey(value => value + 1)
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('claim_archive')
       setClaimArchive({ ...result, loading: false })
     }).catch(error => {
       if (!claimArchiveGate.current.isCurrent(request)) return
+      boundedStaleReloads.current.clear('claim_archive')
       setClaimArchive({
         items: [], total: 0, hasMore: false, loading: false,
         error: error?.message || String(error)
@@ -2470,14 +2580,26 @@ function AiAssistantPage() {
     void window.electronAPI.aiAssistant.getEventTimeline(eventTimelineOptions).then(result => {
       if (!eventTimelineGate.current.isCurrent(request)) return
       if (result.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'event_timeline', JSON.stringify(eventTimelineOptions)
+        )
+        if (!retry.retry) {
+          setEventTimeline({
+            items: [], total: 0, hasMore: false, loading: false,
+            error: '事件时间线连续三次读取均发生变化，请手动重试最新范围'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (eventTimelineGate.current.isCurrent(request)) setEventTimelineRefreshKey(value => value + 1)
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('event_timeline')
       setEventTimeline({ ...result, loading: false })
     }).catch(error => {
       if (eventTimelineGate.current.isCurrent(request)) {
+        boundedStaleReloads.current.clear('event_timeline')
         setEventTimeline({
           items: [], total: 0, hasMore: false, loading: false,
           error: error?.message || String(error)
@@ -2498,12 +2620,28 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getResourceArchive(resourceArchiveOptions).then(result => {
         if (!resourceArchiveGate.current.isCurrent(request)) return
         if (result.stale) {
-          setResourceRefreshKey(value => value + 1)
+          const retry = boundedStaleReloads.current.next(
+            'resource_archive', JSON.stringify(resourceArchiveOptions)
+          )
+          if (!retry.retry) {
+            setResourceArchive({
+              items: [], total: 0, hasMore: false, revision: '', status: 'error',
+              error: '资源档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
+          window.setTimeout(() => {
+            if (resourceArchiveGate.current.isCurrent(request)) {
+              setResourceRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('resource_archive')
         setResourceArchive({ ...result, status: 'ready' })
       }).catch((error: any) => {
         if (!resourceArchiveGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('resource_archive')
         setResourceArchive({
           items: [], total: 0, hasMore: false, revision: '', status: 'error',
           error: error?.message || String(error)
@@ -2529,12 +2667,28 @@ function AiAssistantPage() {
       }).then(result => {
         if (!resourceTrashGate.current.isCurrent(request)) return
         if (result.stale) {
-          setResourceRefreshKey(value => value + 1)
+          const retry = boundedStaleReloads.current.next(
+            'resource_trash_archive', resourceTrashQuery.trim()
+          )
+          if (!retry.retry) {
+            setResourceTrashArchive({
+              items: [], total: 0, hasMore: false, revision: '', status: 'error',
+              error: '资源回收站连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
+          window.setTimeout(() => {
+            if (resourceTrashGate.current.isCurrent(request)) {
+              setResourceRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('resource_trash_archive')
         setResourceTrashArchive({ ...result, status: 'ready' })
       }).catch((error: any) => {
         if (!resourceTrashGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('resource_trash_archive')
         setResourceTrashArchive({
           items: [], total: 0, hasMore: false, revision: '', status: 'error',
           error: error?.message || String(error)
@@ -2566,7 +2720,13 @@ function AiAssistantPage() {
         limit: 20
       }).then(result => {
         if (!taskDependencyGate.current.isCurrent(request)) return
-        if (result.stale) return
+        if (result.stale) {
+          setTaskDependencyCandidates({
+            items: [], total: 0, revision: result.revision || '', loading: false,
+            error: '可依赖任务目录在读取期间发生了变化，请重新加载最新候选'
+          })
+          return
+        }
         setTaskDependencyCandidates({ ...result, loading: false })
       }).catch(error => {
         if (!taskDependencyGate.current.isCurrent(request)) return
@@ -2602,12 +2762,28 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getProjectDirectory(projectDirectoryOptions).then(result => {
         if (!projectDirectoryGate.current.isCurrent(request)) return
         if (result.stale) {
-          setProjectDirectoryRefreshKey(value => value + 1)
+          const retry = boundedStaleReloads.current.next(
+            'project_directory', JSON.stringify(projectDirectoryOptions)
+          )
+          if (!retry.retry) {
+            setProjectDirectory({
+              items: [], total: 0, hasMore: false, revision: '', loading: false,
+              error: '项目目录连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
+          window.setTimeout(() => {
+            if (projectDirectoryGate.current.isCurrent(request)) {
+              setProjectDirectoryRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('project_directory')
         setProjectDirectory({ ...result, loading: false })
       }).catch(error => {
         if (!projectDirectoryGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('project_directory')
         setProjectDirectory({
           items: [], total: 0, hasMore: false, revision: '', loading: false,
           error: error?.message || String(error)
@@ -2628,12 +2804,28 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getActiveTaskWorkset(taskWorksetOptions).then(result => {
         if (!taskWorksetGate.current.isCurrent(request)) return
         if (result.stale) {
-          setTaskWorksetRefreshKey(value => value + 1)
+          const retry = boundedStaleReloads.current.next(
+            'task_workset', JSON.stringify(taskWorksetOptions)
+          )
+          if (!retry.retry) {
+            setTaskWorkset({
+              items: [], total: 0, hasMore: false, counts: {}, loading: false,
+              error: '行动待办目录连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
+          window.setTimeout(() => {
+            if (taskWorksetGate.current.isCurrent(request)) {
+              setTaskWorksetRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('task_workset')
         setTaskWorkset({ ...result, loading: false })
       }).catch(error => {
         if (!taskWorksetGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('task_workset')
         setTaskWorkset({
           items: [], total: 0, hasMore: false, counts: {}, loading: false,
           error: error?.message || String(error)
@@ -2657,26 +2849,50 @@ function AiAssistantPage() {
       void (async () => {
         let items: Task[] = []
         let revision = ''
+        let taskCalendarScopeToken = ''
         let total = 0
         while (taskCalendarGate.current.isCurrent(request)) {
           const result = await window.electronAPI.aiAssistant.getTaskCalendarPage({
             ...taskCalendarOptions,
             offset: items.length,
-            revision
+            revision,
+            taskCalendarScopeToken
           })
           if (!taskCalendarGate.current.isCurrent(request)) return
           if (result.stale) {
-            setTaskCalendarRefreshKey(value => value + 1)
+            const retry = boundedStaleReloads.current.next(
+              'task_calendar', JSON.stringify(taskCalendarOptions)
+            )
+            if (!retry.retry) {
+              setTaskCalendarPage(current => ({
+                ...current,
+                loading: false,
+                error: '本月任务连续三次未能取得完整一致快照，请手动重试当前月份'
+              }))
+              return
+            }
+            window.setTimeout(() => {
+              if (taskCalendarGate.current.isCurrent(request)) {
+                setTaskCalendarRefreshKey(value => value + 1)
+              }
+            }, retry.delayMs)
             return
           }
           if (!revision) revision = result.revision
+          if (!taskCalendarScopeToken) taskCalendarScopeToken = result.taskCalendarScopeToken || ''
           items = [...items, ...result.items]
           total = result.total
-          setTaskCalendarPage({ items, total, revision, loading: result.hasMore })
-          if (!result.hasMore) return
+          setTaskCalendarPage({
+            items, total, revision, taskCalendarScopeToken, loading: result.hasMore
+          })
+          if (!result.hasMore) {
+            boundedStaleReloads.current.clear('task_calendar')
+            return
+          }
         }
       })().catch(error => {
         if (!taskCalendarGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('task_calendar')
         setTaskCalendarPage({
           items: [], total: 0, revision: '', loading: false,
           error: error?.message || String(error)
@@ -2701,6 +2917,7 @@ function AiAssistantPage() {
       total: Number(directory.total || 0),
       hasMore: Boolean(directory.hasMore),
       revision: String(directory.revision || ''),
+      archiveScopeToken: String(directory.archiveScopeToken || ''),
       nextOffset: Number(directory.nextOffset ?? (dashboard?.taskReminders || []).length)
     })
   }, [dashboard?.taskReminderDirectory?.revision])
@@ -2745,14 +2962,26 @@ function AiAssistantPage() {
     void window.electronAPI.aiAssistant.getTaskArchive(taskArchiveOptions).then(result => {
       if (!taskArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'task_archive', JSON.stringify(taskArchiveOptions)
+        )
+        if (!retry.retry) {
+          setTaskArchive({
+            items: [], total: 0, hasMore: false, loading: false,
+            error: '历史任务档案连续三次读取均发生变化，请手动重试最新范围'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (taskArchiveGate.current.isCurrent(request)) setTaskArchiveRefreshKey(value => value + 1)
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('task_archive')
       setTaskArchive({ ...result, loading: false })
     }).catch(error => {
       if (!taskArchiveGate.current.isCurrent(request)) return
+      boundedStaleReloads.current.clear('task_archive')
       setTaskArchive({
         items: [], total: 0, hasMore: false, loading: false,
         error: error?.message || String(error)
@@ -2775,7 +3004,13 @@ function AiAssistantPage() {
         offset: 0
       }).then(result => {
         if (!taskArchiveProjectGate.current.isCurrent(request)) return
-        if (result.stale) return
+        if (result.stale) {
+          setTaskArchiveProjects({
+            items: [], total: 0, loading: false,
+            error: '历史项目目录在读取期间发生了变化，请重新加载'
+          })
+          return
+        }
         setTaskArchiveProjects({
           items: result.items,
           total: result.total,
@@ -2808,16 +3043,28 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getAssistantConversations(assistantArchiveOptions).then(result => {
         if (!assistantArchiveGate.current.isCurrent(request)) return
         if (result.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'assistant_archive', JSON.stringify(assistantArchiveOptions)
+          )
+          if (!retry.retry) {
+            setAssistantArchive({
+              items: [], total: 0, hasMore: false, loading: false,
+              error: '问答会话档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (assistantArchiveGate.current.isCurrent(request)) {
               setAssistantArchiveRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('assistant_archive')
         setAssistantArchive({ ...result, loading: false })
       }).catch(error => {
         if (!assistantArchiveGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('assistant_archive')
         setAssistantArchive({
           items: [], total: 0, hasMore: false, loading: false,
           error: error?.message || String(error)
@@ -2844,16 +3091,28 @@ function AiAssistantPage() {
       .then(result => {
         if (!modelRequestAuditGate.current.isCurrent(request)) return
         if (result.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'model_request_audits', JSON.stringify(modelRequestAuditOptions)
+          )
+          if (!retry.retry) {
+            setModelRequestAudits((current: any) => ({
+              ...current, items: [], total: 0, hasMore: false, loading: false,
+              error: '模型发送审计连续三次读取均发生变化，请手动重试最新范围'
+            }))
+            return
+          }
           window.setTimeout(() => {
             if (modelRequestAuditGate.current.isCurrent(request)) {
               setModelRequestAuditRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('model_request_audits')
         setModelRequestAudits({ ...result, loading: false })
       }).catch(error => {
         if (!modelRequestAuditGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('model_request_audits')
         setModelRequestAudits((current: any) => ({
           ...current, items: [], total: 0, hasMore: false, loading: false,
           error: error?.message || String(error)
@@ -2886,16 +3145,33 @@ function AiAssistantPage() {
         .then(result => {
           if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
           if (result.stale) {
+            const retry = boundedStaleReloads.current.next(
+              'assistant_answer_reviews', JSON.stringify(assistantAnswerReviewOptions)
+            )
+            if (!retry.retry) {
+              setAssistantAnswerReviews({
+                items: [], total: 0, hasMore: false, loading: false,
+                counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 },
+                reasonCounts: {
+                  missing: 0, ineligible: 0, contentChanged: 0,
+                  evidenceCountsChanged: 0, evidenceChanged: 0, other: 0
+                },
+                error: '历史回答核验队列连续三次读取均发生变化，请手动重试最新范围'
+              })
+              return
+            }
             window.setTimeout(() => {
               if (assistantAnswerReviewsGate.current.isCurrent(request)) {
                 setAssistantAnswerReviewRevision(value => value + 1)
               }
-            }, 250)
+            }, retry.delayMs)
             return
           }
+          boundedStaleReloads.current.clear('assistant_answer_reviews')
           setAssistantAnswerReviews({ ...result, loading: false })
         }).catch(error => {
           if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
+          boundedStaleReloads.current.clear('assistant_answer_reviews')
           setAssistantAnswerReviews({
             items: [], total: 0, hasMore: false, loading: false,
             counts: { attention: 0, invalid: 0, needs_review: 0, current: 0 },
@@ -2930,14 +3206,26 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getTaskOwnershipReviews(taskOwnershipOptions).then(result => {
         if (!taskOwnershipGate.current.isCurrent(request)) return
         if (result.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'task_ownership_reviews', JSON.stringify(taskOwnershipOptions)
+          )
+          if (!retry.retry) {
+            setTaskOwnershipReviews({
+              items: [], total: 0, hasMore: false, counts: {}, loading: false,
+              error: '待办归属审阅连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (taskOwnershipGate.current.isCurrent(request)) setTaskOwnershipRefreshKey(value => value + 1)
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('task_ownership_reviews')
         setTaskOwnershipReviews({ ...result, loading: false })
       }).catch(error => {
         if (!taskOwnershipGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('task_ownership_reviews')
         setTaskOwnershipReviews({
           items: [], total: 0, hasMore: false, counts: {}, loading: false,
           error: error?.message || String(error)
@@ -2960,14 +3248,27 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getTaskReviewDecisionPage(taskFeedbackOptions).then(result => {
         if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
         if (result.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'task_feedback_archive', JSON.stringify(taskFeedbackOptions)
+          )
+          if (!retry.retry) {
+            setTaskFeedbackArchive({
+              items: [], total: 0, hasMore: false,
+              counts: { active: 0, revoked: 0, all: 0 }, loading: false,
+              error: '待办归属反馈档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (taskFeedbackArchiveGate.current.isCurrent(request)) setTaskFeedbackRefreshKey(value => value + 1)
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('task_feedback_archive')
         setTaskFeedbackArchive({ ...result, loading: false })
       }).catch(error => {
         if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('task_feedback_archive')
         setTaskFeedbackArchive({
           items: [], total: 0, hasMore: false,
           counts: { active: 0, revoked: 0, all: 0 }, loading: false,
@@ -2995,16 +3296,28 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getMemoryDeletionAuditPage(memoryDeletionOptions).then(result => {
         if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
         if (result.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'memory_deletion_archive', JSON.stringify(memoryDeletionOptions)
+          )
+          if (!retry.retry) {
+            setMemoryDeletionArchive({
+              items: [], total: 0, hasMore: false, counts: {}, loading: false,
+              error: '删除审计连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (memoryDeletionArchiveGate.current.isCurrent(request)) {
               setMemoryDeletionArchiveRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('memory_deletion_archive')
         setMemoryDeletionArchive({ ...result, loading: false })
       }).catch(error => {
         if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('memory_deletion_archive')
         setMemoryDeletionArchive({
           items: [], total: 0, hasMore: false, counts: {}, loading: false,
           error: error?.message || String(error)
@@ -3037,16 +3350,28 @@ function AiAssistantPage() {
     ).then(result => {
       if (!memoryMaintenanceArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'memory_maintenance_archive', JSON.stringify(memoryMaintenanceOptions)
+        )
+        if (!retry.retry) {
+          setMemoryMaintenanceArchive({
+            items: [], total: 0, hasMore: false, counts: {}, loading: false,
+            error: '维护审计连续三次读取均发生变化，请手动重试最新范围'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (memoryMaintenanceArchiveGate.current.isCurrent(request)) {
             setMemoryMaintenanceRefreshKey(value => value + 1)
           }
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('memory_maintenance_archive')
       setMemoryMaintenanceArchive({ ...result, loading: false })
     }).catch(error => {
       if (!memoryMaintenanceArchiveGate.current.isCurrent(request)) return
+      boundedStaleReloads.current.clear('memory_maintenance_archive')
       setMemoryMaintenanceArchive({
         items: [], total: 0, hasMore: false, counts: {}, loading: false,
         error: error?.message || String(error)
@@ -3072,16 +3397,29 @@ function AiAssistantPage() {
       .then(result => {
         if (!memoryGrowthGate.current.isCurrent(request)) return
         if (result.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'memory_growth_archive', JSON.stringify(memoryGrowthOptions)
+          )
+          if (!retry.retry) {
+            setMemoryGrowth({
+              items: [], total: 0, hasMore: false, counts: {},
+              revision: '', trackedSince: '', loading: false,
+              error: '记忆成长档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (memoryGrowthGate.current.isCurrent(request)) {
               setMemoryGrowthRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('memory_growth_archive')
         setMemoryGrowth({ ...result, loading: false })
       }).catch(error => {
         if (!memoryGrowthGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('memory_growth_archive')
         setMemoryGrowth({
           items: [], total: 0, hasMore: false, counts: {},
           revision: '', trackedSince: '', loading: false,
@@ -3113,7 +3451,14 @@ function AiAssistantPage() {
       offset: 0
     }).then(result => {
       if (!entityMemoryGrowthGate.current.isCurrent(request)) return
-      if (result.stale) return
+      if (result.stale) {
+        setEntityMemoryGrowth({
+          items: [], total: 0, hasMore: false, counts: {}, revision: result.revision || '',
+          trackedSince: '', status: 'error',
+          error: '人物成长记录在读取期间发生了变化，请重新加载'
+        })
+        return
+      }
       setEntityMemoryGrowth({ ...result, status: 'ready' })
     }).catch(error => {
       if (!entityMemoryGrowthGate.current.isCurrent(request)) return
@@ -3128,7 +3473,8 @@ function AiAssistantPage() {
       }
     }
   }, [
-    showEntityDossier, selectedEntityId, dashboard?.memoryGrowth?.revision
+    showEntityDossier, selectedEntityId, dashboard?.memoryGrowth?.revision,
+    entityMemoryGrowthRefreshKey
   ])
 
   useEffect(() => {
@@ -3146,16 +3492,28 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getIngestionRunPage(ingestionArchiveOptions).then(page => {
         if (!ingestionArchiveGate.current.isCurrent(request)) return
         if (page.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'ingestion_archive', JSON.stringify(ingestionArchiveOptions)
+          )
+          if (!retry.retry) {
+            setIngestionArchive({
+              items: [], total: 0, hasMore: false, counts: {}, loading: false,
+              error: '增量运行档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (ingestionArchiveGate.current.isCurrent(request)) {
               setIngestionArchiveRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('ingestion_archive')
         setIngestionArchive({ ...page, loading: false })
       }).catch(error => {
         if (!ingestionArchiveGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('ingestion_archive')
         setIngestionArchive({
           items: [], total: 0, hasMore: false, counts: {}, loading: false,
           error: error?.message || String(error)
@@ -3187,16 +3545,28 @@ function AiAssistantPage() {
         .then(page => {
           if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
           if (page.stale) {
+            const retry = boundedStaleReloads.current.next(
+              'cross_store_recovery_archive', JSON.stringify(crossStoreRecoveryArchiveOptions)
+            )
+            if (!retry.retry) {
+              setCrossStoreRecoveryArchive({
+                items: [], total: 0, hasMore: false, counts: {}, loading: false,
+                error: '跨存储恢复档案连续三次读取均发生变化，请手动重试最新范围'
+              })
+              return
+            }
             window.setTimeout(() => {
               if (crossStoreRecoveryArchiveGate.current.isCurrent(request)) {
                 setCrossStoreRecoveryArchiveRefreshKey(value => value + 1)
               }
-            }, 250)
+            }, retry.delayMs)
             return
           }
+          boundedStaleReloads.current.clear('cross_store_recovery_archive')
           setCrossStoreRecoveryArchive({ ...page, loading: false })
         }).catch(error => {
           if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
+          boundedStaleReloads.current.clear('cross_store_recovery_archive')
           setCrossStoreRecoveryArchive({
             items: [], total: 0, hasMore: false, counts: {}, loading: false,
             error: error?.message || String(error)
@@ -3244,6 +3614,7 @@ function AiAssistantPage() {
           return
         }
         if (page.entityScopeStale) {
+          memoryEntityScopeGate.current.invalidate()
           setMemoryEntitySelection(null)
           setMemoryEntityFilter('')
           setMemorySearchState({ status: 'idle', query: '' })
@@ -3259,14 +3630,25 @@ function AiAssistantPage() {
           return
         }
         if (page.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'memory_search', JSON.stringify({ query, mode: memorySearchMode, ...memorySearchOptions })
+          )
+          if (!retry.retry) {
+            setMemorySearchState({
+              status: 'error', query,
+              error: '统一检索连续三次未能取得一致快照，请手动重试当前范围'
+            })
+            return
+          }
           setMemorySearchState({ status: 'waiting', query })
           window.setTimeout(() => {
             if (memorySearchGate.current.isCurrent(request)) {
               setMemorySearchRefreshKey(value => value + 1)
             }
-          }, 400)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('memory_search')
         setMemoryResults(page.results)
         setMemorySearchFeedback(page.feedback || [])
         setMemorySearchState({
@@ -3305,6 +3687,7 @@ function AiAssistantPage() {
         })
       }).catch(error => {
         if (!memorySearchGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('memory_search')
         setMemorySearchState({ status: 'error', query, error: error?.message || String(error) })
       })
     }, 250)
@@ -3334,17 +3717,29 @@ function AiAssistantPage() {
         .then(page => {
           if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
           if (page.stale) {
+            const retry = boundedStaleReloads.current.next(
+              'memory_feedback_archive', JSON.stringify(memoryFeedbackArchiveOptions)
+            )
+            if (!retry.retry) {
+              setMemoryFeedbackArchive({
+                items: [], total: 0, hasMore: false, counts: {}, status: 'error',
+                error: '检索反馈档案连续三次读取均发生变化，请手动重试最新范围'
+              })
+              return
+            }
             window.setTimeout(() => {
               if (memoryFeedbackArchiveGate.current.isCurrent(request)) {
                 setMemoryFeedbackArchiveRefreshKey(value => value + 1)
               }
-            }, 250)
+            }, retry.delayMs)
             return
           }
+          boundedStaleReloads.current.clear('memory_feedback_archive')
           setMemoryFeedbackArchive({ ...page, status: 'ready' })
         })
         .catch(error => {
           if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
+          boundedStaleReloads.current.clear('memory_feedback_archive')
           setMemoryFeedbackArchive({
             items: [],
             total: 0,
@@ -3381,14 +3776,32 @@ function AiAssistantPage() {
       }).then(page => {
         if (!reviewPageGate.current.isCurrent(request)) return
         if (page.stale) {
+          const retry = boundedStaleReloads.current.next('graph_review_page', JSON.stringify({
+            status: reviewStatusFilter,
+            kind: reviewKindFilter,
+            query: reviewQuery.trim(),
+            reviewId: focusedReviewId,
+            entityId: focusedReviewEntityId,
+            calibrationOutcome: reviewCalibrationOutcomeFilter,
+            reasonCode: reviewReasonFilter
+          }))
+          if (!retry.retry) {
+            setReviewPage(current => ({
+              ...current, items: [], total: 0, hasMore: false, status: 'error',
+              error: '图谱审阅队列连续三次读取均发生变化，请手动重试最新范围'
+            }))
+            return
+          }
           window.setTimeout(() => {
             if (reviewPageGate.current.isCurrent(request)) setReviewRefreshKey(value => value + 1)
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('graph_review_page')
         setReviewPage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!reviewPageGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('graph_review_page')
         setReviewPage(current => ({
           ...current,
           items: [],
@@ -3512,16 +3925,29 @@ function AiAssistantPage() {
       void window.electronAPI.aiAssistant.getMergeHistoryPage(mergeArchiveOptions).then(page => {
         if (!mergeArchiveGate.current.isCurrent(request)) return
         if (page.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'merge_history_archive', JSON.stringify(mergeArchiveOptions)
+          )
+          if (!retry.retry) {
+            setMergeArchive({
+              items: [], total: 0, hasMore: false,
+              counts: { active: 0, reverted: 0, all: 0 }, loading: false,
+              error: '身份合并历史连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (mergeArchiveGate.current.isCurrent(request)) {
               setMergeArchiveRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('merge_history_archive')
         setMergeArchive({ ...page, loading: false })
       }).catch(error => {
         if (!mergeArchiveGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('merge_history_archive')
         setMergeArchive({
           items: [], total: 0, hasMore: false,
           counts: { active: 0, reverted: 0, all: 0 }, loading: false,
@@ -3565,17 +3991,35 @@ function AiAssistantPage() {
       }).then(workspace => {
         if (!graphWorkspaceGate.current.isCurrent(request)) return
         if (workspace.stale) {
+          const retry = boundedStaleReloads.current.next('graph_workspace', JSON.stringify({
+            query: graphQuery.trim(), relationType: graphRelationType,
+            relationStatus: graphRelationStatus, focusEntityId: selectedEntityId,
+            depth: graphFocusDepth, maxNodes: graphNodeLimit
+          }))
+          if (!retry.retry) {
+            setGraphWorkspace((current: any) => ({
+              ...current, revision: workspace.revision, status: 'error',
+              error: '图谱视口连续三次读取均发生变化，请手动重试当前范围'
+            }))
+            return
+          }
           setGraphWorkspace((current: any) => ({
             ...current,
             revision: workspace.revision,
             status: 'loading'
           }))
-          setGraphWorkspaceRefreshKey(value => value + 1)
+          window.setTimeout(() => {
+            if (graphWorkspaceGate.current.isCurrent(request)) {
+              setGraphWorkspaceRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('graph_workspace')
         setGraphWorkspace({ ...workspace, status: 'ready' })
       }).catch(error => {
         if (!graphWorkspaceGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('graph_workspace')
         setGraphWorkspace((current: any) => ({
           ...current,
           status: 'error',
@@ -3625,7 +4069,13 @@ function AiAssistantPage() {
         limit: 40
       }).then(page => {
         if (!entityIdentityAnchorGate.current.isCurrent(request)) return
-        if (page.stale) return
+        if (page.stale) {
+          setEntityIdentityAnchorPage((current: any) => ({
+            ...current, items: [], total: 0, hasMore: false, status: 'error',
+            error: '身份目录在读取期间发生了变化，请重新加载最新范围'
+          }))
+          return
+        }
         setEntityIdentityAnchorPage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!entityIdentityAnchorGate.current.isCurrent(request)) return
@@ -3680,18 +4130,40 @@ function AiAssistantPage() {
       }).then(claims => {
         if (!entityClaimGate.current.isCurrent(request)) return
         if (claims.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'entity_claim_page', JSON.stringify({
+              entityId: selectedEntityId,
+              predicate: entityClaimQuery.trim(),
+              status: entityClaimStatus,
+              sourceId: entityClaimSource,
+              from: entityClaimFrom,
+              to: entityClaimTo
+            })
+          )
+          if (!retry.retry) {
+            setEntityDossierPages((current: any) => ({
+              ...current,
+              claims: {
+                items: [], total: 0, hasMore: false, revision: '', status: 'error',
+                error: '人物事实档案连续三次读取均发生变化，请手动重试当前范围'
+              }
+            }))
+            return
+          }
           window.setTimeout(() => {
             if (entityClaimGate.current.isCurrent(request)) {
               refreshEntityDossierSection('claims')
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('entity_claim_page')
         setEntityDossierPages((current: any) => ({
           ...current, claims: { ...claims, status: 'ready' }
         }))
       }).catch(error => {
         if (!entityClaimGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('entity_claim_page')
         setEntityDossierPages((current: any) => ({
           ...current,
           claims: {
@@ -3738,18 +4210,36 @@ function AiAssistantPage() {
       }).then(relations => {
         if (!entityRelationGate.current.isCurrent(request)) return
         if (relations.stale) {
+          const retry = boundedStaleReloads.current.next('entity_relation_page', JSON.stringify({
+            entityId: selectedEntityId, query: entityRelationQuery.trim(),
+            direction: entityRelationDirection, status: entityRelationStatus,
+            source: entityRelationSource
+          }))
+          if (!retry.retry) {
+            setEntityDossierPages((current: any) => ({
+              ...current,
+              relations: {
+                items: [], total: 0, hasMore: false, revision: relations.revision || '',
+                status: 'error',
+                error: '人物关系档案连续三次读取均发生变化，请手动重试当前范围'
+              }
+            }))
+            return
+          }
           window.setTimeout(() => {
             if (entityRelationGate.current.isCurrent(request)) {
               refreshEntityDossierSection('relations')
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('entity_relation_page')
         setEntityDossierPages((current: any) => ({
           ...current, relations: { ...relations, status: 'ready' }
         }))
       }).catch(error => {
         if (!entityRelationGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('entity_relation_page')
         setEntityDossierPages((current: any) => ({
           ...current,
           relations: {
@@ -3799,18 +4289,36 @@ function AiAssistantPage() {
       }).then(events => {
         if (!entityEventGate.current.isCurrent(request)) return
         if (events.stale) {
+          const retry = boundedStaleReloads.current.next('entity_event_page', JSON.stringify({
+            entityId: selectedEntityId, query: entityEventQuery.trim(),
+            type: entityEventType, status: entityEventStatus, source: entityEventSource,
+            from: entityEventFrom, to: entityEventTo
+          }))
+          if (!retry.retry) {
+            setEntityDossierPages((current: any) => ({
+              ...current,
+              events: {
+                items: [], total: 0, hasMore: false, revision: events.revision || '',
+                status: 'error',
+                error: '人物事件档案连续三次读取均发生变化，请手动重试当前范围'
+              }
+            }))
+            return
+          }
           window.setTimeout(() => {
             if (entityEventGate.current.isCurrent(request)) {
               refreshEntityDossierSection('events')
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('entity_event_page')
         setEntityDossierPages((current: any) => ({
           ...current, events: { ...events, status: 'ready' }
         }))
       }).catch(error => {
         if (!entityEventGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('entity_event_page')
         setEntityDossierPages((current: any) => ({
           ...current,
           events: {
@@ -3860,16 +4368,31 @@ function AiAssistantPage() {
       }).then(page => {
         if (!entityEvidenceGate.current.isCurrent(request)) return
         if (page.stale) {
+          const retry = boundedStaleReloads.current.next('entity_evidence_archive', JSON.stringify({
+            entityId: selectedEntityId, query: entityEvidenceQuery.trim(),
+            source: entityEvidenceSource, kind: entityEvidenceKind,
+            state: entityEvidenceState, role: entityEvidenceRole,
+            from: entityEvidenceFrom, to: entityEvidenceTo
+          }))
+          if (!retry.retry) {
+            setEntityEvidencePage({
+              items: [], total: 0, hasMore: false, revision: '', status: 'error',
+              error: '人物原文档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (entityEvidenceGate.current.isCurrent(request)) {
               setEntityEvidenceRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('entity_evidence_archive')
         setEntityEvidencePage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!entityEvidenceGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('entity_evidence_archive')
         setEntityEvidencePage({
           items: [], total: 0, hasMore: false, revision: '',
           status: 'error', error: error?.message || String(error)
@@ -3922,6 +4445,7 @@ function AiAssistantPage() {
     projectMemoryPageGates.current.invalidateAll()
     const projectEntityId = String(projectWorkspace.project?.entityId || '')
     if (projectWorkspace.status !== 'ready' || !projectEntityId) {
+      boundedStaleReloads.current.clear('project_memory_composite')
       setProjectMemoryLoadingMore({})
       setProjectMemoryPages({
         claims: { items: [], total: 0, hasMore: false, revision: '' },
@@ -3973,9 +4497,44 @@ function AiAssistantPage() {
         })
       ]).then(([claims, relations, events]) => {
         if (!projectMemoryGate.current.isCurrent(request)) return
+        if (claims.stale || relations.stale || events.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'project_memory_composite', JSON.stringify({
+              entityId: projectEntityId,
+              claim: {
+                query: projectClaimQuery.trim(), status: projectClaimStatus,
+                sourceId: projectClaimSource
+              },
+              relation: {
+                query: projectRelationQuery.trim(), direction: projectRelationDirection,
+                status: projectRelationStatus, sourceId: projectRelationSource
+              },
+              event: {
+                query: projectEventQuery.trim(), status: projectEventStatus,
+                sourceId: projectEventSource, from: projectEventFrom, to: projectEventTo
+              }
+            })
+          )
+          if (!retry.retry) {
+            setProjectMemoryPages((current: any) => ({
+              ...current,
+              status: 'error',
+              error: '项目事实、关系和事件连续三次未能取得同一轮稳定快照，请手动重试当前范围'
+            }))
+            return
+          }
+          window.setTimeout(() => {
+            if (projectMemoryGate.current.isCurrent(request)) {
+              setProjectMemoryRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
+          return
+        }
+        boundedStaleReloads.current.clear('project_memory_composite')
         setProjectMemoryPages({ claims, relations, events, status: 'ready' })
       }).catch(error => {
         if (!projectMemoryGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('project_memory_composite')
         setProjectMemoryPages((current: any) => ({
           ...current, status: 'error', error: error?.message || String(error)
         }))
@@ -3998,6 +4557,7 @@ function AiAssistantPage() {
     const projectEntityId = String(projectWorkspace.project?.entityId || '')
     setProjectKeyEventLoadingMore(false)
     if (projectWorkspace.status !== 'ready' || !projectEntityId) {
+      boundedStaleReloads.current.clear('project_key_event_page')
       setProjectKeyEventPage({
         items: [], total: 0, hasMore: false, revision: '',
         status: projectWorkspace.status === 'ready' ? 'derived' : 'idle'
@@ -4019,9 +4579,33 @@ function AiAssistantPage() {
         offset: 0
       }).then(page => {
         if (!projectKeyEventGate.current.isCurrent(request)) return
+        if (page.stale) {
+          const retry = boundedStaleReloads.current.next(
+            'project_key_event_page', JSON.stringify({
+              entityId: projectEntityId,
+              query: projectKeyEventQuery.trim(),
+              status: projectKeyEventStatus
+            })
+          )
+          if (!retry.retry) {
+            setProjectKeyEventPage({
+              items: [], total: 0, hasMore: false, revision: '', status: 'error',
+              error: '项目关键时间线连续三次读取均发生变化，请手动重试当前范围'
+            })
+            return
+          }
+          window.setTimeout(() => {
+            if (projectKeyEventGate.current.isCurrent(request)) {
+              setProjectKeyEventRefreshKey(value => value + 1)
+            }
+          }, retry.delayMs)
+          return
+        }
+        boundedStaleReloads.current.clear('project_key_event_page')
         setProjectKeyEventPage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!projectKeyEventGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('project_key_event_page')
         setProjectKeyEventPage({
           items: [], total: 0, hasMore: false, revision: '', status: 'error',
           error: error?.message || String(error)
@@ -4071,16 +4655,32 @@ function AiAssistantPage() {
       }).then(page => {
         if (!projectEvidenceGate.current.isCurrent(request)) return
         if (page.stale) {
+          const retry = boundedStaleReloads.current.next('project_evidence_archive', JSON.stringify({
+            entityId: projectEntityId, query: projectEvidenceQuery.trim(),
+            source: projectEvidenceSource, kind: projectEvidenceKind,
+            state: projectEvidenceState, role: projectEvidenceRole,
+            from: projectEvidenceFrom, to: projectEvidenceTo
+          }))
+          if (!retry.retry) {
+            setProjectEvidencePage({
+              items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '',
+              status: 'error',
+              error: '项目原文档案连续三次读取均发生变化，请手动重试最新范围'
+            })
+            return
+          }
           window.setTimeout(() => {
             if (projectEvidenceGate.current.isCurrent(request)) {
               setProjectEvidenceRefreshKey(value => value + 1)
             }
-          }, 250)
+          }, retry.delayMs)
           return
         }
+        boundedStaleReloads.current.clear('project_evidence_archive')
         setProjectEvidencePage({ ...page, status: 'ready' })
       }).catch(error => {
         if (!projectEvidenceGate.current.isCurrent(request)) return
+        boundedStaleReloads.current.clear('project_evidence_archive')
         setProjectEvidencePage({
           items: [], total: 0, unfilteredTotal: 0, hasMore: false, revision: '',
           status: 'error', error: error?.message || String(error)
@@ -4203,7 +4803,8 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getTaskReminderPage({
         offset: taskReminderPage.nextOffset,
         limit: 40,
-        revision: taskReminderPage.revision
+        revision: taskReminderPage.revision,
+        archiveScopeToken: taskReminderPage.archiveScopeToken
       })
       if (result.stale) {
         setMessage('任务或提醒偏好已经变化，已重新加载最新提醒。')
@@ -4215,6 +4816,7 @@ function AiAssistantPage() {
         total: result.total,
         hasMore: result.hasMore,
         revision: result.revision,
+        archiveScopeToken: result.archiveScopeToken,
         nextOffset: Number(result.nextOffset ?? (current.items.length + result.items.length))
       }))
     } catch (error: any) {
@@ -4290,7 +4892,8 @@ function AiAssistantPage() {
         ...claimArchiveOptions,
         offset: visibleClaims.length,
         limit: 100,
-        revision: claimArchive.revision
+        revision: claimArchive.revision,
+        pageScopeToken: claimArchive.pageScopeToken
       })
       if (!claimArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -4323,7 +4926,8 @@ function AiAssistantPage() {
         ...eventTimelineOptions,
         offset: visibleEvents.length,
         limit: 100,
-        revision: eventTimeline.revision
+        revision: eventTimeline.revision,
+        pageScopeToken: eventTimeline.pageScopeToken
       })
       if (!eventTimelineGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -4359,20 +4963,34 @@ function AiAssistantPage() {
     memoryItemAuditRequests.current[key] = request
     setMemoryItemAuditLoading(existing => setKeyedLoadingState(existing, key, true))
     try {
-      const readPage = (offset: number, revision = '') =>
+      const readPage = (offset: number, revision = '', archiveScopeToken = '') =>
         window.electronAPI.aiAssistant.getMemoryItemAuditPage(kind, itemId, {
           limit: 40,
           offset,
-          revision
+          revision,
+          archiveScopeToken
         })
       let resetToLatest = false
-      let page = await readPage(loadMore ? current.items.length : 0, loadMore ? current.revision : '')
+      let page = await readPage(
+        loadMore ? current.items.length : 0,
+        loadMore ? current.revision : '',
+        loadMore ? current.archiveScopeToken : ''
+      )
       if (memoryItemAuditRequests.current[key] !== request) return
       if (page.stale) {
         resetToLatest = true
+        for (let attempt = 0; attempt < 3 && page.stale; attempt += 1) {
+          if (attempt > 0) {
+            await new Promise(resolve => window.setTimeout(resolve, 250 * attempt))
+            if (memoryItemAuditRequests.current[key] !== request) return
+          }
+          page = await readPage(0)
+          if (memoryItemAuditRequests.current[key] !== request) return
+        }
+        if (page.stale) {
+          throw new Error('这条记忆的审计历史连续三次重新读取仍在变化，请手动重试')
+        }
         setMessage('这条记忆的审计历史在浏览期间已有变化，已从最新第一页重新载入。')
-        page = await readPage(0)
-        if (memoryItemAuditRequests.current[key] !== request) return
       }
       setMemoryItemAudits(existing => setBoundedAuditCache(existing, key, {
           ...page,
@@ -4445,8 +5063,19 @@ function AiAssistantPage() {
         })
       if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
       if (!page || page.stale) {
-        setEventCorrectionParticipantArchive(null)
-        setMessage('事件纠正快照在打开前已有变化，请重新展开可信审计。')
+        setEventCorrectionParticipantArchive({
+          correctionId,
+          phase,
+          title,
+          revision,
+          query,
+          draftQuery: query,
+          items: [],
+          total: 0,
+          hasMore: false,
+          status: 'error',
+          error: '事件纠正快照在打开前已有变化，请关闭后从最新可信审计重新展开'
+        })
         return
       }
       setEventCorrectionParticipantArchive({
@@ -4476,7 +5105,7 @@ function AiAssistantPage() {
   }
   const loadMoreEventCorrectionParticipantArchive = async () => {
     const archive = eventCorrectionParticipantArchive
-    if (!archive || archive.status !== 'ready' || !archive.hasMore) return
+    if (!archive || !['ready', 'load_more_error'].includes(archive.status) || !archive.hasMore) return
     const request = eventCorrectionParticipantArchiveGate.current.begin()
     setEventCorrectionParticipantArchive((current: any) => ({
       ...current,
@@ -4491,13 +5120,17 @@ function AiAssistantPage() {
             revision: archive.revision,
             query: archive.query || '',
             offset: Number(archive.nextOffset ?? archive.items.length),
-            limit: 40
+            limit: 40,
+            archiveScopeToken: archive.archiveScopeToken
           }
         )
       if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
       if (!page || page.stale) {
-        setEventCorrectionParticipantArchive(null)
-        setMessage('事件纠正快照在分页期间已有变化，请重新展开可信审计。')
+        setEventCorrectionParticipantArchive((current: any) => ({
+          ...current,
+          status: 'stale',
+          loadMoreError: '快照版本在分页期间发生变化；已保留当前内容，请关闭后从最新可信审计重新展开'
+        }))
         return
       }
       setEventCorrectionParticipantArchive((current: any) => ({
@@ -4513,8 +5146,8 @@ function AiAssistantPage() {
       if (!eventCorrectionParticipantArchiveGate.current.isCurrent(request)) return
       setEventCorrectionParticipantArchive((current: any) => ({
         ...current,
-        status: 'error',
-        error: error?.message || String(error)
+        status: 'load_more_error',
+        loadMoreError: error?.message || String(error)
       }))
     }
   }
@@ -4526,7 +5159,8 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getResourceArchive({
         ...resourceArchiveOptions,
         offset: visibleResources.length,
-        revision: resourceArchive.revision
+        revision: resourceArchive.revision,
+        archiveScopeToken: resourceArchive.archiveScopeToken
       })
       if (!resourceArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5128,7 +5762,8 @@ function AiAssistantPage() {
           expectedSearchRevision: String(dossier.revision || ''),
           offset: page.items.length,
           limit: 40,
-          revision: page.revision
+          revision: page.revision,
+          archiveScopeToken: page.archiveScopeToken
         }
       )
       if (!relationDossierAuditGates.current.isCurrent(kind, request)) return
@@ -5190,7 +5825,8 @@ function AiAssistantPage() {
           expectedSearchRevision: String(dossier.revision || ''),
           offset: page.items.length,
           limit: 40,
-          revision: String(page.revision || '')
+          revision: String(page.revision || ''),
+          archiveScopeToken: page.archiveScopeToken
         }
       )
       if (!eventDossierParticipantsGate.current.isCurrent(request)) return
@@ -5252,7 +5888,8 @@ function AiAssistantPage() {
         query: resourceTrashQuery.trim() || undefined,
         limit: 40,
         offset: resourceTrashArchive.items.length,
-        revision: resourceTrashArchive.revision
+        revision: resourceTrashArchive.revision,
+        archiveScopeToken: resourceTrashArchive.archiveScopeToken
       })
       if (!resourceTrashGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5477,7 +6114,8 @@ function AiAssistantPage() {
         ...taskOwnershipOptions,
         offset: taskOwnershipReviews.items.length,
         limit: 40,
-        revision: taskOwnershipReviews.revision
+        revision: taskOwnershipReviews.revision,
+        archiveScopeToken: taskOwnershipReviews.archiveScopeToken
       })
       if (!taskOwnershipGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5512,7 +6150,8 @@ function AiAssistantPage() {
         ...taskFeedbackOptions,
         offset: taskFeedbackArchive.items.length,
         limit: 40,
-        revision: taskFeedbackArchive.revision
+        revision: taskFeedbackArchive.revision,
+        archiveScopeToken: taskFeedbackArchive.archiveScopeToken
       })
       if (!taskFeedbackArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5547,7 +6186,8 @@ function AiAssistantPage() {
         ...memoryDeletionOptions,
         offset: memoryDeletionArchive.items.length,
         limit: 40,
-        revision: memoryDeletionArchive.revision
+        revision: memoryDeletionArchive.revision,
+        archiveScopeToken: memoryDeletionArchive.archiveScopeToken
       })
       if (!memoryDeletionArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5587,7 +6227,8 @@ function AiAssistantPage() {
         ...memoryMaintenanceOptions,
         offset: memoryMaintenanceArchive.items.length,
         limit: 40,
-        revision: memoryMaintenanceArchive.revision
+        revision: memoryMaintenanceArchive.revision,
+        archiveScopeToken: memoryMaintenanceArchive.archiveScopeToken
       })
       if (!memoryMaintenanceArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5652,7 +6293,8 @@ function AiAssistantPage() {
         ...memoryGrowthOptions,
         offset: memoryGrowth.items.length,
         limit: 40,
-        revision: memoryGrowth.revision
+        revision: memoryGrowth.revision,
+        archiveScopeToken: memoryGrowth.archiveScopeToken
       })
       if (!memoryGrowthGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -5682,26 +6324,24 @@ function AiAssistantPage() {
       !entityMemoryGrowth.hasMore) return
     const request = entityMemoryGrowthGate.current.begin()
     setEntityMemoryGrowthLoadingMore(true)
+    setEntityMemoryGrowth((current: any) => ({
+      ...current, loadMoreError: undefined, stale: false
+    }))
     try {
       const result = await window.electronAPI.aiAssistant.getMemoryChangeLogPage({
         entityId: selectedEntityId,
         offset: entityMemoryGrowth.items.length,
         limit: 20,
-        revision: entityMemoryGrowth.revision
+        revision: entityMemoryGrowth.revision,
+        archiveScopeToken: entityMemoryGrowth.archiveScopeToken
       })
       if (!entityMemoryGrowthGate.current.isCurrent(request)) return
       if (result.stale) {
         setEntityMemoryGrowth((current: any) => ({
-          ...current, items: [], status: 'loading'
+          ...current,
+          stale: true,
+          loadMoreError: '人物成长记录在翻页期间发生了变化，需要从最新第一页重新加载'
         }))
-        const latest = await window.electronAPI.aiAssistant.getMemoryChangeLogPage({
-          entityId: selectedEntityId,
-          limit: 20,
-          offset: 0
-        })
-        if (entityMemoryGrowthGate.current.isCurrent(request)) {
-          setEntityMemoryGrowth({ ...latest, status: 'ready' })
-        }
         return
       }
       setEntityMemoryGrowth((current: any) => ({
@@ -5713,7 +6353,11 @@ function AiAssistantPage() {
       }))
     } catch (error: any) {
       if (entityMemoryGrowthGate.current.isCurrent(request)) {
-        setMessage(error?.message || String(error))
+        const errorMessage = error?.message || String(error)
+        setEntityMemoryGrowth((current: any) => ({
+          ...current, loadMoreError: errorMessage
+        }))
+        setMessage(errorMessage)
       }
     } finally {
       if (entityMemoryGrowthGate.current.isCurrent(request)) {
@@ -5732,7 +6376,8 @@ function AiAssistantPage() {
         ...ingestionArchiveOptions,
         offset: ingestionArchive.items.length,
         limit: 30,
-        revision: ingestionArchive.revision
+        revision: ingestionArchive.revision,
+        archiveScopeToken: ingestionArchive.archiveScopeToken
       })
       if (!ingestionArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -5770,16 +6415,28 @@ function AiAssistantPage() {
       )
       if (!ingestionDossierGate.current.isCurrent(request)) return
       if (dossier?.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'ingestion_dossier', runId
+        )
+        if (!retry.retry) {
+          setIngestionDossier({
+            id: runId,
+            error: '增量运行批次详情连续三次读取均发生变化，请手动重试'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (ingestionDossierGate.current.isCurrent(request)) {
             void loadIngestionDossier(runId)
           }
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('ingestion_dossier')
       setIngestionDossier(dossier)
     } catch (error: any) {
       if (ingestionDossierGate.current.isCurrent(request)) {
+        boundedStaleReloads.current.clear('ingestion_dossier')
         setIngestionDossier({ id: runId, error: error?.message || String(error) })
       }
     }
@@ -5805,13 +6462,16 @@ function AiAssistantPage() {
         {
           batchOffset: ingestionDossier.batches?.length || 0,
           batchLimit: 40,
-          revision: ingestionDossier.revision
+          revision: ingestionDossier.revision,
+          archiveScopeToken: ingestionDossier.archiveScopeToken
         }
       )
       if (!page || !ingestionDossierGate.current.isCurrent(request)) return
       if (page.stale) {
-        setMessage('该运行的批次明细已有变化，已自动重新载入')
-        void loadIngestionDossier(ingestionDossier.id)
+        setIngestionDossier((current: any) => ({
+          ...current,
+          batchError: '该运行的批次明细已有变化；已保留当前批次，请重新载入最新详情'
+        }))
         return
       }
       setIngestionDossier((current: any) => ({
@@ -5822,10 +6482,16 @@ function AiAssistantPage() {
           ...page.batches.filter((batch: any) =>
             !(current.batches || []).some((known: any) =>
               known.batch_index === batch.batch_index))
-        ]
+        ],
+        batchError: ''
       }))
     } catch (error: any) {
-      if (ingestionDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (ingestionDossierGate.current.isCurrent(request)) {
+        setIngestionDossier((current: any) => ({
+          ...current,
+          batchError: error?.message || String(error)
+        }))
+      }
     } finally {
       if (ingestionDossierGate.current.isCurrent(request)) setIngestionBatchesLoadingMore(false)
     }
@@ -5840,16 +6506,28 @@ function AiAssistantPage() {
         .getIngestionRecoveryPage({ limit: 30 })
       if (!ingestionRecoveryGate.current.isCurrent(request)) return
       if (page.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'ingestion_recovery_queue', 'prepared_ingestion'
+        )
+        if (!retry.retry) {
+          setIngestionRecoveryQueue({
+            items: [], total: 0, hasMore: false, loading: false,
+            error: '增量恢复队列连续三次读取均发生变化，请手动重试'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (ingestionRecoveryGate.current.isCurrent(request)) {
             void loadIngestionRecoveryQueue()
           }
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('ingestion_recovery_queue')
       setIngestionRecoveryQueue({ ...page, loading: false })
     } catch (error: any) {
       if (!ingestionRecoveryGate.current.isCurrent(request)) return
+      boundedStaleReloads.current.clear('ingestion_recovery_queue')
       setIngestionRecoveryQueue({
         items: [], total: 0, hasMore: false, loading: false,
         error: error?.message || String(error)
@@ -5874,7 +6552,8 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getIngestionRecoveryPage({
         offset: ingestionRecoveryQueue.items?.length || 0,
         limit: 30,
-        revision: ingestionRecoveryQueue.revision
+        revision: ingestionRecoveryQueue.revision,
+        archiveScopeToken: ingestionRecoveryQueue.archiveScopeToken
       })
       if (!ingestionRecoveryGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -5923,16 +6602,28 @@ function AiAssistantPage() {
         .getCrossStoreRecoveryPage({ limit: 30 })
       if (!crossStoreRecoveryGate.current.isCurrent(request)) return
       if (page.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'cross_store_recovery_queue', 'prepared_cross_store'
+        )
+        if (!retry.retry) {
+          setCrossStoreRecoveryQueue({
+            items: [], total: 0, hasMore: false, loading: false,
+            error: '写入恢复队列连续三次读取均发生变化，请手动重试'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (crossStoreRecoveryGate.current.isCurrent(request)) {
             void loadCrossStoreRecoveryQueue()
           }
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('cross_store_recovery_queue')
       setCrossStoreRecoveryQueue({ ...page, loading: false })
     } catch (error: any) {
       if (!crossStoreRecoveryGate.current.isCurrent(request)) return
+      boundedStaleReloads.current.clear('cross_store_recovery_queue')
       setCrossStoreRecoveryQueue({
         items: [], total: 0, hasMore: false, loading: false,
         error: error?.message || String(error)
@@ -5957,7 +6648,8 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getCrossStoreRecoveryPage({
         offset: crossStoreRecoveryQueue.items?.length || 0,
         limit: 30,
-        revision: crossStoreRecoveryQueue.revision
+        revision: crossStoreRecoveryQueue.revision,
+        archiveScopeToken: crossStoreRecoveryQueue.archiveScopeToken
       })
       if (!crossStoreRecoveryGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -5990,7 +6682,8 @@ function AiAssistantPage() {
         ...crossStoreRecoveryArchiveOptions,
         offset: crossStoreRecoveryArchive.items?.length || 0,
         limit: 40,
-        revision: crossStoreRecoveryArchive.revision
+        revision: crossStoreRecoveryArchive.revision,
+        archiveScopeToken: crossStoreRecoveryArchive.archiveScopeToken
       })
       if (!crossStoreRecoveryArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -6115,16 +6808,28 @@ function AiAssistantPage() {
       )
       if (!taskFeedbackDossierGate.current.isCurrent(request)) return
       if (dossier?.stale) {
+        const retry = boundedStaleReloads.current.next(
+          'task_feedback_dossier', evidenceFingerprint
+        )
+        if (!retry.retry) {
+          setTaskFeedbackDossier({
+            evidence_fingerprint: evidenceFingerprint,
+            error: '归属反馈详情连续三次读取均发生变化，请手动重试'
+          })
+          return
+        }
         window.setTimeout(() => {
           if (taskFeedbackDossierGate.current.isCurrent(request)) {
             void openTaskFeedbackDossier(evidenceFingerprint)
           }
-        }, 250)
+        }, retry.delayMs)
         return
       }
+      boundedStaleReloads.current.clear('task_feedback_dossier')
       setTaskFeedbackDossier(dossier)
     } catch (error: any) {
       if (taskFeedbackDossierGate.current.isCurrent(request)) {
+        boundedStaleReloads.current.clear('task_feedback_dossier')
         setTaskFeedbackDossier({
           evidence_fingerprint: evidenceFingerprint,
           error: error?.message || String(error)
@@ -6144,13 +6849,16 @@ function AiAssistantPage() {
         {
           historyOffset: taskFeedbackDossier.history?.length || 0,
           historyLimit: 50,
-          revision: taskFeedbackDossier.revision
+          revision: taskFeedbackDossier.revision,
+          archiveScopeToken: taskFeedbackDossier.archiveScopeToken
         }
       )
       if (!page || !taskFeedbackDossierGate.current.isCurrent(request)) return
       if (page.stale) {
-        setMessage('任务归属动作历史已有变化，已重新载入最新详情。')
-        void openTaskFeedbackDossier(taskFeedbackDossier.evidence_fingerprint)
+        setTaskFeedbackDossier((current: any) => ({
+          ...current,
+          historyError: '任务归属动作历史已有变化；已保留当前内容，请重新载入最新详情'
+        }))
         return
       }
       setTaskFeedbackDossier((current: any) => ({
@@ -6160,10 +6868,16 @@ function AiAssistantPage() {
           ...(current.history || []),
           ...page.history.filter((item: any) =>
             !(current.history || []).some((known: any) => known.id === item.id))
-        ]
+        ],
+        historyError: ''
       }))
     } catch (error: any) {
-      if (taskFeedbackDossierGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (taskFeedbackDossierGate.current.isCurrent(request)) {
+        setTaskFeedbackDossier((current: any) => ({
+          ...current,
+          historyError: error?.message || String(error)
+        }))
+      }
     } finally {
       if (taskFeedbackDossierGate.current.isCurrent(request)) setTaskFeedbackHistoryLoadingMore(false)
     }
@@ -6187,7 +6901,8 @@ function AiAssistantPage() {
         query: entityIdentityAnchorQuery.trim(),
         offset: entityIdentityAnchorPage.items.length,
         limit: 40,
-        revision: entityIdentityAnchorPage.revision
+        revision: entityIdentityAnchorPage.revision,
+        pageScopeToken: entityIdentityAnchorPage.pageScopeToken
       })
       if (!entityIdentityAnchorGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -6233,7 +6948,8 @@ function AiAssistantPage() {
         entityId: selectedEntityId,
         limit: 40,
         offset: currentPage.items.length,
-        revision: currentPage.revision
+        revision: currentPage.revision,
+        pageScopeToken: currentPage.pageScopeToken
       }
       const page = kind === 'claims'
         ? await window.electronAPI.aiAssistant.getClaimArchive({
@@ -6305,7 +7021,8 @@ function AiAssistantPage() {
           ? new Date(`${entityEvidenceTo}T23:59:59.999+08:00`).toISOString() : undefined,
         limit: 40,
         offset: entityEvidencePage.items.length,
-        revision: entityEvidencePage.revision
+        revision: entityEvidencePage.revision,
+        pageScopeToken: entityEvidencePage.pageScopeToken
       })
       if (!entityEvidenceGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -6340,7 +7057,8 @@ function AiAssistantPage() {
         {
           limit: 40,
           offset: Number(focus.taskOffset || focus.tasks?.length || 0),
-          revision: focus.taskRevision
+          revision: focus.taskRevision,
+          archiveScopeToken: focus.taskArchiveScopeToken
         }
       )
       if (!entityTaskGate.current.isCurrent(request)) return
@@ -6362,7 +7080,8 @@ function AiAssistantPage() {
           taskHasMore: page.hasMore,
           tasksTruncated: page.hasMore,
           taskOffset: page.nextOffset,
-          taskRevision: page.revision
+          taskRevision: page.revision,
+          taskArchiveScopeToken: page.archiveScopeToken
         }
       }))
     } catch (error: any) {
@@ -6388,7 +7107,8 @@ function AiAssistantPage() {
           kind,
           limit: 40,
           offset: focus[field]?.length || 0,
-          revision: pageMeta.revision
+          revision: pageMeta.revision,
+          archiveScopeToken: pageMeta.archiveScopeToken
         }
       )
       if (!entityAuditGates.current.isCurrent(field, request)) return
@@ -6412,6 +7132,7 @@ function AiAssistantPage() {
               total: page.total,
               hasMore: page.hasMore,
               revision: page.revision,
+              archiveScopeToken: page.archiveScopeToken,
               stale: false
             }
           }
@@ -6439,7 +7160,8 @@ function AiAssistantPage() {
         entityId: projectEntityId,
         limit: 40,
         offset: currentPage.items.length,
-        revision: currentPage.revision
+        revision: currentPage.revision,
+        pageScopeToken: currentPage.pageScopeToken
       }
       const page = kind === 'claims'
         ? await window.electronAPI.aiAssistant.getClaimArchive({
@@ -6507,7 +7229,8 @@ function AiAssistantPage() {
         status: projectKeyEventStatus || undefined,
         limit: 40,
         offset: projectKeyEventPage.items.length,
-        revision: projectKeyEventPage.revision
+        revision: projectKeyEventPage.revision,
+        pageScopeToken: projectKeyEventPage.pageScopeToken
       })
       if (!projectKeyEventGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -6795,6 +7518,7 @@ function AiAssistantPage() {
 
   const openReviewInboxTarget = (target: ReviewInboxTarget) => {
     if (target === 'confirmed_conflicts') {
+      memoryEntityScopeGate.current.invalidate()
       setMemoryQuery('')
       setMemoryEntityFilter('')
       setMemoryEntitySelection(null)
@@ -6935,7 +7659,8 @@ function AiAssistantPage() {
           ? new Date(`${projectEvidenceTo}T23:59:59.999+08:00`).toISOString() : undefined,
         limit: 40,
         offset: projectEvidencePage.items.length,
-        revision: projectEvidencePage.revision
+        revision: projectEvidencePage.revision,
+        pageScopeToken: projectEvidencePage.pageScopeToken
       })
       if (!projectEvidenceGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -6970,7 +7695,8 @@ function AiAssistantPage() {
         {
           limit: 40,
           offset: project.members?.length || 0,
-          revision: project.memberRevision
+          revision: project.memberRevision,
+          archiveScopeToken: project.memberArchiveScopeToken
         }
       )
       if (!projectMemberGate.current.isCurrent(request)) return
@@ -6990,7 +7716,8 @@ function AiAssistantPage() {
           ],
           memberTotal: page.total,
           memberHasMore: page.hasMore,
-          memberRevision: page.revision
+          memberRevision: page.revision,
+          memberArchiveScopeToken: page.archiveScopeToken
         }
       }))
     } catch (error: any) {
@@ -7011,7 +7738,8 @@ function AiAssistantPage() {
         {
           limit: 40,
           offset: Number(project.taskOffset || project.tasks?.length || 0),
-          revision: project.taskRevision
+          revision: project.taskRevision,
+          archiveScopeToken: project.taskArchiveScopeToken
         }
       )
       if (!projectTaskGate.current.isCurrent(request)) return
@@ -7032,7 +7760,8 @@ function AiAssistantPage() {
           taskTotal: page.total,
           taskHasMore: page.hasMore,
           taskOffset: page.nextOffset ?? Number(current.project?.taskOffset || 0) + page.items.length,
-          taskRevision: page.revision
+          taskRevision: page.revision,
+          taskArchiveScopeToken: page.archiveScopeToken
         }
       }))
     } catch (error: any) {
@@ -7053,7 +7782,8 @@ function AiAssistantPage() {
         {
           limit: 40,
           offset: Number(project.riskOffset || project.risks?.length || 0),
-          revision: project.riskRevision
+          revision: project.riskRevision,
+          archiveScopeToken: project.riskArchiveScopeToken
         }
       )
       if (!projectRiskGate.current.isCurrent(request)) return
@@ -7075,7 +7805,8 @@ function AiAssistantPage() {
           riskTotal: page.total,
           riskHasMore: page.hasMore,
           riskOffset: page.nextOffset ?? Number(current.project?.riskOffset || 0) + page.items.length,
-          riskRevision: page.revision
+          riskRevision: page.revision,
+          riskArchiveScopeToken: page.archiveScopeToken
         }
       }))
     } catch (error: any) {
@@ -7095,7 +7826,8 @@ function AiAssistantPage() {
         {
           limit: 40,
           offset: taskWorkspace.history?.length || 0,
-          revision: taskWorkspace.historyRevision
+          revision: taskWorkspace.historyRevision,
+          archiveScopeToken: taskWorkspace.historyArchiveScopeToken
         }
       )
       if (!taskHistoryGate.current.isCurrent(request)) return
@@ -7113,7 +7845,8 @@ function AiAssistantPage() {
         ],
         historyTotal: page.total,
         historyHasMore: page.hasMore,
-        historyRevision: page.revision
+        historyRevision: page.revision,
+        historyArchiveScopeToken: page.archiveScopeToken
       }))
     } catch (error: any) {
       if (taskHistoryGate.current.isCurrent(request)) setMessage(error?.message || String(error))
@@ -7170,7 +7903,8 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getActiveTaskWorkset({
         ...taskWorksetOptions,
         offset: taskWorkset.items.length,
-        revision: taskWorkset.revision
+        revision: taskWorkset.revision,
+        taskWorksetScopeToken: taskWorkset.taskWorksetScopeToken
       })
       if (result.stale) {
         setTaskWorksetRefreshKey(value => value + 1)
@@ -7200,7 +7934,8 @@ function AiAssistantPage() {
       const result = await window.electronAPI.aiAssistant.getProjectDirectory({
         ...projectDirectoryOptions,
         offset: Number(projectDirectory.nextOffset ?? projectDirectory.items.length),
-        revision: projectDirectory.revision
+        revision: projectDirectory.revision,
+        projectDirectoryScopeToken: projectDirectory.projectDirectoryScopeToken
       })
       if (!projectDirectoryGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -8153,7 +8888,8 @@ function AiAssistantPage() {
         ...mergeArchiveOptions,
         offset: mergeArchive.items.length,
         limit: 40,
-        revision: mergeArchive.revision
+        revision: mergeArchive.revision,
+        archiveScopeToken: mergeArchive.archiveScopeToken
       })
       if (!mergeArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -8758,6 +9494,7 @@ function AiAssistantPage() {
       editingEvent.participantEditingSupported !== false) return
     const eventId = editingEvent.id
     const expectedRevision = String(editingEvent.expectedRevision || '')
+    const archiveScopeToken = String(editingEvent.participantArchiveScopeToken || '')
     const request = editingEventParticipantLoadGate.current.begin()
     let participants = [...editingEvent.participants]
     setEditingEvent((current: any) => current?.id === eventId
@@ -8770,7 +9507,8 @@ function AiAssistantPage() {
           {
             revision: expectedRevision,
             offset: participants.length,
-            limit: 100
+            limit: 100,
+            archiveScopeToken
           }
         )
         if (!editingEventParticipantLoadGate.current.isCurrent(request)) return
@@ -8832,15 +9570,22 @@ function AiAssistantPage() {
       setMemoryConversationId(answer.conversationId)
       const conversation = await window.electronAPI.aiAssistant
         .getAssistantConversation(answer.conversationId)
-        .catch(() => null)
+        .catch((error: any) => {
+          if (memoryConversationGate.current.isCurrent(request)) {
+            setMessage(`回答已生成并保存，但会话原文暂未加载：${error?.message || String(error)}`)
+          }
+          return null
+        })
+      if (!memoryConversationGate.current.isCurrent(request)) return
       if (conversation?.stale) void openMemoryConversation(answer.conversationId)
-      else setMemoryConversation(conversation)
+      else if (conversation) setMemoryConversation(conversation)
       setMemoryQuestion('')
       await load().catch(() => {})
     } catch (error: any) {
       if (memoryConversationGate.current.isCurrent(request)) {
         const errorMessage = error?.message || String(error)
         if (errorMessage.includes('所选实体')) {
+          memoryEntityScopeGate.current.invalidate()
           setMemoryEntitySelection(null)
           setMemoryEntityFilter('')
         }
@@ -8857,18 +9602,27 @@ function AiAssistantPage() {
   }
 
   const selectMemoryEntityScope = async (entityId: string, fallbackName = '') => {
-    const result = await window.electronAPI.aiAssistant.getTrustedEntityDirectory({
-      query: entityId,
-      limit: 20,
-      offset: 0
-    })
-    const entity = result.items.find((item: any) => item.id === entityId)
-    if (!entity) {
-      setMessage('该实体已经变化、合并或不再可信，请重新选择。')
-      return
+    const id = String(entityId || '').trim()
+    if (!id) return
+    const request = memoryEntityScopeGate.current.begin()
+    try {
+      const result = await window.electronAPI.aiAssistant.getTrustedEntityDirectory({
+        query: id,
+        limit: 20,
+        offset: 0
+      })
+      if (!memoryEntityScopeGate.current.isCurrent(request)) return
+      const entity = result.items.find((item: any) => item.id === id)
+      if (!entity) {
+        setMessage(`实体“${fallbackName || id}”已经变化、合并或不再可信，请重新选择。`)
+        return
+      }
+      setMemoryEntitySelection({ ...entity, directoryRevision: result.revision })
+      setMemoryEntityFilter(entity.id)
+    } catch (error: any) {
+      if (!memoryEntityScopeGate.current.isCurrent(request)) return
+      setMessage(`实体范围读取失败：${error?.message || String(error)}`)
     }
-    setMemoryEntitySelection({ ...entity, directoryRevision: result.revision })
-    setMemoryEntityFilter(entity.id)
   }
 
   const loadMoreMemoryResults = async () => {
@@ -8892,6 +9646,7 @@ function AiAssistantPage() {
       )
       if (!memorySearchGate.current.isCurrent(request)) return
       if (page.entityScopeStale) {
+        memoryEntityScopeGate.current.invalidate()
         setMemoryEntitySelection(null)
         setMemoryEntityFilter('')
         setMessage('所选实体在翻页期间发生变化，已清除该范围，请重新选择。')
@@ -8917,7 +9672,8 @@ function AiAssistantPage() {
         return [...merged.values()]
       })
       setMemorySearchFeedback(page.feedback || [])
-      setMemorySearchState({
+      setMemorySearchState(current => ({
+        ...current,
         status: 'ready',
         query,
         total: page.total,
@@ -8929,28 +9685,8 @@ function AiAssistantPage() {
         searchMode: page.searchMode,
         retrievalMode: page.retrievalMode,
         lexicalSearchMode: page.lexicalSearchMode,
-        typeCounts: page.typeCounts,
-        typeCountsBasis: page.typeCountsBasis,
-        typeCountsSearchMode: page.typeCountsSearchMode,
-        trustCounts: page.trustCounts,
-        trustCountsBasis: page.trustCountsBasis,
-        trustCountsSearchMode: page.trustCountsSearchMode,
-        sourceCounts: page.sourceCounts,
-        sourceCountsBasis: page.sourceCountsBasis,
-        supportCounts: page.supportCounts,
-        supportCountsBasis: page.supportCountsBasis,
-        supportCountsSearchMode: page.supportCountsSearchMode,
-        contradictionCount: page.contradictionCount,
-        noContradictionCount: page.noContradictionCount,
-        contradictionCountBasis: page.contradictionCountBasis,
-        evidenceStrengthCounts: page.evidenceStrengthCounts,
-        evidenceStrengthCountsBasis: page.evidenceStrengthCountsBasis,
-        evidenceBreadthCounts: page.evidenceBreadthCounts,
-        evidenceBreadthCountsBasis: page.evidenceBreadthCountsBasis,
-        reviewPresetCounts: page.reviewPresetCounts,
-        reviewPresetCountsBasis: page.reviewPresetCountsBasis,
         nextOffset: Number(page.offset || 0) + page.results.length
-      })
+      }))
     } catch (error: any) {
       if (memorySearchGate.current.isCurrent(request)) {
         setMemorySearchState(current => ({ ...current, status: 'error', error: error?.message || String(error) }))
@@ -9059,7 +9795,8 @@ function AiAssistantPage() {
       const page = await window.electronAPI.aiAssistant.getMemorySearchFeedbackArchive({
         ...memoryFeedbackArchiveOptions,
         offset: memoryFeedbackArchive.items.length,
-        revision: memoryFeedbackArchive.revision
+        revision: memoryFeedbackArchive.revision,
+        archiveScopeToken: memoryFeedbackArchive.archiveScopeToken
       })
       if (!memoryFeedbackArchiveGate.current.isCurrent(request)) return
       if (page.stale) {
@@ -9192,6 +9929,7 @@ function AiAssistantPage() {
       unfilteredTotal: 0,
       hasMore: false,
       filters,
+      openingSnapshot,
       status: 'loading'
     })
     try {
@@ -9207,22 +9945,32 @@ function AiAssistantPage() {
           fromTimestamp: memoryEvidenceTimestamp(filters.from),
           toTimestamp: memoryEvidenceTimestamp(filters.to, true)
       }
-      const page: any = graphReviewArchive
-        ? await window.electronAPI.aiAssistant.getGraphReviewEvidencePage(sourceId, {
-          ...filtersPayload,
-          revision: String(reviewPage.revision || '')
-        })
-        : await window.electronAPI.aiAssistant.getMemoryEvidencePage(
-          documentType,
-          sourceId,
-          {
-          ...filtersPayload,
-          expectedSearchRevision: openingSnapshot.searchRevision,
-          expectedContentHash: openingSnapshot.contentHash,
-          expectedEvidenceAuthorityRevision: openingSnapshot.evidenceAuthorityRevision
+      let page: any = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        page = graphReviewArchive
+          ? await window.electronAPI.aiAssistant.getGraphReviewEvidencePage(sourceId, {
+            ...filtersPayload,
+            revision: String(reviewPage.revision || '')
+          })
+          : await window.electronAPI.aiAssistant.getMemoryEvidencePage(
+            documentType,
+            sourceId,
+            {
+            ...filtersPayload,
+            expectedSearchRevision: openingSnapshot.searchRevision,
+            expectedContentHash: openingSnapshot.contentHash,
+            expectedEvidenceAuthorityRevision: openingSnapshot.evidenceAuthorityRevision
+          }
+        )
+        if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+        if (!page?.stale || graphReviewArchive || page.searchSnapshotStale || page.evidenceSnapshotStale) break
+        if (attempt < 2) {
+          await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)))
+          if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
         }
-      )
+      }
       if (!memoryEvidenceArchiveGate.current.isCurrent(request)) return
+      if (!page) throw new Error('完整证据档案暂时无法读取')
       if (page.stale) {
         if (graphReviewArchive) {
           setMemoryEvidenceArchive(null)
@@ -9246,12 +9994,7 @@ function AiAssistantPage() {
           }
           return
         }
-        window.setTimeout(() => {
-          if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
-            void openMemoryEvidenceArchive(documentType, sourceId, title, filters, openingSnapshot)
-          }
-        }, 250)
-        return
+        throw new Error('证据档案正在持续变化，三次重新读取仍未获得一致快照')
       }
       setMemoryEvidenceArchive({
         documentType,
@@ -9262,6 +10005,7 @@ function AiAssistantPage() {
         unfilteredTotal: page.unfilteredTotal,
         hasMore: page.hasMore,
         filters,
+        openingSnapshot,
         revision: page.revision,
         evidenceScopeToken: page.evidenceScopeToken,
         status: 'ready'
@@ -9277,6 +10021,7 @@ function AiAssistantPage() {
         unfilteredTotal: 0,
         hasMore: false,
         filters,
+        openingSnapshot,
         status: 'error',
         error: error?.message || String(error)
       })
@@ -9295,6 +10040,7 @@ function AiAssistantPage() {
     if (!archive || archive.status !== 'ready' || !archive.hasMore || memoryEvidenceLoadingMore) return
     const request = memoryEvidenceArchiveGate.current.begin()
     setMemoryEvidenceLoadingMore(true)
+    setMemoryEvidenceArchive(current => current ? { ...current, loadMoreError: undefined } : current)
     try {
       const filtersPayload = {
           offset: archive.items.length,
@@ -9321,11 +10067,13 @@ function AiAssistantPage() {
         setMessage(page.evidenceScopeStale
           ? '原文筛选范围在翻页期间发生变化，已从第一页重新载入，避免混合两组证据。'
           : '原文证据在翻页期间发生变化，已重新载入最新证据。')
+        setMemoryEvidenceLoadingMore(false)
         void openMemoryEvidenceArchive(
           archive.documentType,
           archive.sourceId,
           archive.title,
-          archive.filters
+          archive.filters,
+          archive.openingSnapshot
         )
         return
       }
@@ -9350,7 +10098,7 @@ function AiAssistantPage() {
     } catch (error: any) {
       if (memoryEvidenceArchiveGate.current.isCurrent(request)) {
         setMemoryEvidenceArchive(current => current
-          ? { ...current, status: 'error', error: error?.message || String(error) }
+          ? { ...current, loadMoreError: error?.message || String(error) }
           : current)
       }
     } finally {
@@ -9360,44 +10108,59 @@ function AiAssistantPage() {
 
   const openMemoryConversation = useCallback(async (id: string, anchorMessageId = '') => {
     const request = memoryConversationGate.current.begin()
-    const conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id, {
-      offset: 0,
-      limit: 40,
-      anchorMessageId
-    })
-    if (!conversation || !memoryConversationGate.current.isCurrent(request)) return
-    if (conversation.stale) {
-      window.setTimeout(() => {
-        if (memoryConversationGate.current.isCurrent(request)) {
-          void openMemoryConversation(id, anchorMessageId)
+    setMemoryConversationLoad({ status: 'loading', targetId: id, anchorMessageId })
+    try {
+      let conversation: any = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        conversation = await window.electronAPI.aiAssistant.getAssistantConversation(id, {
+          offset: 0,
+          limit: 40,
+          anchorMessageId
+        })
+        if (!memoryConversationGate.current.isCurrent(request)) return
+        if (!conversation?.stale) break
+        if (attempt < 2) {
+          await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)))
+          if (!memoryConversationGate.current.isCurrent(request)) return
         }
-      }, 250)
-      return
-    }
-    setMemoryConversationId(id)
-    setMemoryConversation(conversation)
-    const messages = conversation.messages || []
-    const assistantIndex = messages.map((item: any) => item.role).lastIndexOf('assistant')
-    if (assistantIndex >= 0) {
-      const assistant = messages[assistantIndex]
-      const question = [...messages.slice(0, assistantIndex)].reverse().find((item: any) => item.role === 'user')
-      setMemoryAnswer({
-        conversationId: id,
-        assistantMessageId: assistant.id,
-        question: question?.content || conversation.title,
-        answer: assistant.content,
-        citations: assistant.citations || [],
-        groundingAudit: assistant.groundingAudit,
-        groundingRevalidation: assistant.groundingRevalidation,
-        groundedStatements: String(assistant.content || '').split(/\n{2,}/)
-          .map((text: string, statementIndex: number) => ({
-            text,
-            citationIds: assistant.groundingAudit?.statementCitations?.[statementIndex] || []
-          })),
-        uncertainty: String(assistant.uncertainty || '')
+      }
+      if (!conversation) throw new Error('这段会话已不存在或暂时无法读取')
+      if (conversation.stale) throw new Error('问答档案正在持续变化，三次重新读取仍未获得一致快照')
+      setMemoryConversationId(id)
+      setMemoryConversation(conversation)
+      setAssistantMessagesLoadError('')
+      setMemoryConversationLoad({ status: 'idle', targetId: '', anchorMessageId: '' })
+      const messages = conversation.messages || []
+      const assistantIndex = messages.map((item: any) => item.role).lastIndexOf('assistant')
+      if (assistantIndex >= 0) {
+        const assistant = messages[assistantIndex]
+        const question = [...messages.slice(0, assistantIndex)].reverse().find((item: any) => item.role === 'user')
+        setMemoryAnswer({
+          conversationId: id,
+          assistantMessageId: assistant.id,
+          question: question?.content || conversation.title,
+          answer: assistant.content,
+          citations: assistant.citations || [],
+          groundingAudit: assistant.groundingAudit,
+          groundingRevalidation: assistant.groundingRevalidation,
+          groundedStatements: String(assistant.content || '').split(/\n{2,}/)
+            .map((text: string, statementIndex: number) => ({
+              text,
+              citationIds: assistant.groundingAudit?.statementCitations?.[statementIndex] || []
+            })),
+          uncertainty: String(assistant.uncertainty || '')
+        })
+      } else {
+        setMemoryAnswer(null)
+      }
+    } catch (error: any) {
+      if (!memoryConversationGate.current.isCurrent(request)) return
+      setMemoryConversationLoad({
+        status: 'error',
+        targetId: id,
+        anchorMessageId,
+        error: error?.message || String(error)
       })
-    } else {
-      setMemoryAnswer(null)
     }
   }, [])
 
@@ -9411,7 +10174,8 @@ function AiAssistantPage() {
         ...assistantArchiveOptions,
         offset: assistantArchive.items.length,
         limit: 30,
-        revision: assistantArchive.revision
+        revision: assistantArchive.revision,
+        archiveScopeToken: assistantArchive.archiveScopeToken
       })
       if (!assistantArchiveGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -9446,7 +10210,8 @@ function AiAssistantPage() {
         ...modelRequestAuditOptions,
         offset: modelRequestAudits.items.length,
         limit: 30,
-        revision: modelRequestAudits.revision
+        revision: modelRequestAudits.revision,
+        archiveScopeToken: modelRequestAudits.archiveScopeToken
       })
       if (!modelRequestAuditGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -9485,7 +10250,8 @@ function AiAssistantPage() {
         ...assistantAnswerReviewOptions,
         offset: assistantAnswerReviews.items.length,
         limit: 30,
-        revision: assistantAnswerReviews.revision
+        revision: assistantAnswerReviews.revision,
+        archiveScopeToken: assistantAnswerReviews.archiveScopeToken
       })
       if (!assistantAnswerReviewsGate.current.isCurrent(request)) return
       if (result.stale) {
@@ -9573,15 +10339,19 @@ function AiAssistantPage() {
       [messageId]: { items: [], total: 0, hasMore: false, loading: true }
     }))
     try {
-      const page = await window.electronAPI.aiAssistant
-        .getAssistantAnswerReviewDecisions(messageId, { limit: 20 })
-      if (!gate.isCurrent(request)) return
-      if (page.stale) {
-        window.setTimeout(() => {
-          if (gate.isCurrent(request)) void loadAssistantAnswerReviewHistory(messageId)
-        }, 250)
-        return
+      let page: any = null
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        page = await window.electronAPI.aiAssistant
+          .getAssistantAnswerReviewDecisions(messageId, { limit: 20 })
+        if (!gate.isCurrent(request)) return
+        if (!page?.stale) break
+        if (attempt < 2) {
+          await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)))
+          if (!gate.isCurrent(request)) return
+        }
       }
+      if (!page) throw new Error('回答处理记录暂时无法读取')
+      if (page.stale) throw new Error('回答处理记录正在持续变化，三次重新读取仍未获得一致快照')
       setAssistantAnswerReviewHistories(current => ({
         ...current,
         [messageId]: { ...page, loading: false }
@@ -9619,12 +10389,15 @@ function AiAssistantPage() {
     const request = gate.begin()
     setAssistantAnswerReviewHistories(current => ({
       ...current,
-      [messageId]: { ...current[messageId], loading: true }
+      [messageId]: { ...current[messageId], loading: true, error: undefined }
     }))
     try {
       const page = await window.electronAPI.aiAssistant.getAssistantAnswerReviewDecisions(
         messageId,
-        { offset: history.items.length, limit: 20, revision: history.revision }
+        {
+          offset: history.items.length, limit: 20, revision: history.revision,
+          archiveScopeToken: history.archiveScopeToken
+        }
       )
       if (!gate.isCurrent(request)) return
       if (page.stale) {
@@ -9657,16 +10430,20 @@ function AiAssistantPage() {
     if (!memoryConversationId || !memoryConversation?.hasOlder || assistantMessagesLoadingMore) return
     const request = memoryConversationGate.current.begin()
     setAssistantMessagesLoadingMore(true)
+    setAssistantMessagesLoadError('')
     try {
       const older = await window.electronAPI.aiAssistant.getAssistantConversation(memoryConversationId, {
-        offset: memoryConversation.messages?.length || 0,
+        offset: Number(memoryConversation.offset || 0) + Number(memoryConversation.messages?.length || 0),
         limit: 40,
-        revision: memoryConversation.revision
+        revision: memoryConversation.revision,
+        conversationScopeAnchorMessageId: memoryConversation.anchorMessageId || '',
+        archiveScopeToken: memoryConversation.archiveScopeToken
       })
       if (!older || !memoryConversationGate.current.isCurrent(request)) return
       if (older.stale) {
         setMessage('当前问答的消息或证据状态已有变化，已自动重新载入')
-        void openMemoryConversation(memoryConversationId)
+        setAssistantMessagesLoadingMore(false)
+        void openMemoryConversation(memoryConversationId, memoryConversation.anchorMessageId || '')
         return
       }
       setMemoryConversation((current: any) => {
@@ -9675,6 +10452,8 @@ function AiAssistantPage() {
         return {
           ...current,
           ...older,
+          offset: current.offset,
+          anchorMessageId: current.anchorMessageId,
           messages: [
             ...older.messages.filter((item: any) => !known.has(item.id)),
             ...(current.messages || [])
@@ -9682,7 +10461,11 @@ function AiAssistantPage() {
         }
       })
     } catch (error: any) {
-      if (memoryConversationGate.current.isCurrent(request)) setMessage(error?.message || String(error))
+      if (memoryConversationGate.current.isCurrent(request)) {
+        const errorMessage = error?.message || String(error)
+        setAssistantMessagesLoadError(errorMessage)
+        setMessage(errorMessage)
+      }
     } finally {
       if (memoryConversationGate.current.isCurrent(request)) setAssistantMessagesLoadingMore(false)
     }
@@ -9695,6 +10478,8 @@ function AiAssistantPage() {
 
   const startNewMemoryConversation = () => {
     memoryConversationGate.current.invalidate()
+    setMemoryConversationLoad({ status: 'idle', targetId: '', anchorMessageId: '' })
+    setAssistantMessagesLoadError('')
     setMemoryConversationId('')
     setMemoryConversation(null)
     setMemoryAnswer(null)
@@ -10220,11 +11005,14 @@ function AiAssistantPage() {
         enabled: sourceEnabledFilter,
         offset,
         limit: 50,
-        expectedRevision: append ? sourceDirectory.revision : undefined
+        expectedRevision: append ? sourceDirectory.revision : undefined,
+        directoryScopeToken: append ? sourceDirectory.directoryScopeToken : undefined
       })
       if (!sourceDirectoryGate.current.isCurrent(request)) return
       if (result.stale) {
-        setMessage('会话目录在翻页时发生变化，已从第一页刷新。')
+        setMessage(result.directoryScopeStale
+          ? '会话目录筛选范围在翻页时发生变化，已从最新第一页刷新。'
+          : '会话目录在翻页时发生变化，已从第一页刷新。')
         const refreshed = await window.electronAPI.aiAssistant.getConversationSources({
           query: sourceQuery || undefined,
           type: sourceTypeFilter,
@@ -10655,6 +11443,22 @@ function AiAssistantPage() {
   }
 
   const rendererPageIncidentNotice = buildRendererPageIncidentNotice(memoryDiagnostics?.appRecovery)
+  const backgroundHealth = buildBackgroundHealthPresentation(
+    dashboard,
+    memoryDiagnosticsError ? undefined : memoryDiagnostics
+  )
+  const openBackgroundHealthDiagnostics = () => {
+    if (backgroundHealth?.diagnosticsTarget === 'memory-diagnostics') {
+      setShowDiagnostics(true)
+      return
+    }
+    const target = document.getElementById(backgroundHealth?.diagnosticsTarget || 'message-resources')
+    if (!target) {
+      setMessage('后台健康诊断模块当前尚未加载，请完成首次整理后重试。')
+      return
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   const openAppRecoveryDiagnostics = () => {
     setFocusAppRecoveryDiagnostics(true)
     setShowDiagnostics(true)
@@ -10798,6 +11602,22 @@ function AiAssistantPage() {
             onClick={() => void refreshMemoryDiagnostics().catch(() => {})}>
             {memoryDiagnosticsRefreshing ? '正在重试…' : '立即重试'}
           </button>
+        </section>}
+        {backgroundHealth && !dashboardLoadError && <section
+          className={`assistant-recovery-banner ${backgroundHealth.severity === 'critical' ? 'page-incident' : ''}`}
+          data-background-health-count={backgroundHealth.count}
+          role="status">
+          <TriangleAlert size={15} />
+          <span><strong>{backgroundHealth.primary.title}</strong>
+            <small>
+              {backgroundHealth.primary.detail}
+              {backgroundHealth.count > 1 ? `；另有 ${backgroundHealth.count - 1} 项后台异常` : ''}
+              {backgroundHealth.nextAttemptAt
+                ? `；最近一次自动重试将在 ${new Date(backgroundHealth.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}`
+                : '；系统会在下一轮安全调度时继续尝试'}。
+            </small>
+          </span>
+          <button type="button" onClick={openBackgroundHealthDiagnostics}>查看诊断</button>
         </section>}
         <section className="assistant-panel assistant-owner-profile">
           <div className="assistant-section-heading">
@@ -11115,7 +11935,9 @@ function AiAssistantPage() {
               {ingestionRecoveryQueue && <div className="assistant-ingestion-recovery-queue">
                 {ingestionRecoveryQueue.loading && <em>正在读取脱敏恢复目录…</em>}
                 {ingestionRecoveryQueue.error &&
-                  <p className="assistant-diagnostics-error">{ingestionRecoveryQueue.error}</p>}
+                  <p className="assistant-diagnostics-error">{ingestionRecoveryQueue.error}
+                    <button onClick={() => void loadIngestionRecoveryQueue()}>重试</button>
+                  </p>}
                 {(ingestionRecoveryQueue.items || []).map((commit: any) => <article
                   key={commit.commit_id}>
                   <b>{commit.source_kind === 'document' ? '文档' : '微信'}批次 #{commit.batch_index}</b>
@@ -11129,7 +11951,8 @@ function AiAssistantPage() {
                   </small>
                   {commit.last_error && <p>{commit.last_error}</p>}
                 </article>)}
-                {!ingestionRecoveryQueue.loading && !ingestionRecoveryQueue.items?.length &&
+                {!ingestionRecoveryQueue.loading && !ingestionRecoveryQueue.error &&
+                  !ingestionRecoveryQueue.items?.length &&
                   <em>恢复队列已经清空。</em>}
                 {ingestionRecoveryQueue.hasMore && <button
                   disabled={ingestionRecoveryLoadingMore}
@@ -11883,6 +12706,14 @@ function AiAssistantPage() {
                 <span>{briefingArchive.error}</span>
                 <button onClick={() => setBriefingArchiveRefreshKey(value => value + 1)}>重新读取第一页</button>
               </div>}
+              {briefingArchive.loadMoreError && <div className="assistant-error">
+                <strong>更早简报尚未读完</strong>
+                <span>{briefingArchive.loadMoreError}。已加载的 {briefingArchive.items.length} 天仍可查看。</span>
+                <button disabled={briefingArchiveLoadingMore}
+                  onClick={() => void loadMoreBriefingArchive()}>
+                  {briefingArchiveLoadingMore ? '正在重试…' : '重试加载更早简报'}
+                </button>
+              </div>}
               {briefingArchive.status === 'loading' && !briefingArchive.items.length
                 ? <div className="assistant-empty">正在读取简报档案…</div>
                 : briefingArchive.items.length
@@ -11922,7 +12753,7 @@ function AiAssistantPage() {
                   : briefingArchive.status === 'ready'
                     ? <div className="assistant-empty">最近 90 天还没有派生简报。</div>
                     : null}
-              {briefingArchive.hasMore && <button
+              {briefingArchive.hasMore && !briefingArchive.loadMoreError && <button
                 disabled={briefingArchiveLoadingMore}
                 onClick={() => void loadMoreBriefingArchive()}>
                 {briefingArchiveLoadingMore
@@ -12017,7 +12848,9 @@ function AiAssistantPage() {
               {crossStoreRecoveryQueue && <div className="assistant-ingestion-recovery-queue">
                 {crossStoreRecoveryQueue.loading && <em>正在读取脱敏恢复目录…</em>}
                 {crossStoreRecoveryQueue.error &&
-                  <p className="assistant-diagnostics-error">{crossStoreRecoveryQueue.error}</p>}
+                  <p className="assistant-diagnostics-error">{crossStoreRecoveryQueue.error}
+                    <button onClick={() => void loadCrossStoreRecoveryQueue()}>重试</button>
+                  </p>}
                 {(crossStoreRecoveryQueue.items || []).map((commit: any) => <article
                   key={`${commit.kind}:${commit.commitId}`}>
                   <b>{commit.kind === 'task' ? '任务写入' : '信息来源策略'}</b>
@@ -12041,7 +12874,8 @@ function AiAssistantPage() {
                     检查并处理永久冲突
                   </button>}
                 </article>)}
-                {!crossStoreRecoveryQueue.loading && !crossStoreRecoveryQueue.items?.length &&
+                {!crossStoreRecoveryQueue.loading && !crossStoreRecoveryQueue.error &&
+                  !crossStoreRecoveryQueue.items?.length &&
                   <em>写入恢复队列已经清空。</em>}
                 {crossStoreRecoveryQueue.hasMore && <button
                   disabled={crossStoreRecoveryLoadingMore}
@@ -12675,7 +13509,11 @@ function AiAssistantPage() {
                 }}>关闭</button>
               </header>
               {taskFeedbackDossier.loading && <small>正在按需读取原文和动作历史…</small>}
-              {taskFeedbackDossier.error && <small>{taskFeedbackDossier.error}</small>}
+              {taskFeedbackDossier.error && <small>{taskFeedbackDossier.error}
+                <button onClick={() => void openTaskFeedbackDossier(
+                  taskFeedbackDossier.evidence_fingerprint
+                )}>重试</button>
+              </small>}
               {!taskFeedbackDossier.loading && !taskFeedbackDossier.error && <>
                 <p>
                   {taskFeedbackDossier.active
@@ -12699,6 +13537,12 @@ function AiAssistantPage() {
                     }{item.snapshotAvailable ? ' · 保存了可恢复快照' : ''}
                     {item.action === 'rejected' ? ` · 原因：${reviewReasonLabel(item.reason_code)}` : ''}
                   </small>)}
+                  {taskFeedbackDossier.historyError && <small className="assistant-error">
+                    动作历史读取失败：{taskFeedbackDossier.historyError}
+                    <button onClick={() => void openTaskFeedbackDossier(
+                      taskFeedbackDossier.evidence_fingerprint
+                    )}>重新载入最新详情</button>
+                  </small>}
                   {taskFeedbackDossier.historyHasMore && <button
                     onClick={() => void loadMoreTaskFeedbackHistory()}
                     disabled={taskFeedbackHistoryLoadingMore}>
@@ -12737,10 +13581,12 @@ function AiAssistantPage() {
               placeholder="搜索全部可信实体…"
               ariaLabel="实体检索范围"
               onSelect={entity => {
+                memoryEntityScopeGate.current.invalidate()
                 setMemoryEntitySelection(entity)
                 setMemoryEntityFilter(entity.id)
               }}
               onClear={() => {
+                memoryEntityScopeGate.current.invalidate()
                 setMemoryEntitySelection(null)
                 setMemoryEntityFilter('')
               }}
@@ -12756,6 +13602,10 @@ function AiAssistantPage() {
                   value={memorySessionQuery}
                   onFocus={() => setMemorySessionPickerOpen(true)}
                   onChange={event => {
+                    memorySessionPickerGate.current.invalidate()
+                    setMemorySessionOptions([])
+                    setMemorySessionOptionTotal(0)
+                    setMemorySessionPickerLoading(true)
                     setMemorySessionQuery(event.target.value)
                     setMemorySessionSelection(null)
                     setMemorySessionFilter('')
@@ -12767,6 +13617,10 @@ function AiAssistantPage() {
                   type="button"
                   aria-label="清除会话范围"
                   onClick={() => {
+                    memorySessionPickerGate.current.invalidate()
+                    setMemorySessionOptions([])
+                    setMemorySessionOptionTotal(0)
+                    setMemorySessionPickerLoading(false)
                     setMemorySessionQuery('')
                     setMemorySessionSelection(null)
                     setMemorySessionFilter('')
@@ -12786,6 +13640,10 @@ function AiAssistantPage() {
                   type="button"
                   key={source.sessionId}
                   onClick={() => {
+                    memorySessionPickerGate.current.invalidate()
+                    setMemorySessionOptions([])
+                    setMemorySessionOptionTotal(0)
+                    setMemorySessionPickerLoading(false)
                     setMemorySessionSelection(source)
                     setMemorySessionFilter(source.sessionId)
                     setMemorySessionQuery(source.displayName)
@@ -12830,6 +13688,7 @@ function AiAssistantPage() {
             <label><span>至</span><input type="date" value={memoryTo} onChange={event => setMemoryTo(event.target.value)} /></label>
             {(memoryEntityFilter || memorySessionFilter || memorySourceFilter || memoryTypeFilter || memoryTrustFilter || memorySupportFilter || memoryConflictFilter || memoryEvidenceStrengthFilter || memoryEvidenceBreadthFilter || memoryFrom || memoryTo) &&
               <button onClick={() => {
+                memoryEntityScopeGate.current.invalidate()
                 setMemoryEntityFilter('')
                 setMemoryEntitySelection(null)
                 setMemorySessionFilter('')
@@ -13398,9 +14257,15 @@ function AiAssistantPage() {
                   </article>
                 })}
               </div>
+              {memoryFeedbackArchive.status === 'error' && <div className="assistant-task-load-failure" role="alert">
+                <strong>检索反馈档案读取失败</strong>
+                <span>{memoryFeedbackArchive.error}。当前不会把读取失败解释为没有检索反馈。</span>
+                <button type="button" onClick={() =>
+                  setMemoryFeedbackArchiveRefreshKey(value => value + 1)}>立即重试</button>
+              </div>}
               {memoryFeedbackArchive.status === 'ready' && !memoryFeedbackArchive.items.length &&
                 <div className="assistant-empty">当前筛选下没有检索反馈。</div>}
-              {memoryFeedbackArchive.hasMore && <button
+              {memoryFeedbackArchive.status === 'ready' && memoryFeedbackArchive.hasMore && <button
                 className="assistant-search-load-more"
                 disabled={memoryFeedbackArchiveLoadingMore}
                 onClick={() => void loadMoreMemoryFeedbackArchive()}>
@@ -13847,11 +14712,24 @@ function AiAssistantPage() {
                         {decision.is_latest ? <em>最近动作</em> : null}
                       </div>)}
                     {assistantAnswerReviewHistories[item.message_id].error &&
-                      <small>{assistantAnswerReviewHistories[item.message_id].error}</small>}
+                      <div className="assistant-task-load-failure" role="alert">
+                        <strong>{assistantAnswerReviewHistories[item.message_id].items?.length
+                          ? '更早处理记录尚未读完' : '回答处理记录读取失败'}</strong>
+                        <span>{assistantAnswerReviewHistories[item.message_id].error}。
+                          {assistantAnswerReviewHistories[item.message_id].items?.length
+                            ? ' 已加载的处理记录保持不变。'
+                            : ' 当前不会把读取失败解释为没有处理记录。'}</span>
+                        <button type="button" onClick={() => void (
+                          assistantAnswerReviewHistories[item.message_id].items?.length
+                            ? loadMoreAssistantAnswerReviewHistory(item.message_id)
+                            : loadAssistantAnswerReviewHistory(item.message_id)
+                        )}>立即重试</button>
+                      </div>}
                     {assistantAnswerReviewHistories[item.message_id].loading &&
                       <small>正在读取处理记录…</small>}
                     {assistantAnswerReviewHistories[item.message_id].hasMore &&
-                      !assistantAnswerReviewHistories[item.message_id].loading && <button
+                      !assistantAnswerReviewHistories[item.message_id].loading &&
+                      !assistantAnswerReviewHistories[item.message_id].error && <button
                         onClick={() => void loadMoreAssistantAnswerReviewHistory(item.message_id)}>
                         加载更早记录（已显示 {assistantAnswerReviewHistories[item.message_id].items.length}
                         / {assistantAnswerReviewHistories[item.message_id].total}）
@@ -13990,6 +14868,20 @@ function AiAssistantPage() {
               </button>}
             </aside>
             <div className="assistant-conversation-thread">
+              {memoryConversationLoad.status === 'loading' && <small role="status">
+                正在读取所选会话的一致快照…
+              </small>}
+              {memoryConversationLoad.status === 'error' && <div className="assistant-task-load-failure" role="alert">
+                <strong>所选会话读取失败</strong>
+                <span>{memoryConversationLoad.error}。
+                  {memoryConversation
+                    ? ' 当前已打开的会话仍保留，失败不会被解释为空记录。'
+                    : ' 当前不会把读取失败解释为“还没有本地问答记录”。'}</span>
+                <button type="button" onClick={() => void openMemoryConversation(
+                  memoryConversationLoad.targetId,
+                  memoryConversationLoad.anchorMessageId
+                )}>重试这段会话</button>
+              </div>}
               {memoryConversation?.anchorFound && memoryConversation?.hasNewer && <small>
                 已直接定位到需要核验的回答；这段会话还有 {Number(memoryConversation.offset || 0)} 条更新消息未显示。
                 <button onClick={() => void openMemoryConversation(memoryConversation.id)}>返回最新消息</button>
@@ -14000,6 +14892,14 @@ function AiAssistantPage() {
                   ? '正在读取更早消息…'
                   : `加载更早消息（当前 ${memoryConversation.messages?.length || 0} / ${memoryConversation.total || 0}）`}
               </button>}
+              {assistantMessagesLoadError && <div className="assistant-task-load-failure" role="alert">
+                <strong>更早消息读取失败</strong>
+                <span>{assistantMessagesLoadError}。已显示的消息保持不变，当前会话尚未读完。</span>
+                <button type="button" disabled={assistantMessagesLoadingMore}
+                  onClick={() => void loadOlderAssistantMessages()}>
+                  {assistantMessagesLoadingMore ? '正在重试…' : '重试加载更早消息'}
+                </button>
+              </div>}
               {memoryConversation?.messages?.map((item: any) => <article className={item.role} key={item.id}>
                 <span>{item.role === 'user' ? '你' : 'AI 助理'} · {new Date(item.created_at).toLocaleString('zh-CN')}</span>
                 <p>{item.content}</p>
@@ -14059,7 +14959,9 @@ function AiAssistantPage() {
                     : `历史结论需要重新核验（变化/未知 ${Number(item.groundingRevalidation.invalidStatements || 0) + Number(item.groundingRevalidation.unknownStatements || 0)} 条）`}
                 </small>}
               </article>)}
-              {!memoryConversation && <div className="assistant-empty">新对话会在首次回答后加密保存；重启后可以从左侧继续。</div>}
+              {!memoryConversation && memoryConversationLoad.status === 'idle' && <div className="assistant-empty">
+                新对话会在首次回答后加密保存；重启后可以从左侧继续。
+              </div>}
             </div>
           </div>
           {memoryConversationId && <div className="assistant-conversation-controls">
@@ -14366,7 +15268,13 @@ function AiAssistantPage() {
                       查看完整可信审计（{Number(claim.review_count || 0) + Number(claim.correction_count || 0)} 条）
                     </summary>
                     {memoryItemAudits[`claim:${claim.id}`]?.status === 'error' &&
-                      <small>审计读取失败：{memoryItemAudits[`claim:${claim.id}`].error}</small>}
+                      <small>审计读取失败：{memoryItemAudits[`claim:${claim.id}`].error}
+                        <button onClick={() => void loadMemoryItemAudit(
+                          'claim', claim.id,
+                          Boolean(memoryItemAudits[`claim:${claim.id}`]?.items?.length &&
+                            memoryItemAudits[`claim:${claim.id}`]?.hasMore)
+                        )}>重试</button>
+                      </small>}
                     {memoryItemAudits[`claim:${claim.id}`]?.items &&
                       <MemoryItemAuditRows kind="claim" items={memoryItemAudits[`claim:${claim.id}`].items} />}
                     {memoryItemAuditLoading[`claim:${claim.id}`] &&
@@ -14580,7 +15488,13 @@ function AiAssistantPage() {
                       查看完整可信审计（{Number(event.review_count || 0) + Number(event.correction_count || 0)} 条）
                     </summary>
                     {memoryItemAudits[`event:${event.id}`]?.status === 'error' &&
-                      <small>审计读取失败：{memoryItemAudits[`event:${event.id}`].error}</small>}
+                      <small>审计读取失败：{memoryItemAudits[`event:${event.id}`].error}
+                        <button onClick={() => void loadMemoryItemAudit(
+                          'event', event.id,
+                          Boolean(memoryItemAudits[`event:${event.id}`]?.items?.length &&
+                            memoryItemAudits[`event:${event.id}`]?.hasMore)
+                        )}>重试</button>
+                      </small>}
                     {memoryItemAudits[`event:${event.id}`]?.items &&
                       <MemoryItemAuditRows kind="event"
                         items={memoryItemAudits[`event:${event.id}`].items}
@@ -14871,6 +15785,16 @@ function AiAssistantPage() {
               {!!dashboard.resourceEnrichmentScheduler.nextAttemptAt &&
                 ` · 下次自动重试 ${new Date(dashboard.resourceEnrichmentScheduler.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}（连续失败 ${Number(dashboard.resourceEnrichmentScheduler.failures || 0)} 次）`}
             </div>}
+            {!!dashboard?.schedulerRuntime?.lastError && <div className="assistant-query-plan warning">
+              后台调度保险丝已触发：{dashboard.schedulerRuntime.lastError}
+              {!!dashboard.schedulerRuntime.nextAttemptAt &&
+                ` · 下次自动恢复 ${new Date(dashboard.schedulerRuntime.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}（连续失败 ${Number(dashboard.schedulerRuntime.failures || 0)} 次）`}
+            </div>}
+            {!!dashboard?.preparedRecoveryScheduler?.lastError && <div className="assistant-query-plan warning">
+              中断提交后台恢复暂停：{dashboard.preparedRecoveryScheduler.lastError}
+              {!!dashboard.preparedRecoveryScheduler.nextAttemptAt &&
+                ` · 下次自动重试 ${new Date(dashboard.preparedRecoveryScheduler.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}（连续失败 ${Number(dashboard.preparedRecoveryScheduler.failures || 0)} 次）`}
+            </div>}
             <div className="assistant-memory-list">
               {visibleResources.map((directoryResource: any) => {
                 const resource = selectedResourceDossier?.id === directoryResource.id &&
@@ -15068,7 +15992,10 @@ function AiAssistantPage() {
                 </div>
               </article>})}
               {resourceArchive.status === 'loading' && <div className="assistant-empty">正在读取资源目录…</div>}
-              {resourceArchive.status === 'error' && <div className="assistant-empty">资源目录读取失败：{resourceArchive.error}</div>}
+              {resourceArchive.status === 'error' && <div className="assistant-empty">
+                资源目录读取失败：{resourceArchive.error}
+                <button onClick={() => setResourceRefreshKey(value => value + 1)}>重试</button>
+              </div>}
               {resourceArchive.status === 'ready' && !visibleResources.length &&
                 <div className="assistant-empty">链接、文件、转发记录、小程序、图片 OCR 和语音转写会在增量整理时沉淀到这里。</div>}
             </div>
@@ -15099,6 +16026,10 @@ function AiAssistantPage() {
                   </div>
                 </article>)}
                 {resourceTrashArchive.status === 'loading' && <div className="assistant-empty">正在读取回收站目录…</div>}
+                {resourceTrashArchive.status === 'error' && <div className="assistant-empty">
+                  资源回收站读取失败：{resourceTrashArchive.error}
+                  <button onClick={() => setResourceRefreshKey(value => value + 1)}>重试</button>
+                </div>}
                 {resourceTrashArchive.status === 'ready' && !resourceTrash.length &&
                   <div className="assistant-empty">当前筛选没有已删除资源。</div>}
               </div>
@@ -15304,7 +16235,12 @@ function AiAssistantPage() {
             {!graphCommonNeighbors.common.length && <div className="assistant-empty">当前图谱中没有共同的一跳联系人或实体。</div>}
           </div>}
           {graphWorkspace.status === 'loading' ? <div className="assistant-empty">正在从本机图谱构建当前语义视口…</div>
-          : graphWorkspace.status === 'error' ? <div className="assistant-empty">图谱视口读取失败：{graphWorkspace.error}</div>
+          : graphWorkspace.status === 'error' ? <div className="assistant-task-load-failure" role="alert">
+            <strong>图谱视口读取失败</strong>
+            <span>{graphWorkspace.error}。当前不会把失败解释为图谱为空。</span>
+            <button type="button" onClick={() =>
+              setGraphWorkspaceRefreshKey(value => value + 1)}>立即重试</button>
+          </div>
           : graphEntities.length ? (
             <div className="assistant-graph-layout">
               <svg className="assistant-graph-canvas" viewBox="0 0 500 340" role="img" aria-label="个人知识关系图">
@@ -16568,6 +17504,9 @@ function AiAssistantPage() {
                       <small>正在读取 SQLCipher 审计账本…</small>}
                     {audit?.status === 'error' && <small className="assistant-error">
                       审计读取失败：{audit.error}
+                      <button onClick={() => void loadMemoryItemAudit(
+                        kind, item.id, Boolean(audit?.items?.length && audit?.hasMore)
+                      )}>重试</button>
                     </small>}
                     {!!audit?.items?.length && <MemoryItemAuditRows kind={kind} items={audit.items}
                       onOpenEventParticipants={kind === 'event'
@@ -16579,7 +17518,8 @@ function AiAssistantPage() {
                               audit.revision
                             )
                         : undefined} />}
-                    {!memoryItemAuditLoading[`${kind}:${item.id}`] && !audit?.items?.length &&
+                    {audit?.status === 'ready' &&
+                      !memoryItemAuditLoading[`${kind}:${item.id}`] && !audit?.items?.length &&
                       <small>这条记忆尚无人工纠正或可信状态变更。</small>}
                     {audit?.hasMore && <button
                       disabled={!!memoryItemAuditLoading[`${kind}:${item.id}`]}
@@ -16794,9 +17734,19 @@ function AiAssistantPage() {
                   memoryEvidenceArchive.documentType,
                   memoryEvidenceArchive.sourceId,
                   memoryEvidenceArchive.title,
-                  memoryEvidenceArchive.filters
+                  memoryEvidenceArchive.filters,
+                  memoryEvidenceArchive.openingSnapshot
                 )}>重试</button>}
+              {memoryEvidenceArchive.loadMoreError && <div className="assistant-task-load-failure" role="alert">
+                <strong>更早证据尚未读完</strong>
+                <span>{memoryEvidenceArchive.loadMoreError}。已加载的证据保持不变。</span>
+                <button type="button" disabled={memoryEvidenceLoadingMore}
+                  onClick={() => void loadMoreMemoryEvidence()}>
+                  {memoryEvidenceLoadingMore ? '正在重试…' : '重试加载更早证据'}
+                </button>
+              </div>}
               {memoryEvidenceArchive.status === 'ready' && memoryEvidenceArchive.hasMore &&
+                !memoryEvidenceArchive.loadMoreError &&
                 <button className="primary" disabled={memoryEvidenceLoadingMore}
                   onClick={() => void loadMoreMemoryEvidence()}>
                   {memoryEvidenceLoadingMore ? '正在加载…' : '加载更早证据'}
@@ -16932,9 +17882,12 @@ function AiAssistantPage() {
                   本体后来删除时仍保留当时的关联身份和变化时间。
                 </small>
                 {entityMemoryGrowth.status === 'loading' && <em>正在读取该实体的成长记录…</em>}
-                {entityMemoryGrowth.status === 'error' && <em>
-                  成长记录读取失败：{entityMemoryGrowth.error}
-                </em>}
+                {entityMemoryGrowth.status === 'error' && <div className="assistant-task-load-failure" role="alert">
+                  <strong>人物成长记录读取失败</strong>
+                  <span>{entityMemoryGrowth.error}。当前不会把读取失败解释为没有成长记录。</span>
+                  <button type="button" onClick={() =>
+                    setEntityMemoryGrowthRefreshKey(value => value + 1)}>立即重试</button>
+                </div>}
                 <div className="assistant-memory-growth-list">
                   {(entityMemoryGrowth.items || []).map((entry: any) => <article key={entry.id}>
                     <span className={`assistant-memory-growth-kind ${entry.itemKind}`}>
@@ -16978,7 +17931,15 @@ function AiAssistantPage() {
                   !entityMemoryGrowth.items?.length && <em>
                     自成长账本启用以来，尚未记录到与该实体关联的变化。
                   </em>}
-                {entityMemoryGrowth.hasMore && <button
+                {entityMemoryGrowth.loadMoreError && <div className="assistant-task-load-failure" role="alert">
+                  <strong>更早成长记录尚未读完</strong>
+                  <span>{entityMemoryGrowth.loadMoreError}。已加载的成长记录保持不变。</span>
+                  <button type="button" disabled={entityMemoryGrowthLoadingMore} onClick={() => {
+                    if (entityMemoryGrowth.stale) setEntityMemoryGrowthRefreshKey(value => value + 1)
+                    else void loadMoreEntityMemoryGrowth()
+                  }}>{entityMemoryGrowth.stale ? '从最新第一页重新加载' : '重试加载更早记录'}</button>
+                </div>}
+                {entityMemoryGrowth.hasMore && !entityMemoryGrowth.loadMoreError && <button
                   disabled={entityMemoryGrowthLoadingMore}
                   onClick={() => void loadMoreEntityMemoryGrowth()}>
                   {entityMemoryGrowthLoadingMore
@@ -17730,7 +18691,7 @@ function AiAssistantPage() {
                     </button>}
                   </div>}
                 </article>)}
-                {projectMemoryPages.status !== 'loading' && !projectDossierClaims.length && <em>尚无项目事实</em>}
+                {projectMemoryPages.status === 'ready' && !projectDossierClaims.length && <em>尚无项目事实</em>}
                 {selectedProject.entityId && projectMemoryPages.claims?.hasMore && <button
                   disabled={!!projectMemoryLoadingMore.claims}
                   onClick={() => void loadMoreProjectMemorySection('claims')}>
@@ -17802,7 +18763,7 @@ function AiAssistantPage() {
                     </small>}
                   </article>
                 })}
-                {projectMemoryPages.status !== 'loading' &&
+                {projectMemoryPages.status === 'ready' &&
                   !(projectMemoryPages.relations?.items || []).length &&
                   <em>尚无项目关系</em>}
                 {selectedProject.entityId && projectMemoryPages.relations?.hasMore && <button
@@ -17883,7 +18844,7 @@ function AiAssistantPage() {
                       </button>}
                   </div>}
                 </article>)}
-                {projectMemoryPages.status !== 'loading' && !projectDossierEvents.length && <em>尚无相关事件</em>}
+                {projectMemoryPages.status === 'ready' && !projectDossierEvents.length && <em>尚无相关事件</em>}
                 {selectedProject.entityId && projectMemoryPages.events?.hasMore && <button
                   disabled={!!projectMemoryLoadingMore.events}
                   onClick={() => void loadMoreProjectMemorySection('events')}>
@@ -18028,7 +18989,10 @@ function AiAssistantPage() {
                   </div>}
                 </article>)}
                 {projectKeyEventPage.status === 'loading' && <em>正在读取完整关键时间线…</em>}
-                {projectKeyEventPage.status === 'error' && <em>关键时间线读取失败：{projectKeyEventPage.error}</em>}
+                {projectKeyEventPage.status === 'error' && <em>
+                  关键时间线读取失败：{projectKeyEventPage.error}
+                  <button onClick={() => setProjectKeyEventRefreshKey(value => value + 1)}>重试</button>
+                </em>}
                 {(selectedProject.entityId
                   ? projectKeyEventPage.status === 'ready' && !projectKeyEventPage.items.length
                   : !selectedProject.milestones.length && !selectedProject.decisions.length
@@ -18095,6 +19059,44 @@ function AiAssistantPage() {
               <p>全部增量运行可分页审阅，并汇总每个模型批次、失败原因、Token、耗时和成本估算。</p></div>
               <button aria-label="关闭诊断" onClick={() => setShowDiagnostics(false)}><X size={18} /></button>
             </header>
+            {memoryDiagnostics.legacyBackgroundServices && <div className={`assistant-recovery-audit ${
+              ['insight', 'groupSummary', 'messagePush'].some(key =>
+                memoryDiagnostics.legacyBackgroundServices?.[key]?.lastError ||
+                memoryDiagnostics.legacyBackgroundServices?.[key]?.retry?.lastError) ? 'warning' : 'healthy'
+            }`}>
+              <header><Bot size={15} /><span><b>辅助 AI 后台服务</b>
+                <small>联系人见解、群聊自动总结和消息推送均有最终异常边界；当前应用运行期的脱敏健康会与加密保存、可跨重启恢复的失败退避合并展示，不把会话或消息正文写入诊断。</small>
+              </span></header>
+              <div className="assistant-recovery-current">
+                {([
+                  ['insight', '联系人见解'],
+                  ['groupSummary', '群聊自动总结'],
+                  ['messagePush', '消息推送']
+                ] as const).map(([key, label]) => {
+                  const health = memoryDiagnostics.legacyBackgroundServices[key]
+                  const failures = Math.max(Number(health.consecutiveFailures || 0), Number(health.retry?.failures || 0))
+                  return <span key={key}>{label} <b>{health.lastError || health.retry?.lastError
+                    ? `连续失败 ${failures.toLocaleString()} 次`
+                    : health.processing ? '正在运行'
+                      : health.lastSuccessAt ? '本次运行正常'
+                        : health.started ? '等待首次运行' : '尚未启动'}</b></span>
+                })}
+              </div>
+              {([
+                ['insight', '联系人见解'],
+                ['groupSummary', '群聊自动总结'],
+                ['messagePush', '消息推送']
+              ] as const).map(([key, label]) => {
+                const health = memoryDiagnostics.legacyBackgroundServices[key]
+                const error = health.lastError || health.retry?.lastError
+                const errorAt = health.lastErrorAt || health.retry?.lastFailureAt
+                return error ? <small className="assistant-diagnostics-error" key={`legacy-health-${key}`}>
+                  {label}最近异常：{error}
+                  {errorAt ? ` · ${new Date(errorAt).toLocaleString('zh-CN', { hour12: false })}` : ''}
+                  {health.retry?.nextAttemptAt ? ` · 下次自动重试 ${new Date(health.retry.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}` : ''}
+                </small> : null
+              })}
+            </div>}
             {memoryDiagnostics.backgroundWrites && <div className={`assistant-recovery-audit ${
               status?.backgroundWrites?.active ? 'warning' : 'healthy'
             }`}>
@@ -18125,21 +19127,48 @@ function AiAssistantPage() {
               </div>
             </div>}
             {memoryDiagnostics.wcdbQueue && <div className={`assistant-recovery-audit ${
-              Number(memoryDiagnostics.wcdbQueue.rejectedCount || 0) > 0 ? 'warning' : 'healthy'
+              memoryDiagnostics.wcdbQueue.currentlyBackpressured === true ||
+              memoryDiagnostics.wcdbQueue.monitorDelivery?.lastError ||
+              memoryDiagnostics.wcdbQueue.workerLifecycle?.awaitingRestart === true
+                ? 'warning' : 'healthy'
             }`}>
               <header><Database size={15} /><span><b>微信数据库请求队列</b>
                 <small>所有原生数据库操作按抵达顺序单飞执行，并使用统一容量门禁防止界面、导出或本机接口在慢查询期间无界占用内存；安全关闭请求始终保留入口。</small>
               </span></header>
               <div className="assistant-recovery-current">
                 <span>当前排队 <b>{Number(memoryDiagnostics.wcdbQueue.pending || 0).toLocaleString()} / {Number(memoryDiagnostics.wcdbQueue.capacity || 0).toLocaleString()}</b></span>
+                <span>当前背压 <b>{memoryDiagnostics.wcdbQueue.currentlyBackpressured ? '队列已满，请稍后重试' : '未触发'}</b></span>
                 <span>运行期峰值 <b>{Number(memoryDiagnostics.wcdbQueue.highWatermark || 0).toLocaleString()}</b></span>
                 <span>累计背压 <b>{Number(memoryDiagnostics.wcdbQueue.rejectedCount || 0).toLocaleString()}</b> 次</span>
                 <span>最近背压 <b>{memoryDiagnostics.wcdbQueue.lastRejectedAt
                   ? new Date(memoryDiagnostics.wcdbQueue.lastRejectedAt).toLocaleString('zh-CN', { hour12: false })
                   : '无'}</b></span>
+                <span>监控事件边界 <b>{memoryDiagnostics.wcdbQueue.monitorDelivery?.lastError
+                  ? `连续失败 ${Number(memoryDiagnostics.wcdbQueue.monitorDelivery.failures || 0).toLocaleString()} 次`
+                  : memoryDiagnostics.wcdbQueue.monitorDelivery?.lastSuccessAt ? '正常' : '等待首次事件'}</b></span>
+                <span>Worker 生命周期 <b>{memoryDiagnostics.wcdbQueue.workerLifecycle?.awaitingRestart
+                  ? '等待下次请求重建'
+                  : memoryDiagnostics.wcdbQueue.workerLifecycle?.workerActive
+                    ? '当前正常'
+                    : '尚未按需启动'}
+                  {Number(memoryDiagnostics.wcdbQueue.workerLifecycle?.unexpectedExitCount || 0) > 0
+                    ? ` · 历史意外退出 ${Number(memoryDiagnostics.wcdbQueue.workerLifecycle.unexpectedExitCount).toLocaleString()} 次`
+                    : ''}</b></span>
               </div>
-              {memoryDiagnostics.wcdbQueue.lastRejectedType && <small className="assistant-diagnostics-error">
+              {memoryDiagnostics.wcdbQueue.currentlyBackpressured && memoryDiagnostics.wcdbQueue.lastRejectedType && <small className="assistant-diagnostics-error">
                 最近被延后的操作：{memoryDiagnostics.wcdbQueue.lastRejectedType}。完成当前查询后可直接重试。
+              </small>}
+              {memoryDiagnostics.wcdbQueue.monitorDelivery?.lastError && <small className="assistant-diagnostics-error">
+                数据库变更事件的上层处理最近失败：{memoryDiagnostics.wcdbQueue.monitorDelivery.lastError}
+                {memoryDiagnostics.wcdbQueue.monitorDelivery.lastErrorAt
+                  ? ` · ${new Date(memoryDiagnostics.wcdbQueue.monitorDelivery.lastErrorAt).toLocaleString('zh-CN', { hour12: false })}` : ''}。
+                原始数据库事件内容未写入诊断；下一条事件会继续尝试。
+              </small>}
+              {memoryDiagnostics.wcdbQueue.workerLifecycle?.awaitingRestart && <small className="assistant-diagnostics-error">
+                WCDB Worker 最近于 {memoryDiagnostics.wcdbQueue.workerLifecycle.lastExitAt
+                  ? new Date(memoryDiagnostics.wcdbQueue.workerLifecycle.lastExitAt).toLocaleString('zh-CN', { hour12: false }) : '未知时间'}
+                意外退出（退出码 {Number(memoryDiagnostics.wcdbQueue.workerLifecycle.lastExitCode ?? -1)}），已结束 {
+                  Number(memoryDiagnostics.wcdbQueue.workerLifecycle.lastExitRejectedRequests || 0).toLocaleString()} 个悬挂请求；下一次数据库操作会创建新的 Worker，可直接重试。
               </small>}
             </div>}
             {memoryDiagnostics.runtimeMemory && <div className="assistant-recovery-audit healthy">
@@ -18577,6 +19606,7 @@ function AiAssistantPage() {
               </span></header>
               <div className="assistant-recovery-current">
                 <span>分面范围 <b>SQLCipher 直接计数</b></span>
+                <span>分面翻页 <b>{memoryDiagnostics.memorySearchScopePlanning.facetPaginationStrategy === 'first_page_revision_reuse' ? '首屏计算、续页复用' : '需要检查'}</b></span>
                 <span>分面 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.facetIdentityMaterializations || 0)}</b> 份</span>
                 <span>主检索范围 <b>SQLCipher 临时范围</b></span>
                 <span>主范围 ID 集合 <b>{Number(memoryDiagnostics.memorySearchScopePlanning.primaryIdentityMaterializations || 0)}</b> 份</span>
@@ -18983,6 +20013,15 @@ function AiAssistantPage() {
                   new Date(memoryDiagnostics.embeddings.powerPolicy.lastMeasuredAt)
                     .toLocaleString('zh-CN', { hour12: false })
                 }</b></span>}
+                {memoryDiagnostics.embeddings.powerPolicy?.lastMeasurementError && <span
+                  className="warning">资源测量异常 <b>{
+                    memoryDiagnostics.embeddings.powerPolicy.lastMeasurementError
+                  } · 当前沿用上次安全策略{
+                    memoryDiagnostics.embeddings.powerPolicy.lastMeasurementErrorAt
+                      ? ` · ${new Date(memoryDiagnostics.embeddings.powerPolicy.lastMeasurementErrorAt)
+                        .toLocaleString('zh-CN', { hour12: false })}`
+                      : ''
+                  }</b></span>}
                 <span>连续失败 <b>{Number(memoryDiagnostics.embeddings.background?.failureStreak || 0).toLocaleString()}</b> 次</span>
                 <span>查询降级 <b>{Number(memoryDiagnostics.embeddings.query?.fallbackCount || 0).toLocaleString()}</b> 次</span>
                 <span>维度漂移修复 <b>{Number(memoryDiagnostics.embeddings.query?.dimensionRepairCount || 0).toLocaleString()}</b> 条</span>
@@ -19087,8 +20126,25 @@ function AiAssistantPage() {
                   : sensitiveCaches.imageSemantics.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.imageSemantics.entries || 0).toLocaleString()} 条${sensitiveCaches.imageSemantics.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>语音转写缓存：{!sensitiveCaches?.voiceTranscripts?.exists ? '尚未生成'
                   : sensitiveCaches.voiceTranscripts.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.voiceTranscripts.entries || 0).toLocaleString()} 条${sensitiveCaches.voiceTranscripts.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>联系人见解与消息分析：{!sensitiveCaches?.insightRecords?.exists ? '尚未生成'
+                  : sensitiveCaches.insightRecords.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.insightRecords.entries || 0).toLocaleString()} 条${sensitiveCaches.insightRecords.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>联系人年度画像：{!sensitiveCaches?.insightProfiles?.exists ? '尚未生成'
+                  : sensitiveCaches.insightProfiles.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.insightProfiles.entries || 0).toLocaleString()} 份${sensitiveCaches.insightProfiles.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>群聊总结与诊断：{!sensitiveCaches?.groupSummaryRecords?.exists ? '尚未生成'
+                  : sensitiveCaches.groupSummaryRecords.encrypted && sensitiveCaches.groupSummaryRecords.logsEncrypted !== false
+                    ? `AES-256-GCM · ${Number(sensitiveCaches.groupSummaryRecords.entries || 0).toLocaleString()} 条总结 · ${Number(sensitiveCaches.groupSummaryRecords.logFiles || 0).toLocaleString()} 个脱敏日志${Number(sensitiveCaches.groupSummaryRecords.pendingLogFiles || 0) ? ` · ${Number(sensitiveCaches.groupSummaryRecords.pendingLogFiles).toLocaleString()} 个等待补写` : ''}${sensitiveCaches.groupSummaryRecords.migratedPlaintext ? '（本次迁移）' : ''}`
+                    : '索引或分离日志未验证加密'}</span>
+                <span>统计聚合缓存：{sensitiveCaches?.analyticsAggregate?.error
+                  ? `旧明文清理失败：${sensitiveCaches.analyticsAggregate.error}`
+                  : sensitiveCaches?.analyticsAggregate?.legacyFilePresent
+                    ? '旧明文缓存仍存在'
+                    : `仅内存${sensitiveCaches?.analyticsAggregate?.removedThisStart ? ' · 本次已清理旧明文' : ' · 未发现旧明文'}`}</span>
+                <span>导出历史记录：{!sensitiveCaches?.exportRecords?.exists ? '尚未生成'
+                  : sensitiveCaches.exportRecords.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.exportRecords.records || 0).toLocaleString()} 条${sensitiveCaches.exportRecords.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>联系人显示缓存：{!sensitiveCaches?.contacts?.exists ? '尚未生成'
                   : sensitiveCaches.contacts.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.contacts.entries || 0).toLocaleString()} 条${sensitiveCaches.contacts.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
+                <span>会话消息缓存：{!sensitiveCaches?.sessionMessages?.exists ? '尚未生成'
+                  : sensitiveCaches.sessionMessages.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.sessionMessages.entries || 0).toLocaleString()} 个会话 · ${Number(sensitiveCaches.sessionMessages.messages || 0).toLocaleString()} 条消息${sensitiveCaches.sessionMessages.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>会话统计缓存：{!sensitiveCaches?.sessionStats?.exists ? '尚未生成'
                   : sensitiveCaches.sessionStats.encrypted ? `AES-256-GCM · ${Number(sensitiveCaches.sessionStats.entries || 0).toLocaleString()} 条${sensitiveCaches.sessionStats.migratedPlaintext ? '（本次迁移）' : ''}` : '未验证加密'}</span>
                 <span>群内本人消息计数：{!sensitiveCaches?.groupMyMessageCounts?.exists ? '尚未生成'
@@ -19107,8 +20163,16 @@ function AiAssistantPage() {
                 日志文件权限 {memoryDiagnostics.privacy.sensitiveLogRetention.mode || '尚未创建'}。只有在设置中显式开启诊断日志时才保留最近片段。
               </small>}
               {!sensitiveCachesSecure && <small className="assistant-diagnostics-error">
-                至少一个本地识别缓存未通过加密、权限或可写性校验；认证失败时系统会保留现场并停止覆盖，请先备份后检查完整诊断。
+                至少一个敏感本地文件未通过加密、权限或可写性校验；认证失败时系统会保留现场并停止覆盖，请先备份后检查完整诊断。
               </small>}
+              {sensitiveCachePersistenceFailures.map(({ label, cache, kind }) => <small
+                className="assistant-diagnostics-error" key={`cache-persistence-${label}`}>
+                {label}暂未落盘：{cache.persistenceRetry.lastError} · 连续失败 {
+                  Number(cache.persistenceRetry.failureCount || 0)
+                } 次{cache.persistenceRetry.nextAttemptAt
+                  ? ` · 下次自动重试 ${new Date(cache.persistenceRetry.nextAttemptAt).toLocaleString('zh-CN', { hour12: false })}`
+                  : ''}。{sensitivePersistenceImpact(kind)}
+              </small>)}
               {(!memoryDiagnostics.privacy.localSecretStorage?.available ||
                 memoryDiagnostics.privacy.localSecretStorage?.directoryMode !== '700' ||
                 memoryDiagnostics.privacy.localSecretStorage?.keyFileMode !== '600' ||
@@ -19274,7 +20338,7 @@ function AiAssistantPage() {
               </div>}
             </div>
             {memoryDiagnostics.appRecovery && <div id="assistant-app-recovery-diagnostics" tabIndex={-1}
-              className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption || rendererPageIncidentNotice ? 'warning' : 'healthy'}`}>
+              className={`assistant-recovery-audit ${memoryDiagnostics.appRecovery.recoveredFromInterruption || rendererPageIncidentNotice || memoryDiagnostics.appRecovery.ledgerPersistence?.lastError ? 'warning' : 'healthy'}`}>
               <header><RefreshCw size={15} /><span><b>应用运行与恢复</b>
                 <small>{memoryDiagnostics.appRecovery.recoveryMessage}</small></span></header>
               <div className="assistant-recovery-current">
@@ -19287,7 +20351,19 @@ function AiAssistantPage() {
                 {memoryDiagnostics.stateStorage && <span>状态文件 <b>{memoryDiagnostics.stateStorage.source === 'backup'
                   ? '已从良好副本恢复'
                   : memoryDiagnostics.stateStorage.source === 'primary' ? '主副本正常' : '首次初始化'}</b></span>}
+                <span>恢复账本 <b>{memoryDiagnostics.appRecovery.ledgerPersistence?.lastError
+                  ? `暂未落盘 · 连续失败 ${Number(memoryDiagnostics.appRecovery.ledgerPersistence.failureCount || 0)} 次`
+                  : memoryDiagnostics.appRecovery.ledgerPersistence?.lastSuccessAt
+                    ? `正常 · ${new Date(memoryDiagnostics.appRecovery.ledgerPersistence.lastSuccessAt).toLocaleString('zh-CN', { hour12: false })}`
+                    : '等待首次周期检查'}</b></span>
               </div>
+              {memoryDiagnostics.appRecovery.ledgerPersistence?.lastError && <p
+                className="assistant-diagnostics-error">
+                应用运行恢复账本暂未持久化：{memoryDiagnostics.appRecovery.ledgerPersistence.lastError}
+                {memoryDiagnostics.appRecovery.ledgerPersistence.lastErrorAt
+                  ? ` · ${new Date(memoryDiagnostics.appRecovery.ledgerPersistence.lastErrorAt).toLocaleString('zh-CN', { hour12: false })}`
+                  : ''}。内存账本已回滚到最近一次成功落盘状态，应用继续运行并将在下个周期重试。
+              </p>}
               {memoryDiagnostics.stateStorage?.recovered && <p className="assistant-diagnostics-error">
                 检测到主状态文件不可用，已验证最近良好副本并{memoryDiagnostics.stateStorage.repairedPrimary ? '自动修复主文件' : '以内存恢复运行'}。
               </p>}
@@ -19626,9 +20702,16 @@ function AiAssistantPage() {
                 </button>
                 {ingestionDossier?.id === run.id && <div className="assistant-ingestion-dossier">
                   {ingestionDossier.loading && <em>正在读取批次审计…</em>}
-                  {ingestionDossier.error && <p className="assistant-diagnostics-error">{ingestionDossier.error}</p>}
+                  {ingestionDossier.error && <p className="assistant-diagnostics-error">
+                    {ingestionDossier.error}
+                    <button onClick={() => void loadIngestionDossier(run.id)}>重试</button>
+                  </p>}
                   {(ingestionDossier.batches || []).map((batch: any) =>
                     <IngestionBatchAudit key={`${run.id}-${batch.batch_index}`} batch={batch} run={run} />)}
+                  {ingestionDossier.batchError && <p className="assistant-diagnostics-error">
+                    批次续页读取失败：{ingestionDossier.batchError}
+                    <button onClick={() => void loadIngestionDossier(run.id)}>重新载入最新详情</button>
+                  </p>}
                   {!ingestionDossier.loading && !ingestionDossier.error &&
                     !ingestionDossier.batches?.length && <em>该次运行没有创建模型批次</em>}
                   {ingestionDossier.batchHasMore && <button disabled={ingestionBatchesLoadingMore}
@@ -20063,6 +21146,22 @@ function AiAssistantPage() {
               {eventCorrectionParticipantArchive.status === 'error' &&
                 <small className="assistant-error">
                   读取失败：{eventCorrectionParticipantArchive.error || '未知错误'}
+                  <button onClick={() => void openEventCorrectionParticipantArchive(
+                    eventCorrectionParticipantArchive.correctionId,
+                    eventCorrectionParticipantArchive.phase,
+                    eventCorrectionParticipantArchive.title,
+                    eventCorrectionParticipantArchive.revision,
+                    eventCorrectionParticipantArchive.query || ''
+                  )}>重试当前快照</button>
+                </small>}
+              {eventCorrectionParticipantArchive.status === 'load_more_error' &&
+                <small className="assistant-error">
+                  后续参与者读取失败：{eventCorrectionParticipantArchive.loadMoreError || '未知错误'}；
+                  已保留当前内容，可在下方重试。
+                </small>}
+              {eventCorrectionParticipantArchive.status === 'stale' &&
+                <small className="assistant-error">
+                  {eventCorrectionParticipantArchive.loadMoreError}
                 </small>}
               {(eventCorrectionParticipantArchive.items || []).map((participant: any, index: number) =>
                 <article key={`${participant.entityId}:${participant.role}:${index}`}>
@@ -20076,11 +21175,13 @@ function AiAssistantPage() {
                 setEventCorrectionParticipantArchive(null)
               }}>关闭</button>
               {eventCorrectionParticipantArchive.hasMore && <button className="primary"
-                disabled={eventCorrectionParticipantArchive.status === 'loading_more'}
+                disabled={['loading_more', 'stale'].includes(eventCorrectionParticipantArchive.status)}
                 onClick={() => void loadMoreEventCorrectionParticipantArchive()}>
                 {eventCorrectionParticipantArchive.status === 'loading_more'
                   ? '正在加载…'
-                  : '加载更多参与者'}
+                  : eventCorrectionParticipantArchive.status === 'load_more_error'
+                    ? '重试加载更多参与者'
+                    : '加载更多参与者'}
               </button>}
             </div>
           </div>

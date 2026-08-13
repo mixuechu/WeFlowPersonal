@@ -184,3 +184,66 @@ test('a malformed persisted current session is discarded without poisoning the n
   assert.equal(diagnostics.current?.incidents.length, 0)
   restarted.dispose()
 }))
+
+test('heartbeat persistence failure is contained and rolls back the in-memory ledger', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  service.start('5.1.0', new Date('2026-08-13T01:00:00.000Z'))
+  const internal = service as any
+  const originalWrite = internal.trimAndWrite.bind(service)
+  internal.trimAndWrite = () => { throw new Error('disk unavailable at /Users/private') }
+
+  assert.doesNotThrow(() => internal.heartbeatSafely(new Date('2026-08-13T01:00:30.000Z')))
+  let diagnostics = service.getDiagnostics()
+  assert.equal(diagnostics.current?.lastHeartbeatAt, '2026-08-13T01:00:00.000Z')
+  assert.equal(diagnostics.ledgerPersistence.failureCount, 1)
+  assert.equal(diagnostics.ledgerPersistence.lastError.includes('/Users/private'), false)
+  assert.equal(diagnostics.ledgerPersistence.lastErrorAt, '2026-08-13T01:00:30.000Z')
+
+  internal.trimAndWrite = originalWrite
+  internal.heartbeatSafely(new Date('2026-08-13T01:01:00.000Z'))
+  diagnostics = service.getDiagnostics()
+  assert.equal(diagnostics.current?.lastHeartbeatAt, '2026-08-13T01:01:00.000Z')
+  assert.equal(diagnostics.ledgerPersistence.failureCount, 0)
+  assert.equal(diagnostics.ledgerPersistence.lastError, '')
+  assert.equal(diagnostics.ledgerPersistence.lastSuccessAt, '2026-08-13T01:01:00.000Z')
+  service.dispose()
+}))
+
+test('heartbeat timer uses its contained persistence boundary and exposes UI health', () => {
+  const recovery = readFileSync(
+    new URL('../electron/services/appRunRecoveryService.ts', import.meta.url),
+    'utf8'
+  )
+  const page = readFileSync(new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8')
+  assert.match(recovery, /setInterval\(\(\) => this\.heartbeatSafely\(\), 30_000\)/)
+  assert.match(recovery, /const previousLedger = this\.ledger[\s\S]*persistLedgerSafely\(previousLedger/)
+  assert.match(recovery, /if \(previousLedger\) this\.ledger = previousLedger[\s\S]*return false/)
+  assert.match(page, /应用运行恢复账本暂未持久化/)
+  assert.match(page, /内存账本已回滚到最近一次成功落盘状态/)
+})
+
+test('diagnostic storage cannot block application startup, incidents, or shutdown', () => withTempDirectory(directory => {
+  const service = new AppRunRecoveryService(directory)
+  const internal = service as any
+  const originalWrite = internal.trimAndWrite.bind(service)
+  internal.trimAndWrite = () => { throw new Error('diagnostic disk is read only') }
+
+  assert.doesNotThrow(() => service.start('5.1.0', new Date('2026-08-13T02:00:00.000Z')))
+  assert.equal(service.getDiagnostics().current?.stage, 'starting')
+  assert.equal(service.getDiagnostics().ledgerPersistence.failureCount, 1)
+  assert.doesNotThrow(() => service.recordIncident(
+    'uncaught_exception', 'original application fault', true,
+    new Date('2026-08-13T02:00:01.000Z')
+  ))
+  assert.equal(service.getDiagnostics().current?.incidents.length, 0)
+  assert.doesNotThrow(() => service.beginShutdown('normal', new Date('2026-08-13T02:00:02.000Z')))
+  assert.equal(service.getDiagnostics().current?.stage, 'starting')
+
+  internal.trimAndWrite = originalWrite
+  service.markReady(new Date('2026-08-13T02:00:03.000Z'))
+  assert.equal(service.getDiagnostics().current?.stage, 'ready')
+  assert.equal(service.getDiagnostics().ledgerPersistence.failureCount, 0)
+  assert.doesNotThrow(() => service.finishShutdown(undefined, new Date('2026-08-13T02:00:04.000Z')))
+  assert.equal(service.getDiagnostics().previous?.cleanExit, true)
+  service.dispose()
+}))

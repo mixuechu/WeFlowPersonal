@@ -46,14 +46,24 @@ test('app recovery presentation explains structured shutdown diagnostics without
     waited: 2,
     timedOut: false,
     pending: [],
-    databaseClosed: true
-  })), '后台任务已落定（等待 2 项），记忆数据库已安全关闭')
+    databaseClosed: true,
+    embeddingDisposed: true,
+    cleanupFailures: []
+  })), '后台任务已落定（等待 2 项），本地语义运行时已释放，个人记忆数据库已安全关闭')
   assert.equal(appRunShutdownDetailLabel('ai-assistant-stop', JSON.stringify({
     waited: 4,
     timedOut: true,
     pending: ['incremental_sync'],
     databaseClosed: false
   })), '等待后台任务达到上限，仍有 1 项交由进程退出回收')
+  assert.equal(appRunShutdownDetailLabel('ai-assistant-stop', JSON.stringify({
+    waited: 2,
+    timedOut: false,
+    pending: [],
+    databaseClosed: true,
+    embeddingDisposed: false,
+    cleanupFailures: ['embedding_dispose', 'invented_private_failure']
+  })), '后台任务已落定（等待 2 项），本地语义运行时由进程退出回收，个人记忆数据库已安全关闭')
   assert.equal(appRunShutdownDetailLabel('unknown-step', '{"private":"machine-state"}'), '已记录结构化诊断详情')
   assert.equal(appRunShutdownDetailLabel('unknown-step', '普通错误'), '普通错误')
   assert.equal(appRunShutdownDetailNeedsAttention('wcdb-worker-stop', JSON.stringify({
@@ -65,6 +75,18 @@ test('app recovery presentation explains structured shutdown diagnostics without
   assert.equal(appRunShutdownDetailNeedsAttention('ai-assistant-stop', JSON.stringify({
     timedOut: true
   })), true)
+  assert.equal(appRunShutdownDetailNeedsAttention('ai-assistant-stop', JSON.stringify({
+    timedOut: false,
+    databaseClosed: true,
+    embeddingDisposed: false,
+    cleanupFailures: ['embedding_dispose']
+  })), true)
+  assert.equal(appRunShutdownDetailNeedsAttention('ai-assistant-stop', JSON.stringify({
+    timedOut: false,
+    databaseClosed: true,
+    embeddingDisposed: true,
+    cleanupFailures: ['invented_private_failure']
+  })), false)
   assert.equal(appRunShutdownDetailNeedsAttention('unknown-step', '{broken'), false)
 })
 

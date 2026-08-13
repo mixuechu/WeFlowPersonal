@@ -8654,7 +8654,8 @@ export class PersonalMemoryStore {
       mineTaskOwnershipAuditIndex,
       memoryChangeLog,
       memorySearchScopePlanning: {
-        version: 16,
+        version: 17,
+        facetPaginationStrategy: 'first_page_revision_reuse',
         facetStrategy: 'sqlcipher_direct_count',
         facetIdentityMaterializations: 0,
         primaryScopeStrategy: 'sqlcipher_isolated_temp_table',
@@ -25329,6 +25330,10 @@ export class PersonalMemoryStore {
         )
       ORDER BY id
     `).all(model, dimensions) as Array<{ id: string; content_hash: string; embedding_json: string }>
+    const sourceDocumentCount = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM search_documents
+      WHERE embedding_model=? AND embedding_dimensions=? AND embedding_json IS NOT NULL
+    `).get(model, dimensions) as { count?: number } | undefined)?.count || 0)
     const chunks = this.db.prepare(`
       SELECT chunk.document_id,chunk.chunk_index,chunk.vector_json,chunk.chunk_hash
       FROM search_document_embedding_chunks chunk
@@ -25338,7 +25343,16 @@ export class PersonalMemoryStore {
         AND d.embedding_dimensions=chunk.dimensions
       WHERE chunk.model=? AND chunk.dimensions=?
         AND json_valid(chunk.vector_json)=1
-        AND json_array_length(chunk.vector_json)=chunk.dimensions
+        AND json_type(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)='array'
+        AND json_array_length(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)=chunk.dimensions
+        AND NOT EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+          WHERE json_each.type NOT IN ('integer','real')
+        )
+        AND EXISTS(
+          SELECT 1 FROM json_each(CASE WHEN json_valid(chunk.vector_json)=1 THEN chunk.vector_json ELSE '[]' END)
+          WHERE ABS(json_each.value)>1e-12
+        )
       ORDER BY chunk.document_id,chunk.chunk_index
     `).all(model, dimensions) as Array<{
       document_id: string
@@ -25346,6 +25360,15 @@ export class PersonalMemoryStore {
       vector_json: string
       chunk_hash: string
     }>
+    const sourceChunkCount = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM search_document_embedding_chunks chunk
+      JOIN search_documents d ON d.id=chunk.document_id
+        AND d.content_hash=chunk.content_hash
+        AND d.embedding_model=chunk.model
+        AND d.embedding_dimensions=chunk.dimensions
+      WHERE chunk.model=? AND chunk.dimensions=?
+    `).get(model, dimensions) as { count?: number } | undefined)?.count || 0)
     const now = new Date().toISOString()
     const replace = this.db.transaction(() => {
       this.db!.prepare('DELETE FROM vector_ann_entries WHERE model=? AND dimensions=?').run(model, dimensions)
@@ -25355,18 +25378,21 @@ export class PersonalMemoryStore {
           document_id,model,dimensions,table_id,signature,content_hash,updated_at
         ) VALUES(?,?,?,?,?,?,?)
       `)
+      let indexedDocuments = 0
       for (const document of documents) {
         let vector: number[] = []
         try { vector = JSON.parse(document.embedding_json).map(Number) } catch {}
-        if (vector.length !== dimensions) continue
+        if (!validateEmbeddingBatch([vector], 1).valid || vector.length !== dimensions) continue
         computeAnnSignatures(vector, model, tables, bits).forEach((signature, table) =>
           insert.run(document.id, model, dimensions, table, signature, document.content_hash, now))
+        indexedDocuments += 1
       }
       const insertChunk = this.db!.prepare(`
         INSERT INTO vector_ann_chunk_entries(
           document_id,chunk_index,model,dimensions,table_id,signature,chunk_hash,updated_at
         ) VALUES(?,?,?,?,?,?,?,?)
       `)
+      let indexedChunks = 0
       for (const chunk of chunks) {
         let vector: number[] = []
         try { vector = JSON.parse(chunk.vector_json).map(Number) } catch {}
@@ -25376,24 +25402,28 @@ export class PersonalMemoryStore {
             chunk.document_id, chunk.chunk_index, model, dimensions, table,
             signature, chunk.chunk_hash, now
           ))
+        indexedChunks += 1
       }
+      const status = indexedDocuments === sourceDocumentCount && indexedChunks === sourceChunkCount
+        ? 'ready'
+        : 'dirty'
       this.db!.prepare(`
         INSERT INTO vector_ann_state(
           model,dimensions,index_version,table_count,bit_count,indexed_count,indexed_chunk_count,
           status,last_built_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,'ready',?,?)
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(model,dimensions) DO UPDATE SET
           index_version=excluded.index_version,
           table_count=excluded.table_count,
           bit_count=excluded.bit_count,
           indexed_count=excluded.indexed_count,
           indexed_chunk_count=excluded.indexed_chunk_count,
-          status='ready',
+          status=excluded.status,
           last_built_at=excluded.last_built_at,
           updated_at=excluded.updated_at
       `).run(
         model, dimensions, LOCAL_ANN_INDEX_VERSION, tables, bits,
-        documents.length, chunks.length, now, now
+        indexedDocuments, indexedChunks, status, now, now
       )
     })
     replace()

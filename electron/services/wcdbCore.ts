@@ -6,6 +6,7 @@ import { expandHomePath } from '../utils/pathUtils'
 import { pinNativeLibraryForProcessLifetime } from './nativeLibraryLifetime'
 import { appendSensitiveLogFile, shouldWriteSensitiveLog } from './sensitiveLogPolicy'
 import { unsupportedWcdbQueryParameterReason } from './wcdbQueryPolicy'
+import { sanitizeDiagnosticText } from './diagnosticRedaction.ts'
 
 //数据服务初始化错误信息，用于帮助用户诊断问题
 let lastDllInitError: string | null = null
@@ -157,6 +158,13 @@ export class WcdbCore {
   private monitorCallback: ((type: string, json: string) => void) | null = null
   private monitorReconnectTimer: any = null
   private monitorPipePath: string = ''
+  private monitorDispatch(type: string, json: string): void {
+    try {
+      this.monitorCallback?.(String(type || 'update').slice(0, 80), String(json || ''))
+    } catch (error) {
+      this.writeLog(`monitor callback failed: ${sanitizeDiagnosticText(error).slice(0, 240)}`, true)
+    }
+  }
 
 
   private displayNameCache: Map<string, { displayName: string; updatedAt: number }> = new Map()
@@ -248,11 +256,11 @@ export class WcdbCore {
 
     setTimeout(() => {
       if (!this.monitorCallback) return
+      try {
+        this.monitorPipeClient = net.createConnection(this.monitorPipePath, () => { })
 
-      this.monitorPipeClient = net.createConnection(this.monitorPipePath, () => { })
-
-      let buffer = ''
-      this.monitorPipeClient.on('data', (data: Buffer) => {
+        let buffer = ''
+        this.monitorPipeClient.on('data', (data: Buffer) => {
         const rawChunk = data.toString('utf8')
         // macOS 侧可能使用 '\0' 或无换行分隔，统一归一化并兜底拆包
         const normalizedChunk = rawChunk
@@ -266,9 +274,9 @@ export class WcdbCore {
           if (line.trim()) {
             try {
               const parsed = JSON.parse(line)
-              this.monitorCallback?.(parsed.action || 'update', line)
+              this.monitorDispatch(parsed.action || 'update', line)
             } catch {
-              this.monitorCallback?.('update', line)
+              this.monitorDispatch('update', line)
             }
           }
         }
@@ -278,22 +286,27 @@ export class WcdbCore {
         if (tail.startsWith('{') && tail.endsWith('}')) {
           try {
             const parsed = JSON.parse(tail)
-            this.monitorCallback?.(parsed.action || 'update', tail)
+            this.monitorDispatch(parsed.action || 'update', tail)
             buffer = ''
           } catch {
             // 不可解析则继续等待下一块数据
           }
         }
-      })
+        })
 
-      this.monitorPipeClient.on('error', () => {
-        // 保持静默，与现有错误处理策略一致
-      })
+        this.monitorPipeClient.on('error', () => {
+          // 保持静默，与现有错误处理策略一致
+        })
 
-      this.monitorPipeClient.on('close', () => {
+        this.monitorPipeClient.on('close', () => {
+          this.monitorPipeClient = null
+          this.scheduleReconnect()
+        })
+      } catch (error) {
         this.monitorPipeClient = null
+        this.writeLog(`monitor connection failed: ${sanitizeDiagnosticText(error).slice(0, 240)}`, true)
         this.scheduleReconnect()
-      })
+      }
     }, 100)
   }
 

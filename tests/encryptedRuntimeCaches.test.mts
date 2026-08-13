@@ -8,6 +8,7 @@ import { CacheMapStore } from '../electron/services/cacheMapStore.ts'
 import { ContactCacheService } from '../electron/services/contactCacheService.ts'
 import { GroupMyMessageCountCacheService } from '../electron/services/groupMyMessageCountCacheService.ts'
 import { SessionStatsCacheService } from '../electron/services/sessionStatsCacheService.ts'
+import { MessageCacheService } from '../electron/services/messageCacheService.ts'
 import { isEncryptedDurableJson } from '../electron/services/encryptedDurableJsonState.ts'
 
 function assertEncrypted(path: string, forbidden: string[]): void {
@@ -171,4 +172,51 @@ test('UI cache maps defer migration until the local encryption key becomes avail
     key.fill(0)
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('legacy plaintext session message cache migrates without losing bounded conversations', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'weflow-message-cache-'))
+  const key = randomBytes(32)
+  const path = join(directory, 'session-messages.json')
+  try {
+    writeFileSync(path, JSON.stringify({
+      'wxid-private-session': {
+        version: 3,
+        updatedAt: 123,
+        messages: [{ localId: 1, parsedContent: '不能留在磁盘上的聊天正文' }]
+      }
+    }))
+    const cache = new MessageCacheService(directory, key)
+    assert.equal(cache.get('wxid-private-session')?.messages[0]?.parsedContent,
+      '不能留在磁盘上的聊天正文')
+    const privacy = cache.getPrivacyStatus() as any
+    assert.equal(privacy.encrypted, true)
+    assert.equal(privacy.migratedPlaintext, true)
+    assert.equal(privacy.entries, 1)
+    assert.equal(privacy.messages, 1)
+    assertEncrypted(path, ['wxid-private-session', '不能留在磁盘上的聊天正文'])
+    cache.clear()
+  } finally {
+    key.fill(0)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('session message cache is wired to local encryption, diagnostics, and bounded retry', () => {
+  const chat = readFileSync(
+    new URL('../electron/services/chatService.ts', import.meta.url),
+    'utf8'
+  )
+  const cache = readFileSync(
+    new URL('../electron/services/messageCacheService.ts', import.meta.url),
+    'utf8'
+  )
+  const page = readFileSync(new URL('../src/pages/AiAssistantPage.tsx', import.meta.url), 'utf8')
+  assert.match(chat, /new MessageCacheService\([^\n]*localCacheKey\)/)
+  assert.match(chat, /sessionMessages: this\.messageCacheService\.getPrivacyStatus\(\)/)
+  assert.match(cache, /writeEncryptedSensitiveCache/)
+  assert.match(cache, /planCachePersistenceRetry/)
+  assert.doesNotMatch(cache, /fsPromises\.writeFile/)
+  assert.match(page, /会话消息缓存/)
+  assert.match(page, /sensitiveCaches\.sessionMessages\.encrypted/)
 })

@@ -20,6 +20,23 @@ export const EMPTY_BACKLOG_RETRY_STATE: BacklogRetryState = {
   remainingBacklogCount: 0
 }
 
+export type BacklogCatchupResult =
+  | 'backlog_catchup_completed'
+  | 'backlog_catchup_partial'
+  | 'backlog_catchup_paused'
+  | 'backlog_catchup_failed'
+
+export function classifyBacklogCatchupResult(
+  result: { success?: boolean; partial?: boolean; cancelled?: boolean } | null,
+  threw = false
+): BacklogCatchupResult {
+  if (threw || !result) return 'backlog_catchup_failed'
+  if (result.cancelled) return 'backlog_catchup_paused'
+  if (result.success === true && result.partial !== true) return 'backlog_catchup_completed'
+  if (result.success === true || result.partial === true) return 'backlog_catchup_partial'
+  return 'backlog_catchup_failed'
+}
+
 function normalizedOffsets(offsets: Record<string, number> | undefined): Record<string, number> {
   return Object.fromEntries(Object.entries(offsets || {})
     .map(([sessionId, value]) => [String(sessionId), Math.max(0, Math.floor(Number(value) || 0))])

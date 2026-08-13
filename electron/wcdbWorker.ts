@@ -25,11 +25,15 @@ if (parentPort) {
                 case 'setMonitor':
                     {
                     const monitorOk = core.setMonitor((type, json) => {
-                        parentPort!.postMessage({
-                            id: -1,
-                            type: 'monitor',
-                            payload: { type, json }
-                        })
+                        try {
+                            parentPort!.postMessage({
+                                id: -1,
+                                type: 'monitor',
+                                payload: { type, json }
+                            })
+                        } catch {
+                            // Parent shutdown must not escape the native monitor callback.
+                        }
                     })
                     result = { success: monitorOk }
                     break

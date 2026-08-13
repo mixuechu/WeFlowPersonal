@@ -8,6 +8,7 @@ import {
   writeEncryptedSensitiveCache,
   type SensitiveCachePrivacy
 } from './encryptedSensitiveCache.ts'
+import { cachePersistenceRetryDelayMs, emptyCachePersistenceRetry, planCachePersistenceRetry } from './cachePersistenceRetry.ts'
 
 let electronApp: any = null
 try { electronApp = require('electron').app } catch {}
@@ -52,6 +53,7 @@ export class GroupMyMessageCountCacheService {
   private persistTimer: NodeJS.Timeout | null = null
   private persistInFlight = false
   private persistDirty = false
+  private persistenceRetry = emptyCachePersistenceRetry()
   private privacy: SensitiveCachePrivacy = emptySensitiveCachePrivacy()
   private encryptionKey: Buffer | string
   private store: GroupMyMessageCountCacheStore = {
@@ -198,7 +200,8 @@ export class GroupMyMessageCountCacheService {
     return {
       ...this.privacy,
       ...inspectSensitiveCacheFile(this.cacheFilePath),
-      entries: Object.values(this.store.scopes).reduce((total, scope) => total + Object.keys(scope).length, 0)
+      entries: Object.values(this.store.scopes).reduce((total, scope) => total + Object.keys(scope).length, 0),
+      persistenceRetry: { ...this.persistenceRetry }
     }
   }
 
@@ -247,12 +250,12 @@ export class GroupMyMessageCountCacheService {
   }
 
   /** 防抖异步落盘：批量刷新群统计时避免连续同步写盘阻塞主线程 */
-  private persist(): void {
+  private persist(delayMs = 1000): void {
     if (this.persistTimer) return
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
       void this.persistNow()
-    }, 1000)
+    }, Math.max(0, delayMs))
     this.persistTimer.unref?.()
   }
 
@@ -268,13 +271,16 @@ export class GroupMyMessageCountCacheService {
         ...writeEncryptedSensitiveCache(this.cacheFilePath, this.store, this.encryptionKey),
         migratedPlaintext: this.privacy.migratedPlaintext
       }
+      this.persistenceRetry = emptyCachePersistenceRetry()
     } catch (error) {
       console.error('GroupMyMessageCountCacheService: 保存缓存失败', error)
+      this.persistDirty = true
+      this.persistenceRetry = planCachePersistenceRetry(this.persistenceRetry, error)
     } finally {
       this.persistInFlight = false
       if (this.persistDirty) {
         this.persistDirty = false
-        void this.persistNow()
+        this.persist(cachePersistenceRetryDelayMs(this.persistenceRetry))
       }
     }
   }
